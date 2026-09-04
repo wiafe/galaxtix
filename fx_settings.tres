@@ -1,0 +1,24 @@
+[gd_resource type="Resource" script_class="FxSettings" format=3]
+
+[ext_resource type="Script" path="res://scripts/fx_settings.gd" id="1_p57fu"]
+
+[resource]
+script = ExtResource("1_p57fu")
+beam = 0.7
+wobble = 0.14
+lfo_speed = 0.0
+spike_mult = 0.76
+shake_mult = 0.4
+glow_intensity = 3.0
+glow_strength = 1.49
+glow_threshold = 0.48
+glow_bloom = 0.01
+trail_feedback = 0.765
+trail_blur = 4.0
+trail_dry = 1.55
+crt_curve = 0.045
+scan_depth = 0.34
+scan_lines = 328.0
+vignette = 0.37
+aberration = 1.75
+grain = 0.008
