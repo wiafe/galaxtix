@@ -109,6 +109,7 @@ var msg := ""
 var msg_t := 0.0
 var msg_dur := 1.0
 var dock_sel := 0
+var dock_upgrade_scroll := 0
 var qixes: Array = []
 var sparxes: Array = []
 var sparx_spawn_t := 0.0
@@ -454,11 +455,12 @@ func rebuild_coast() -> void:
 
 
 func update_fill() -> void:
+	var dither := int(cur_gal().dither)
 	for y in N:
 		for x in N:
 			if cells[idx(x, y)] == CLAIMED:
 				var on := false
-				match int(cur_gal().dither):
+				match dither:
 					0: on = ((x + y) & 1) == 0          # checker
 					1: on = (y & 1) == 0                # scanline stripes
 					_: on = (x & 1) == 0 and (y & 1) == 0   # dots
@@ -583,7 +585,7 @@ func update(dt: float) -> void:
 	beacon_note_t -= dt
 	pane_t += dt
 	if state == State.DOCK:
-		var key := "%s|%d|%s" % [Save.data.galaxy, int(Save.data.start_sector), Save.data.ship]
+		var key := "%s|%d|%s|%d" % [Save.data.galaxy, int(Save.data.start_sector), Save.data.ship, Save.rim()]
 		if key != pane_key:
 			pane_key = key
 			pane_t = 0.0
@@ -3410,6 +3412,13 @@ const CHART := Rect2(40, 34, 832, 300)
 const SCAN := Rect2(40, 350, 400, 516)
 const BAY := Rect2(456, 350, 416, 516)
 const DOCK_FIXED_ROWS := 3
+const DOCK_SHIP_HINTS := {
+	"surveyor": "RIDE THE COAST. CLOSE A LOOP TO CLAIM.",
+	"bulwark": "TRAIL HARDENS. RELEASE SPACE TO BRACE: HARDEN 3X FASTER. LOOPS CLAIM WHEN SEALED.",
+	"leaper": "HOLD SPACE TO AIM. ARROWS TURN. RELEASE TO LEAP AND GROW A WALL. ENEMIES CAN CUT IT.",
+	"lancer": "SPACE FIRES A TETHER. RIDE IT TO LAND.",
+	"sapper": "ROAM WITHOUT A TRAIL. HOLD SPACE TO GROW A DISC; RELEASE TO CLAIM. ENEMIES CAN HIT IT.",
+}
 
 
 func dock_rows() -> int:
@@ -3453,7 +3462,9 @@ func update_dock() -> void:
 			dock_ship_step(lr)
 	var confirm := Input.is_action_just_pressed("confirm")
 	if Input.is_action_just_pressed("launch") or (confirm and dock_sel == rows - 1):
-		if Galaxies.unlocked(Save.data.galaxy):
+		if not Ships.owned(Save.data.ship):
+			set_msg("UNLOCK SHIP OR CHOOSE AN OWNED SHIP", 1.6)
+		elif Galaxies.unlocked(Save.data.galaxy):
 			start_run()
 		else:
 			set_msg("LOCKED: " + Galaxies.unlock_hint(Save.data.galaxy), 1.6)
@@ -3467,7 +3478,7 @@ func update_dock() -> void:
 		dock_ship_confirm()
 	elif confirm and dock_sel >= DOCK_FIXED_ROWS and dock_sel < rows - 1:
 		var entry := dock_upgrade_at(dock_sel)
-		var burst_at := Vector2(PANEL_X + 300, 286 + (dock_sel - DOCK_FIXED_ROWS) * 33)
+		var burst_at := Vector2(PANEL_X + 300, 366 + (dock_sel - DOCK_FIXED_ROWS - dock_upgrade_scroll) * 38)
 		if entry[0] == "general":
 			var id: String = entry[1].id
 			if Save.buy(id):
@@ -3628,7 +3639,7 @@ func draw_scan() -> void:
 
 
 func draw_bay() -> void:
-	var focus := dock_sel >= 2
+	var focus := dock_sel >= 2 and dock_sel < dock_rows() - 1
 	pane_frame(BAY, "SHIP BAY", focus)
 	var dimf := 1.0 if focus else 0.6
 	var sh := Ships.get_ship(Save.data.ship)
@@ -3647,177 +3658,121 @@ func draw_bay() -> void:
 	var nc := Palette.WHITE
 	nc.a = dimf
 	VectorFont.draw(lines, sh.name, Vector2(center.x, BAY.position.y + 30), 22, nc, 0.6, 0.2, 1, 1.2, VectorFont.display)
-	var rl := Palette.YELLOW
-	rl.a = dimf
-	VectorFont.draw(lines, String(sh.rule), Vector2(center.x, BAY.position.y + 62), 10, rl, 0.4, 0.15, 1)
 	if owned:
 		VectorFont.draw(lines, "READY", Vector2(center.x, BAY.position.y + 80), 10, Palette.GREEN, 0.4, 0.15, 1)
 	else:
 		var cc := Palette.GREEN if Ships.can_buy(sh.id) else Palette.RED
-		VectorFont.draw(lines, "%d ISO   ENTER TO COMMISSION" % int(sh.cost), Vector2(center.x, BAY.position.y + 80), 10, cc, 0.4, 0.15, 1)
-	var dc := Palette.CYAN
-	dc.a = dimf
-	VectorFont.draw(lines, String(sh.desc), Vector2(center.x, BAY.end.y - 92), 10, dc, 0.4, 0.15, 1)
-	# stats, with the highlighted upgrade called out
-	var sc := Palette.DIM
-	sc.a = dimf
-	VectorFont.draw(lines, "LIVES %d   SPEED %d%%   NODE +%d   RIM %d" % [3 + Save.extra_lives(), int(Save.speed_mult() * 100), Save.node_value(), Save.rim()],
-		Vector2(center.x, BAY.end.y - 66), 10, sc, 0.4, 0.1, 1)
-	var entry := dock_upgrade_at(dock_sel)
-	if not entry.is_empty():
-		var u: Dictionary = entry[1]
-		var lvl: int = Save.level(u.id) if entry[0] == "general" else Ships.up_level(sh.id, u.id)
-		VectorFont.draw(lines, "%s LV %d  >  %s" % [u.name, lvl, u.desc], Vector2(center.x, BAY.end.y - 44), 10, Palette.YELLOW, 0.5, 0.2, 1)
+		VectorFont.draw(lines, "LOCKED", Vector2(center.x, BAY.position.y + 80), 10, cc, 0.4, 0.15, 1)
+	# Keep the preview visual; selection details live in one fixed area.
+	VectorFont.draw(lines, "LIVES %d   SPEED %d%%" % [3 + Save.extra_lives(), int(Save.speed_mult() * 100)],
+		Vector2(center.x, BAY.end.y - 56), 12, Palette.DIM, 0.4, 0.1, 1)
 
 
 func draw_dock_panel() -> void:
-	var y := 112.0
-	VectorFont.draw(lines, "DOCK", Vector2(PANEL_X, y), 18, Palette.CYAN, 0.6, 0.2)
-	VectorFont.draw(lines, "FLUX %s   ISO %d   CHARTS %d" % [fmt(Save.data.flux), int(Save.data.isotope), int(Save.data.starcharts)], Vector2(PANEL_X + PANEL_W, y), 16, Palette.GREEN, 0.6, 0.25, 2)
-	y += 30
-	var rate := Save.beacon_rate()
-	var info := "BEST SECTOR %02d   JUMPS %d" % [int(Save.data.best_level), int(Save.data.runs)]
-	if rate > 0.0:
-		info += "   BEACON +%.1f/S" % rate
-	VectorFont.draw(lines, info, Vector2(PANEL_X, y), 11, Palette.DIM, 0.4, 0.1)
-	# --- galaxy and start sector selectors
+	VectorFont.draw(lines, "DOCK", Vector2(PANEL_X, 100), 24, Palette.CYAN, 0.6, 0.2)
+	VectorFont.draw(lines, "%s FLUX   %d ISO" % [fmt(Save.data.flux), int(Save.data.isotope)],
+		Vector2(PANEL_X + PANEL_W, 108), 15, Palette.GREEN, 0.6, 0.25, 2)
 	var g := Galaxies.get_galaxy(Save.data.galaxy)
-	var gsel := dock_sel == 0
-	var ssel := dock_sel == 1
-	var pulse := 0.6 + 0.4 * sin(time * 8.0)
-	y = 176.0
-	if gsel:
-		var mc := Palette.YELLOW
-		mc.a = pulse
-		VectorFont.draw(lines, ">", Vector2(PANEL_X, y), 15, mc, 1.5, 0.5)
-	VectorFont.draw(lines, "GALAXY", Vector2(PANEL_X + 28, y), 15, Palette.WHITE if gsel else Palette.DIM, 0.4, 0.15)
-	var gcol := Palette.CYAN if Galaxies.unlocked(g.id) else Palette.RED
-	VectorFont.draw(lines, "< %s >" % g.name, Vector2(PANEL_X + 300, y), 15, gcol, 0.6 if gsel else 0.3, 0.25)
-	var gbest := Galaxies.best(g.id)
-	VectorFont.draw(lines, ("BEST %02d" % gbest) if gbest > 0 else "NEW", Vector2(PANEL_X + PANEL_W, y), 12, Palette.DIM, 0.4, 0.1, 2)
-	y += 30
-	if gsel:
-		y += draw_dock_desc(y)
-	if ssel:
-		var mc := Palette.YELLOW
-		mc.a = pulse
-		VectorFont.draw(lines, ">", Vector2(PANEL_X, y), 15, mc, 1.5, 0.5)
-	VectorFont.draw(lines, "START SECTOR", Vector2(PANEL_X + 28, y), 15, Palette.WHITE if ssel else Palette.DIM, 0.4, 0.15)
-	var ss := clampi(int(Save.data.start_sector), 1, max_start(g.id))
-	var ss_label := "ENDLESS" if ss > Galaxies.LENGTH else ("%02d" % ss)
-	VectorFont.draw(lines, "< %s >" % ss_label, Vector2(PANEL_X + 300, y), 15, Palette.CYAN, 0.6 if ssel else 0.3, 0.25)
-	var reach := "CLEARED" if Galaxies.cleared(g.id) else ("UP TO %02d" % mini(gbest + 1, Galaxies.LENGTH))
-	VectorFont.draw(lines, reach, Vector2(PANEL_X + PANEL_W, y), 12, Palette.GREEN if Galaxies.cleared(g.id) else Palette.DIM, 0.4, 0.1, 2)
-	y += 30
-	if ssel:
-		y += draw_dock_desc(y)
-	# --- hangar: pick or commission a ship
-	var shsel := dock_sel == 2
 	var sh := Ships.get_ship(Save.data.ship)
-	if shsel:
-		var mc := Palette.YELLOW
-		mc.a = pulse
-		VectorFont.draw(lines, ">", Vector2(PANEL_X, y), 15, mc, 1.5, 0.5)
-	VectorFont.draw(lines, "SHIP", Vector2(PANEL_X + 28, y), 15, Palette.WHITE if shsel else Palette.DIM, 0.4, 0.15)
-	var owned := Ships.owned(sh.id)
-	VectorFont.draw(lines, "< %s >" % sh.name, Vector2(PANEL_X + 300, y), 15, Palette.CYAN if owned else Palette.DIM, 0.6 if shsel else 0.3, 0.25)
-	if owned:
-		VectorFont.draw(lines, "READY", Vector2(PANEL_X + PANEL_W, y), 12, Palette.GREEN, 0.4, 0.1, 2)
-	else:
-		var cc := Palette.GREEN if Ships.can_buy(sh.id) else Palette.RED
-		VectorFont.draw(lines, "%d ISO" % int(sh.cost), Vector2(PANEL_X + PANEL_W, y), 12, cc, 0.4, 0.1, 2)
-	y += 30
-	if shsel:
-		y += draw_dock_desc(y)
-	lines.seg(Vector2(PANEL_X, y - 4), Vector2(PANEL_X + PANEL_W, y - 4), Palette.DIM, 0.3, 0.1, 0.6)
+	var ss := clampi(int(Save.data.start_sector), 1, max_start(g.id))
+	var values := [g.name, "ENDLESS" if ss > Galaxies.LENGTH else "%02d" % ss, sh.name]
+	var labels := ["GALAXY", "SECTOR", "SHIP"]
+	for i in DOCK_FIXED_ROWS:
+		var y := 176.0 + i * 44.0
+		var selected := dock_sel == i
+		draw_dock_cursor(y, selected)
+		VectorFont.draw(lines, labels[i], Vector2(PANEL_X + 28, y), 16, Palette.WHITE if selected else Palette.DIM)
+		var available := Galaxies.unlocked(g.id) if i < 2 else Ships.owned(sh.id)
+		VectorFont.draw(lines, "< %s >" % values[i], Vector2(PANEL_X + 280, y), 16,
+			Palette.CYAN if available else Palette.RED)
 
-	# --- upgrades
-	y += 14
-	var row_h := 33.0
-	for i in Save.UPGRADES.size():
-		var u: Dictionary = Save.UPGRADES[i]
-		var lvl := Save.level(u.id)
-		var sel := i + DOCK_FIXED_ROWS == dock_sel
-		var col := Palette.WHITE if sel else Palette.DIM
-		if sel:
-			var mc := Palette.YELLOW
-			mc.a = pulse
-			VectorFont.draw(lines, ">", Vector2(PANEL_X, y), 15, mc, 1.5, 0.5)
-		VectorFont.draw(lines, u.name, Vector2(PANEL_X + 28, y), 15, col, 0.6 if sel else 0.3, 0.25 if sel else 0.1)
-		VectorFont.draw(lines, "LV %d" % lvl, Vector2(PANEL_X + 300, y), 15, col, 0.4, 0.1)
-		var cost_s := "MAXED" if Save.maxed(u.id) else fmt(Save.cost(u.id))
-		var cc := Palette.DIM
-		if not Save.maxed(u.id):
-			cc = Palette.GREEN if Save.can_buy(u.id) else Palette.RED
-		VectorFont.draw(lines, cost_s, Vector2(PANEL_X + PANEL_W, y), 15, cc, 0.5, 0.2, 2)
-		y += row_h
-		if sel:
-			y += draw_dock_desc(y)
-	# --- the selected ship's own line
-	var sid: String = Save.data.ship
-	var sups := Ships.upgrades(sid)
-	var so := Ships.owned(sid)
-	for i in sups.size():
-		var u: Dictionary = sups[i]
-		var row := DOCK_FIXED_ROWS + Save.UPGRADES.size() + i
-		var sel := row == dock_sel
-		var col := Palette.WHITE if sel else Palette.DIM
-		if not so:
-			col.a = 0.5
-		if sel:
-			var mc := Palette.YELLOW
-			mc.a = pulse
-			VectorFont.draw(lines, ">", Vector2(PANEL_X, y), 15, mc, 1.5, 0.5)
-		VectorFont.draw(lines, u.name, Vector2(PANEL_X + 28, y), 15, col, 0.6 if sel else 0.3, 0.25 if sel else 0.1)
-		VectorFont.draw(lines, "LV %d" % Ships.up_level(sid, u.id), Vector2(PANEL_X + 300, y), 15, col, 0.4, 0.1)
-		var sc2 := Palette.CYAN
-		sc2.a = col.a
-		VectorFont.draw(lines, Ships.get_ship(sid).name, Vector2(PANEL_X + 380, y + 4), 9, sc2, 0.3, 0.1)
-		var cost_s2 := "MAXED" if Ships.up_maxed(sid, u.id) else fmt(Ships.up_cost(sid, u.id))
-		var cc2 := Palette.DIM
-		if not Ships.up_maxed(sid, u.id):
-			cc2 = Palette.GREEN if Ships.can_buy_up(sid, u.id) else Palette.RED
-		VectorFont.draw(lines, cost_s2, Vector2(PANEL_X + PANEL_W, y), 15, cc2, 0.5, 0.2, 2)
-		y += row_h
-		if sel:
-			y += draw_dock_desc(y)
-	# --- launch
-	lines.seg(Vector2(PANEL_X, y - 6), Vector2(PANEL_X + PANEL_W, y - 6), Palette.DIM, 0.3, 0.1, 0.6)
-	var ly := y + 26
-	var lsel := dock_sel == dock_rows() - 1
-	var lc := Palette.FULLBRIGHT if lsel else Palette.WHITE
-	if lsel:
-		var mc := Palette.YELLOW
-		mc.a = 0.6 + 0.4 * sin(time * 8.0)
-		VectorFont.draw(lines, ">", Vector2(PANEL_X, ly), 20, mc, 1.5, 0.5)
-	VectorFont.draw(lines, "LAUNCH SHIP", Vector2(PANEL_X + 28, ly), 20, lc, 1.0 if lsel else 0.5, 0.4 if lsel else 0.2, 0, 1.3)
-	lines.rect(Rect2(PANEL_X + 20, ly - 10, 260, 42), lc, 0.8, 0.2, 0.8)
-	VectorFont.draw(lines, "%d LIVES   %d%% SPEED   %d FLUX PER NODE   RIM %d" % [3 + Save.extra_lives(),
-		int(Save.speed_mult() * 100), node_value(), Save.rim()], Vector2(PANEL_X, ly + 60), 11, Palette.DIM, 0.4, 0.1)
-	VectorFont.draw(lines, "ARROWS SELECT   ENTER BUY   SPACE LAUNCH", Vector2(PANEL_X, 850), 11, Palette.DIM, 0.3, 0.1)
+	lines.seg(Vector2(PANEL_X, 318), Vector2(PANEL_X + PANEL_W, 318), Palette.DIM)
+	var total := dock_rows() - DOCK_FIXED_ROWS - 1
+	const VISIBLE := 6
+	dock_upgrade_scroll = clampi(dock_upgrade_scroll, 0, maxi(0, total - VISIBLE))
+	if dock_sel >= DOCK_FIXED_ROWS and dock_sel < dock_rows() - 1:
+		var selected := dock_sel - DOCK_FIXED_ROWS
+		dock_upgrade_scroll = clampi(dock_upgrade_scroll, maxi(0, selected - VISIBLE + 1), selected)
+	VectorFont.draw(lines, "UPGRADES", Vector2(PANEL_X + 28, 334), 12, Palette.DIM)
+	VectorFont.draw(lines, "%d-%d / %d   COST: FLUX" % [dock_upgrade_scroll + 1, mini(dock_upgrade_scroll + VISIBLE, total), total],
+		Vector2(PANEL_X + PANEL_W, 334), 11, Palette.DIM, 0.0, 0.0, 2)
+	for i in range(dock_upgrade_scroll, mini(dock_upgrade_scroll + VISIBLE, total)):
+		var row := DOCK_FIXED_ROWS + i
+		var entry := dock_upgrade_at(row)
+		var u: Dictionary = entry[1]
+		var general: bool = entry[0] == "general"
+		var lvl := Save.level(u.id) if general else Ships.up_level(sh.id, u.id)
+		var maxed := Save.maxed(u.id) if general else Ships.up_maxed(sh.id, u.id)
+		var affordable := Save.can_buy(u.id) if general else Ships.can_buy_up(sh.id, u.id)
+		var cost := Save.cost(u.id) if general else Ships.up_cost(sh.id, u.id)
+		var y := 366.0 + (i - dock_upgrade_scroll) * 38.0
+		var selected := dock_sel == row
+		draw_dock_cursor(y, selected)
+		VectorFont.draw(lines, u.name, Vector2(PANEL_X + 28, y), 15, Palette.WHITE if selected else Palette.DIM)
+		VectorFont.draw(lines, "LV %d" % lvl, Vector2(PANEL_X + 330, y), 13, Palette.DIM)
+		var price := "MAX" if maxed else fmt(cost)
+		if not general and not Ships.owned(sh.id):
+			price = "LOCKED"
+		VectorFont.draw(lines, price, Vector2(PANEL_X + PANEL_W, y), 15,
+			Palette.GREEN if affordable else Palette.DIM, 0.0, 0.0, 2)
+	lines.seg(Vector2(PANEL_X, 604), Vector2(PANEL_X + PANEL_W, 604), Palette.DIM)
+	draw_dock_desc(628)
+
+	var launchable := Galaxies.unlocked(g.id) and Ships.owned(sh.id)
+	var lc := Palette.CYAN if launchable else Palette.DIM
+	lines.rect(Rect2(PANEL_X + 20, 754, PANEL_W - 20, 52), lc)
+	draw_dock_cursor(770, dock_sel == dock_rows() - 1)
+	VectorFont.draw(lines, "LAUNCH", Vector2(PANEL_X + 44, 770), 20, lc)
+	VectorFont.draw(lines, "SPACE", Vector2(PANEL_X + PANEL_W - 20, 776), 12, lc, 0.0, 0.0, 2)
+	var action := "ENTER BUY" if dock_sel >= DOCK_FIXED_ROWS and dock_sel < dock_rows() - 1 else "LEFT/RIGHT CHANGE"
+	if dock_sel == 2 and not Ships.owned(sh.id):
+		action = "ENTER UNLOCK"
+	elif dock_sel == dock_rows() - 1:
+		action = "ENTER LAUNCH"
+	VectorFont.draw(lines, "UP/DOWN SELECT   %s   ESC BACK" % action, Vector2(PANEL_X, 842), 11, Palette.DIM)
 
 
-## The selected row's description, indented right under it. Returns the height it took.
-func draw_dock_desc(y: float) -> float:
-	var rows: Array = []   # [text, color, size]
+func draw_dock_cursor(y: float, selected: bool) -> void:
+	if selected:
+		VectorFont.draw(lines, ">", Vector2(PANEL_X, y), 16, Palette.YELLOW, 0.3, 0.1)
+
+
+## One fixed description area keeps navigation from shifting the layout.
+func draw_dock_desc(y: float) -> void:
+	var text := ""
+	var col := Palette.CYAN
 	var g := Galaxies.get_galaxy(Save.data.galaxy)
+	var sh := Ships.get_ship(Save.data.ship)
 	if dock_sel == 0:
-		if Galaxies.unlocked(g.id):
-			rows.append([String(g.desc), Palette.CYAN, 11])
-		else:
-			rows.append(["LOCKED: " + Galaxies.unlock_hint(g.id), Palette.RED, 11])
+		text = String(g.desc) if Galaxies.unlocked(g.id) else Galaxies.unlock_hint(g.id)
+		if not Galaxies.unlocked(g.id):
+			col = Palette.RED
 	elif dock_sel == 1:
-		rows.append(["JUMP STRAIGHT TO ANY SECTOR YOU HAVE SECURED, OR THE NEXT ONE.", Palette.CYAN, 11])
+		text = "REPLAY A SECTOR OR TRY THE NEXT."
 	elif dock_sel == 2:
-		var sh := Ships.get_ship(Save.data.ship)
-		rows.append([String(sh.rule) + (("   ENTER: COMMISSION FOR %d ISO" % int(sh.cost)) if not Ships.owned(sh.id) else ""), Palette.YELLOW, 11])
-		rows.append([String(sh.desc), Palette.CYAN, 10])
+		text = String(DOCK_SHIP_HINTS.get(sh.id, sh.desc))
+		if not Ships.owned(sh.id):
+			text = "UNLOCK: %d ISO. " % int(sh.cost) + text
 	elif dock_sel < dock_rows() - 1:
 		var entry := dock_upgrade_at(dock_sel)
-		var su: Dictionary = entry[1]
-		rows.append([String(su.desc), Palette.CYAN, 11])
-	var h := 0.0
-	for r in rows:
-		VectorFont.draw(lines, r[0], Vector2(PANEL_X + 28, y - 8 + h), r[2], r[1], 0.5, 0.2)
-		h += 17.0
-	return h + 2.0 if h > 0.0 else 0.0
+		text = String(entry[1].desc)
+		if entry[0] == "ship":
+			text = String(sh.name) + ": " + text
+	else:
+		text = "%s / SECTOR %02d / %s" % [g.name, int(Save.data.start_sector), sh.name]
+		if not Galaxies.unlocked(g.id):
+			text = Galaxies.unlock_hint(g.id)
+			col = Palette.RED
+		elif not Ships.owned(sh.id):
+			text = "UNLOCK %s FOR %d ISO OR CHOOSE AN OWNED SHIP." % [sh.name, int(sh.cost)]
+			col = Palette.YELLOW
+	var line := ""
+	for word in text.split(" "):
+		var candidate := word if line.is_empty() else line + " " + word
+		if not line.is_empty() and VectorFont.width(candidate, 12) > PANEL_W - 40:
+			VectorFont.draw(lines, line, Vector2(PANEL_X + 28, y), 12, col)
+			y += 22
+			line = word
+		else:
+			line = candidate
+	VectorFont.draw(lines, line, Vector2(PANEL_X + 28, y), 12, col)

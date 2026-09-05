@@ -8,6 +8,9 @@ static var current := "futural"   # FxSettings.font (HUD and body)
 static var display := "futuram"   # FxSettings.title_font (big titles)
 static var tracking := 1.0        # FxSettings.font_tracking (advance multiplier)
 static var _cache := {}
+# Bounded cache of local outlines; moving text reuses the same geometry.
+const DRAW_CACHE_LIMIT := 512
+static var _draw_cache := {}
 
 
 static func get_font(name: String) -> Dictionary:
@@ -84,5 +87,15 @@ static func paths(text: String, pos: Vector2, size: float, align := 0, name := "
 
 static func draw(lines: ScopeLines, text: String, pos: Vector2, size: float, color: Color,
 		wob := 0.0, sl := 0.0, align := 0, thick := 1.0, name := "") -> void:
-	for pts in paths(text, pos, size, align, name):
-		lines.polyline(pts, false, color, wob, sl, thick)
+	var font_name := name if name != "" else current
+	var key := [font_name, text, size, align, tracking]
+	if not _draw_cache.has(key):
+		if _draw_cache.size() >= DRAW_CACHE_LIMIT:
+			_draw_cache.erase(_draw_cache.keys()[0])
+		_draw_cache[key] = paths(text, Vector2.ZERO, size, align, font_name)
+	for stroke in _draw_cache[key]:
+		var pts: PackedVector2Array = stroke
+		if pts.size() == 1:
+			lines.seg(pts[0] + pos, pts[0] + pos, color, wob, sl, thick)
+		for i in range(pts.size() - 1):
+			lines.seg(pts[i] + pos, pts[i + 1] + pos, color, wob, sl, thick)

@@ -151,6 +151,10 @@ func circle(center: Vector2, radius: float, c: Color, segments := 24, wob := 0.0
 func trace(paths: Array, frac: float, c: Color, wob := 0.0, sl := 0.0, thick := 1.0) -> void:
 	if frac <= 0.0:
 		return
+	if frac >= 1.0:
+		for pts in paths:
+			polyline(pts, false, c, wob, sl, thick)
+		return
 	var total := 0.0
 	for pts in paths:
 		var pv: PackedVector2Array = pts
