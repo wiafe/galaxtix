@@ -49,6 +49,10 @@ func _ready() -> void:
 		elif a == "--autotest=pattern":
 			autotest = true
 			auto_mode = "pattern"
+		elif a == "--autotest=royale":
+			autotest = true
+			auto_mode = "royale"
+			shot_times = [4.0, 9.6, 12.5, 16.6]   # roster mid-round, buzzer beat, mid reveal, last slot + card
 		elif a.begins_with("--autotest=boss"):
 			autotest = true
 			auto_mode = a.substr(11)   # boss, boss:belt, boss:deep
@@ -97,6 +101,11 @@ func _ready() -> void:
 			seed(4242)   # a seed where the Anomaly starts away from the top edge
 	if autotest and auto_mode == "dock":
 		game.go_dock()
+	if autotest and auto_mode == "royale":
+		game.start_battle_royale()
+		game.battle.start(1337)
+		game.battle.phase = "playing"
+		game.battle.remaining = 8.0   # short round so the buzzer reveal fits in the shot window
 	if autotest and (auto_mode in ["intro", "outro", "transit", "sector"]):
 		game.autopilot = true   # no inputs, just watch the sequences
 		game.start_run()

@@ -54,6 +54,14 @@ var territory_texture: ImageTexture
 var texture_dirty := false
 var rng := RandomNumberGenerator.new()
 var turn := 0
+var roster: Array[Racer] = []       # fixed on-screen order during a round; no live ranking
+var reveal_order: Array[int] = []   # standings slots in the order the buzzer reveals them
+var reveal_count := 0
+var reveal_time: Dictionary = {}    # racer id -> phase_time when its slot was revealed
+var reveal_finish := INF
+const REVEAL_BEAT := 1.0
+const REVEAL_STEP := 0.4
+const REVEAL_HOLD := 1.2
 
 func start(seed_value := -1) -> void:
 	if seed_value < 0:
@@ -134,6 +142,8 @@ func begin_round() -> void:
 		r.pos = perimeter[slot]
 		r.anchor = r.pos
 		r.facing = Vector2i.DOWN if r.pos.y == 0 else (Vector2i.UP if r.pos.y == size.y - 1 else (Vector2i.RIGHT if r.pos.x == 0 else Vector2i.LEFT))
+	roster.assign(racers)
+	roster.sort_custom(func(a: Racer, b: Racer) -> bool: return a.id < b.id)
 	remaining = TIMES[round_index]
 	phase = "ready"
 	phase_time = 0.0
@@ -172,15 +182,7 @@ func rebuild() -> void:
 		if a.failures != b.failures: return a.failures < b.failures
 		return a.tie < b.tie)
 	# Ownership texture changes only on capture; cache merged border outlines alongside it.
-	territory_image.fill(Color.TRANSPARENT)
-	for y in size.y:
-		for x in size.x:
-			var id := owner(Vector2i(x, y))
-			if id >= 0:
-				var col := color(id)
-				col.a = 0.16
-				territory_image.set_pixel(x, y, col)
-	texture_dirty = true
+	refresh_fill()
 	territory_segments.clear()
 	for axis in 2:
 		var across := size.x if axis == 0 else size.y
@@ -201,6 +203,24 @@ func rebuild() -> void:
 						territory_segments.append([origin + p1 * CELL, origin + p2 * CELL, last_id])
 					start_b = b if id >= 0 else -1
 					last_id = id
+
+func revealed(id: int) -> bool:
+	return reveal_time.has(id)
+
+func fill_alpha(id: int) -> float:
+	if phase != "results": return 0.16
+	return 0.32 if revealed(id) else 0.05
+
+func refresh_fill() -> void:
+	territory_image.fill(Color.TRANSPARENT)
+	for y in size.y:
+		for x in size.x:
+			var id := owner(Vector2i(x, y))
+			if id >= 0:
+				var col := color(id)
+				col.a = fill_alpha(id)
+				territory_image.set_pixel(x, y, col)
+	texture_dirty = true
 
 func solid(c: Vector2i, r: Racer) -> bool:
 	if not inside(c): return true
@@ -410,6 +430,52 @@ func finish_round() -> void:
 	rebuild()
 	phase = "results"
 	phase_time = 0.0
+	reveal_order.clear()
+	reveal_time.clear()
+	reveal_count = 0
+	reveal_finish = INF
+	# Eliminated from the bottom up, then qualifiers from the top, saving the last slot for the end.
+	var cut := mini(CUTS[round_index], standings.size())
+	for i in range(standings.size() - 1, cut - 1, -1): reveal_order.append(i)
+	for i in range(0, cut - 1): reveal_order.append(i)
+	reveal_order.append(cut - 1)
+	refresh_fill()
+
+func reveal_at(k: int) -> float:
+	var t := REVEAL_BEAT + k * REVEAL_STEP
+	if k == reveal_order.size() - 1: t += REVEAL_HOLD
+	return t
+
+func reveal_next() -> void:
+	var slot: int = reveal_order[reveal_count]
+	reveal_time[standings[slot].id] = phase_time
+	reveal_count += 1
+	if reveal_count == reveal_order.size():
+		reveal_finish = phase_time + 0.6
+		var cut := mini(CUTS[round_index], standings.size())
+		if cut < standings.size():
+			var last := standings[cut - 1]
+			var first_out := standings[cut]
+			if last.score == first_out.score:
+				notice = "TIED %.1f%% - " % percent(last)
+				if last.biggest != first_out.biggest:
+					notice += "BIGGEST CAPTURE %d VS %d" % [last.biggest, first_out.biggest]
+				elif last.failures != first_out.failures:
+					notice += "FEWEST FAILS %d VS %d" % [last.failures, first_out.failures]
+				else:
+					notice += "DRAW ORDER"
+				notice_time = 4.0
+	refresh_fill()
+
+func reveal_complete() -> bool:
+	return phase_time >= reveal_finish
+
+func skip_reveal() -> void:
+	while reveal_count < reveal_order.size(): reveal_next()
+	reveal_finish = phase_time
+
+func percent(r: Racer) -> float:
+	return 100.0 * r.score / (owners.size() - racers.size() * 7)
 
 func qualified() -> bool:
 	for i in mini(CUTS[round_index], standings.size()):
@@ -433,7 +499,10 @@ func update(dt: float, human_input := true) -> bool:
 			phase = "playing"
 		return false
 	if phase == "results":
-		if human_input and phase_time > 0.5 and (Input.is_action_just_pressed("confirm") or Input.is_action_just_pressed("launch")): advance()
+		while reveal_count < reveal_order.size() and phase_time >= reveal_at(reveal_count): reveal_next()
+		if human_input and phase_time > 0.3 and (Input.is_action_just_pressed("confirm") or Input.is_action_just_pressed("launch")):
+			if reveal_complete(): advance()
+			else: skip_reveal()
 		return false
 	remaining = maxf(0.0, remaining - dt)
 	turn += 1
@@ -499,6 +568,7 @@ func draw(lines: ScopeLines, fill: Sprite2D) -> void:
 	for segment in territory_segments:
 		var col := color(segment[2])
 		col.a = 0.55 if racer(segment[2]).harden <= 0.0 else 1.0
+		if phase == "results": col.a = 0.9 if revealed(segment[2]) else 0.12
 		lines.seg(segment[0], segment[1], col, 0.0, 0.0, 1.0)
 	# Harden is a geometric wall treatment, not just a brighter ownership color.
 	for r in racers:
@@ -510,9 +580,20 @@ func draw(lines: ScopeLines, fill: Sprite2D) -> void:
 		for edge in r.wall_edges:
 			lines.seg(edge[0], edge[1], color(r.id), 0.0, 0.0, 4.0)
 			lines.seg(edge[0], edge[1], Palette.WHITE, 0.0, 0.0, 1.6)
+	# A freshly revealed racer flashes its whole territory outline on the board.
+	if phase == "results":
+		for r in racers:
+			if not revealed(r.id): continue
+			var age: float = phase_time - reveal_time[r.id]
+			if age > 0.6: continue
+			var flash := color(r.id).lerp(Palette.WHITE, 0.5)
+			flash.a = 1.0 - age / 0.6
+			for edge in r.wall_edges:
+				lines.seg(edge[0], edge[1], flash, 0.0, 0.0, 3.0)
 	lines.rect(Rect2(origin, Vector2(size) * CELL), Palette.CYAN, 0.0, 0.0, 1.0)
 	for r in racers:
 		var col := color(r.id)
+		if phase == "results" and not revealed(r.id): col.a = 0.25
 		for c in r.rail:
 			lines.rect(Rect2(point(c) - Vector2.ONE * 3.5, Vector2.ONE * 7), col, 0.0, 0.0, 1.4)
 		for c in r.trail:
@@ -525,30 +606,18 @@ func draw(lines: ScopeLines, fill: Sprite2D) -> void:
 			text(lines, "YOU", point(r.pos) + Vector2(0, -20), 10, Palette.WHITE, 1)
 	var hp := origin + hazard * CELL
 	lines.seg(hp - Vector2(6, 8), hp + Vector2(6, 8), Palette.MAGENTA, 0.0, 0.0, 1.8)
-	text(lines, "STANDINGS", Vector2(940, 70), 24, Palette.WHITE)
+	text(lines, "STANDINGS" if phase == "results" else "CUTTERS", Vector2(940, 70), 24, Palette.WHITE)
 	text(lines, "TOP %d %s" % [CUTS[round_index], "WIN" if round_index == 2 else "ADVANCE"], Vector2(940, 110), 13, Palette.GREEN)
-	text(lines, "H  O", Vector2(1480, 110), 11, Palette.DIM)
-	for i in standings.size():
-		var r := standings[i]
-		var y := 156.0 + i * 43.0
-		if i == CUTS[round_index]:
-			lines.seg(Vector2(936, y - 16), Vector2(1540, y - 16), Palette.RED)
-		var col := color(r.id)
-		if r.id == 0: lines.rect(Rect2(932, y - 8, 608, 33), Palette.CYAN, 0.0, 0.0, 0.8)
-		text(lines, "%02d  %s%s" % [i + 1, "> " if r.id == 0 else "", NAMES[r.id]], Vector2(940, y), 16, col)
-		if r.harden > 0.0:
-			text(lines, "H %.1fS" % r.harden, Vector2(1220, y + 2), 11, Palette.WHITE)
-		text(lines, "%.1f%%" % (100.0 * r.score / (owners.size() - racers.size() * 7)), Vector2(1430, y), 14, col, 2)
-		for a in 2:
-			var available := r.has_harden if a == 0 else r.has_drive
-			var active := r.harden > 0.0 if a == 0 else r.drive > 0.0
-			var pos := Vector2(1485 + a * 30, y + 6)
-			lines.circle(pos, 5, Palette.WHITE if active else (col if available else Palette.DIM), 4)
-			if available or active: lines.circle(pos, 2, col, 4)
+	if phase == "results":
+		draw_reveal(lines)
+	else:
+		draw_roster(lines)
 	var player := racer(0)
 	text(lines, "ARROWS MOVE   HOLD SPACE TO DRAW", Vector2(70, 786), 12, Palette.WHITE)
 	if player.harden > 0.0:
 		text(lines, "HARDENED  %.1fS" % player.harden, Vector2(846, 815), 13, Palette.WHITE, 2)
+	if phase != "results":
+		text(lines, "YOUR TERRITORY  %.1f%%" % percent(player), Vector2(846, 786), 13, Palette.CYAN, 2)
 	text(lines, "Q HARDEN %s   E OVERDRIVE %s" % ["1" if player.has_harden else "0", "1" if player.has_drive else "0"], Vector2(70, 815), 12, Palette.CYAN)
 	text(lines, "ESC MENU", Vector2(70, 846), 11, Palette.DIM)
 	if notice_time > 0.0: text(lines, notice, Vector2(458, 740), 12, Palette.YELLOW, 1)
@@ -559,7 +628,65 @@ func draw(lines: ScopeLines, fill: Sprite2D) -> void:
 			title = "QUALIFIED" if qualified() else "ELIMINATED"
 			if round_index == 2: title = "CHAMPION" if qualified() else "%s WINS" % NAMES[standings[0].id]
 			sub = "ENTER NEXT ROUND" if qualified() and round_index < 2 else "ENTER PLAY AGAIN"
+			if not reveal_complete():
+				title = "TIME" if phase_time < REVEAL_BEAT else "FINAL STANDINGS"
+				sub = "ENTER SKIP"
 		text(lines, title, Vector2(458, 130), 18, Palette.YELLOW, 1)
 		text(lines, sub, Vector2(458, 166), 12, Palette.WHITE, 1)
 	text(lines, "H HARDEN   O OVERDRIVE", Vector2(940, 724), 11, Palette.DIM)
 	text(lines, "TIES: BIGGEST CAPTURE, FEWEST FAILS, DRAW", Vector2(940, 754), 9, Palette.DIM)
+
+## Mid-round panel: every cutter in a fixed order with charges, no ranks, no cut line, no percentages.
+func draw_roster(lines: ScopeLines) -> void:
+	text(lines, "H  O", Vector2(1480, 110), 11, Palette.DIM)
+	for i in roster.size():
+		var r := roster[i]
+		var y := 156.0 + i * 43.0
+		var col := color(r.id)
+		if r.id == 0: lines.rect(Rect2(932, y - 8, 608, 33), Palette.CYAN, 0.0, 0.0, 0.8)
+		text(lines, "%s%s" % ["> " if r.id == 0 else "", NAMES[r.id]], Vector2(940, y), 16, col)
+		if r.harden > 0.0:
+			text(lines, "HARDENED %.1fS" % r.harden, Vector2(1180, y + 2), 11, Palette.WHITE)
+		elif r.drive > 0.0:
+			text(lines, "OVERDRIVE %.1fS" % r.drive, Vector2(1180, y + 2), 11, Palette.WHITE)
+		elif r.exposed:
+			text(lines, "CUTTING", Vector2(1180, y + 2), 11, Palette.DIM)
+		draw_charges(lines, r, y)
+
+func draw_charges(lines: ScopeLines, r: Racer, y: float) -> void:
+	var col := color(r.id)
+	for a in 2:
+		var available := r.has_harden if a == 0 else r.has_drive
+		var active := r.harden > 0.0 if a == 0 else r.drive > 0.0
+		var pos := Vector2(1485 + a * 30, y + 6)
+		lines.circle(pos, 5, Palette.WHITE if active else (col if available else Palette.DIM), 4)
+		if available or active: lines.circle(pos, 2, col, 4)
+
+## Buzzer panel: names wait in the left column, then slide one by one into their ranked slot.
+func draw_reveal(lines: ScopeLines) -> void:
+	var cut := mini(CUTS[round_index], standings.size())
+	for i in standings.size():
+		var y := 156.0 + i * 43.0
+		if i == cut and phase_time >= REVEAL_BEAT:
+			lines.seg(Vector2(1176, y - 16), Vector2(1540, y - 16), Palette.RED)
+		text(lines, "%02d" % (i + 1), Vector2(1180, y), 16, Palette.DIM)
+		lines.seg(Vector2(1230, y + 6), Vector2(1530, y + 6), Color(Palette.DIM, 0.35))
+	for i in roster.size():
+		var r := roster[i]
+		var col := color(r.id)
+		var from := Vector2(940, 156.0 + i * 43.0)
+		if not revealed(r.id):
+			col.a = 0.45
+			text(lines, NAMES[r.id], from, 16, col)
+			continue
+		var rank := standings.find(r)
+		var to := Vector2(1236, 156.0 + rank * 43.0)
+		var t: float = clampf((phase_time - reveal_time[r.id]) / 0.35, 0.0, 1.0)
+		t = t * t * (3.0 - 2.0 * t)
+		var pos := from.lerp(to, t)
+		if r.id == 0 and t >= 1.0:
+			lines.rect(Rect2(1172, to.y - 8, 368, 33), Palette.CYAN, 0.0, 0.0, 0.8)
+		text(lines, "%s%s" % ["> " if r.id == 0 else "", NAMES[r.id]], pos, 16, col)
+		if t >= 1.0:
+			var pct_col := Palette.GREEN if rank < cut else Palette.RED
+			text(lines, "%.1f%%" % percent(r), Vector2(1530, to.y), 14, pct_col, 2)
