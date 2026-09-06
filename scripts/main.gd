@@ -52,7 +52,7 @@ func _ready() -> void:
 		elif a == "--autotest=royale":
 			autotest = true
 			auto_mode = "royale"
-			shot_times = [4.0, 9.6, 12.5, 16.6]   # roster mid-round, buzzer beat, mid reveal, last slot + card
+			shot_times = [4.0, 12.5, 14.6, 16.6]   # roster mid-round, buzzer beat, mid reveal, last slot + card
 		elif a.begins_with("--autotest=boss"):
 			autotest = true
 			auto_mode = a.substr(11)   # boss, boss:belt, boss:deep

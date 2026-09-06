@@ -55,13 +55,13 @@ var texture_dirty := false
 var rng := RandomNumberGenerator.new()
 var turn := 0
 var roster: Array[Racer] = []       # fixed on-screen order during a round; no live ranking
-var reveal_order: Array[int] = []   # standings slots in the order the buzzer reveals them
+var reveal_order: Array = []        # groups of standings slots in the order the buzzer reveals them
 var reveal_count := 0
 var reveal_time: Dictionary = {}    # racer id -> phase_time when its slot was revealed
 var reveal_finish := INF
 const REVEAL_BEAT := 1.0
 const REVEAL_STEP := 0.4
-const REVEAL_HOLD := 1.2
+const REVEAL_HOLD := 1.6
 
 func start(seed_value := -1) -> void:
 	if seed_value < 0:
@@ -434,11 +434,14 @@ func finish_round() -> void:
 	reveal_time.clear()
 	reveal_count = 0
 	reveal_finish = INF
-	# Eliminated from the bottom up, then qualifiers from the top, saving the last slot for the end.
+	# Eliminated from the bottom up, then qualifiers from the top; the bubble (last in, first out)
+	# waits behind a longer hold and lands as one group so neither side gives the other away.
 	var cut := mini(CUTS[round_index], standings.size())
-	for i in range(standings.size() - 1, cut - 1, -1): reveal_order.append(i)
-	for i in range(0, cut - 1): reveal_order.append(i)
-	reveal_order.append(cut - 1)
+	for i in range(standings.size() - 1, cut, -1): reveal_order.append([i])
+	for i in range(0, cut - 1): reveal_order.append([i])
+	var bubble := [cut - 1]
+	if cut < standings.size(): bubble.append(cut)
+	reveal_order.append(bubble)
 	refresh_fill()
 
 func reveal_at(k: int) -> float:
@@ -447,8 +450,8 @@ func reveal_at(k: int) -> float:
 	return t
 
 func reveal_next() -> void:
-	var slot: int = reveal_order[reveal_count]
-	reveal_time[standings[slot].id] = phase_time
+	for slot in reveal_order[reveal_count]:
+		reveal_time[standings[slot].id] = phase_time
 	reveal_count += 1
 	if reveal_count == reveal_order.size():
 		reveal_finish = phase_time + 0.6
