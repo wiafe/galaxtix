@@ -6,7 +6,7 @@ class_name Ships
 const LIST := [
 	{"id": "surveyor", "name": "SURVEYOR", "cost": 0,
 		"rule": "CLASSIC RULES",
-		"desc": "RIDE THE COAST. CLOSE THE LOOP.",
+		"desc": "HOLD SPACE AND MOVE TO DRAW. RETURN TO SAFE GROUND TO CAPTURE AREA.",
 		"upgrades": [
 			{"id": "slip", "name": "SLIPSTREAM", "desc": "+10% SPEED WHILE DRAWING", "base": 4.0, "growth": 1.6, "max": 5},
 			{"id": "shield", "name": "SHIELD", "desc": "+0.5S SHIELD AFTER RESPAWN", "base": 3.0, "growth": 1.6, "max": 4},
@@ -14,14 +14,14 @@ const LIST := [
 		]},
 	{"id": "bulwark", "name": "BULWARK", "cost": 3,
 		"rule": "BREAKS: FRAGILE TRAIL",
-		"desc": "TRAIL HARDENS BEHIND YOU. LET GO OF SPACE TO BRACE: ROOTED, HARDENING X3. LOOPS SEAL WHEN IT CATCHES UP.",
+		"desc": "YOUR LINE HARDENS INTO A WALL. RELEASE SPACE TO HARDEN IT FASTER. CLOSED LOOPS CAPTURE ONCE HARDENED.",
 		"upgrades": [
 			{"id": "temper", "name": "TEMPER", "desc": "+1 CELL/S HARDENING", "base": 4.0, "growth": 1.6, "max": 5},
 			{"id": "front", "name": "FRONTLINE", "desc": "+2 CELLS HARDENED AT THE START", "base": 5.0, "growth": 1.7, "max": 3},
 		]},
 	{"id": "leaper", "name": "LEAPER", "cost": 8,
 		"rule": "BREAKS: THE PEN",
-		"desc": "HOLD SPACE TO AIM A BUOY, ARROWS TURN IT. RELEASE: LEAP. A WALL GROWS FROM THE BUOY AHEAD AND BACK. IT CAN BE CUT.",
+		"desc": "HOLD SPACE TO AIM; USE ARROWS TO TURN. RELEASE TO JUMP AND BUILD A WALL.",
 		"upgrades": [
 			{"id": "stride", "name": "STRIDE", "desc": "+25% LINE BUILD SPEED", "base": 4.0, "growth": 1.6, "max": 3},
 			{"id": "arm", "name": "LONG ARM", "desc": "+5 CELLS MAX LINE", "base": 3.0, "growth": 1.6, "max": 4},
@@ -30,7 +30,7 @@ const LIST := [
 		]},
 	{"id": "lancer", "name": "LANCER", "cost": 10,
 		"rule": "BREAKS: THE WALK",
-		"desc": "SPACE: LANCE A TETHER AHEAD, RIDE IT TO LAND. NEVER WALKS THE VOID.",
+		"desc": "PRESS SPACE TO FIRE A LINE AND RIDE IT TO SAFE GROUND.",
 		"upgrades": [
 			{"id": "cap", "name": "CAPACITOR", "desc": "-1S LANCE RECHARGE", "base": 4.0, "growth": 1.7, "max": 4},
 			{"id": "rails", "name": "RAILS", "desc": "+50% RIDE SPEED", "base": 4.0, "growth": 1.6, "max": 3},
@@ -39,7 +39,7 @@ const LIST := [
 		]},
 	{"id": "sapper", "name": "SAPPER", "cost": 8,
 		"rule": "BREAKS: NO TRAIL",
-		"desc": "ROAMS THE VOID WITH NO LINE. HOLD SPACE: A DISC GROWS. IT CAN BE HIT. RELEASE TO CLAIM.",
+		"desc": "MOVE ANYWHERE. HOLD SPACE TO GROW A CIRCLE. RELEASE TO CAPTURE IT.",
 		"upgrades": [
 			{"id": "payload", "name": "PAYLOAD", "desc": "+1 CELL MAX DISC", "base": 4.0, "growth": 1.7, "max": 4},
 			{"id": "quick", "name": "QUICK FUSE", "desc": "+25% CHARGE RATE", "base": 5.0, "growth": 1.8, "max": 3},

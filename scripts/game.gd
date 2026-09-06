@@ -26,15 +26,15 @@ const OFFS8 := [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)
 const QIX_COLORS := [Palette.MAGENTA, Palette.PURPLE, Palette.BLUE, Palette.CYAN,
 	Palette.GREEN, Palette.YELLOW, Palette.ORANGE, Palette.RED]
 
-enum State { DOCK, PLAYING, DYING, LEVEL_CLEAR, RUN_OVER, INTRO, REPORT, OUTRO, TITLE, TRANSIT }
+enum State { DOCK, PLAYING, DYING, LEVEL_CLEAR, RUN_OVER, INTRO, REPORT, OUTRO, TITLE, TRANSIT, BATTLE_ROYALE }
 
 const TRANSIT_LEN := 3.2        # from the dock
 const TRANSIT_SHORT := 2.2      # between sectors
 
 ## Title menu. TUBE (the FX lab) is a development tool: it only exists when running from the
 ## editor and the lab files are excluded from exports.
-var TITLE_ITEMS: Array[String] = ["JUMP", "LOG", "QUIT"]
-var TITLE_DESCS: Array[String] = ["TO THE DOCK", "JUMP LOG", "POWER DOWN"]
+var TITLE_ITEMS: Array[String] = ["JUMP", "BATTLE ROYALE", "LOG", "QUIT"]
+var TITLE_DESCS: Array[String] = ["TO THE DOCK", "12 CUTTERS. THREE ROUNDS. ONE WINNER.", "JUMP LOG", "POWER DOWN"]
 
 const INTRO_LEN := 2.6
 const INTRO_QIX_T := 1.4
@@ -71,10 +71,12 @@ var fill_tex: ImageTexture
 
 var cells := PackedByteArray()
 var border := PackedByteArray()
+var border_cells: Array[Vector2i] = []
 var coast := PackedVector2Array()
 var reach := PackedByteArray()
 var stack := PackedInt32Array()
 var base_free := 0
+var field_arena: Dictionary = {}
 var field_shape: Array = []    # Rect2i cutouts (cells) pre-claimed for this sector
 var free_count := 0
 
@@ -97,6 +99,9 @@ var respawn_cell := Vector2i.ZERO
 var last_dir := Vector2i.RIGHT
 
 # run
+var battle_fill: Sprite2D
+var battle: BattleRoyale
+var result_selection := 0
 var state := State.DOCK
 var level := 1
 var run_flux := 0.0
@@ -106,9 +111,15 @@ var shake_off := Vector2.ZERO
 var time := 0.0
 var frame := 0
 var msg := ""
+var msg_currency := -1
+var msg_amount := ""
 var msg_t := 0.0
 var msg_dur := 1.0
 var dock_sel := 0
+var dock_upgrade_scroll := 0
+var dock_tab := 0
+var dock_loadout_sel := 0
+var dock_saved_upgrade := 3
 var qixes: Array = []
 var sparxes: Array = []
 var sparx_spawn_t := 0.0
@@ -286,6 +297,12 @@ func setup(p_lines: ScopeLines, p_sparks: Sparks, p_fill: Sprite2D) -> void:
 	var m := CanvasItemMaterial.new()
 	m.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
 	fill.material = m
+	battle_fill = Sprite2D.new()
+	battle_fill.centered = false
+	battle_fill.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	battle_fill.material = m
+	battle_fill.visible = false
+	fill.get_parent().add_child(battle_fill)
 	fill.modulate = Color(Palette.CYAN.r, Palette.CYAN.g, Palette.CYAN.b, 0.16)
 	cells.resize(N * N)
 	border.resize(N * N)
@@ -322,13 +339,21 @@ func cell_blocked(c: Vector2i) -> bool:
 
 
 func claimed_frac() -> float:
-	return 1.0 - float(free_count) / float(base_free)
+	return 1.0 - float(free_count) / float(maxi(1, base_free))
 
 
 func reset_field(rim: int) -> void:
 	seals.clear()
 	islands.clear()
 	buoy_flights.clear()
+	if not field_arena.is_empty():
+		var mask: PackedByteArray = field_arena.mask
+		for i in N * N:
+			cells[i] = ROCK if mask[i] == 0 else (CLAIMED if mask[i] == 1 else FREE)
+		base_free = field_arena.base_free
+		free_count = field_arena.free_cells.size()
+		grid_changed()
+		return
 	var r := 1 + rim
 	for y in N:
 		for x in N:
@@ -403,6 +428,7 @@ func grid_changed() -> void:
 
 
 func recompute_border() -> void:
+	border_cells.clear()
 	for y in N:
 		for x in N:
 			var i := idx(x, y)
@@ -411,17 +437,19 @@ func recompute_border() -> void:
 				for o in OFFS8:
 					var nx: int = x + o.x
 					var ny: int = y + o.y
-					if nx >= 0 and ny >= 0 and nx < N and ny < N and cells[idx(nx, ny)] != CLAIMED:
+					if nx >= 0 and ny >= 0 and nx < N and ny < N and cells[idx(nx, ny)] != CLAIMED and cells[idx(nx, ny)] != ROCK:
 						b = 1
 						break
 			border[i] = b
+			if b == 1:
+				border_cells.append(Vector2i(x, y))
 
 
 func _open(x: int, y: int) -> bool:
 	if x < 0 or y < 0 or x >= N or y >= N:
 		return false
 	var v := cells[idx(x, y)]
-	return v != CLAIMED and v != HARD
+	return v != CLAIMED and v != HARD and v != ROCK
 
 
 func rebuild_coast() -> void:
@@ -454,11 +482,12 @@ func rebuild_coast() -> void:
 
 
 func update_fill() -> void:
+	var dither := int(cur_gal().dither)
 	for y in N:
 		for x in N:
 			if cells[idx(x, y)] == CLAIMED:
 				var on := false
-				match int(cur_gal().dither):
+				match dither:
 					0: on = ((x + y) & 1) == 0          # checker
 					1: on = (y & 1) == 0                # scanline stripes
 					_: on = (x & 1) == 0 and (y & 1) == 0   # dots
@@ -473,10 +502,14 @@ func update_fill() -> void:
 # ------------------------------------------------------------------ run flow
 func go_dock() -> void:
 	state = State.DOCK
+	dock_tab = 0
+	dock_sel = 0
+	dock_loadout_sel = 0
 	lines.zoom = Vector2.ONE
 	surv_scale = 1.0
 	set_field_x(FX_DOCK)
 	field_shape = []
+	field_arena = {}
 	reset_field(0)
 	trail.clear()
 	drawing = false
@@ -485,12 +518,12 @@ func go_dock() -> void:
 	Save.save_data()
 
 
-func start_run() -> void:
+func start_run(retry_sector := 0) -> void:
 	gal = Galaxies.get_galaxy(Save.data.galaxy)
 	ship = Ships.get_ship(Save.data.ship) if Ships.owned(Save.data.ship) else Ships.LIST[0]
 	lines.zoom = Vector2.ONE
 	run_isotope = 0
-	level = clampi(int(Save.data.start_sector), 1, max_start(gal.id))
+	level = retry_sector if retry_sector > 0 else clampi(int(Save.data.start_sector), 1, max_start(gal.id))
 	endless = level > Galaxies.LENGTH
 	run_victory = false
 	run_flux = 0.0
@@ -508,9 +541,9 @@ func start_run() -> void:
 func start_level() -> void:
 	var lay := sector_layout(gal, level, Save.rim())
 	field_shape = lay.shape
+	field_arena = lay.arena
 	reset_field(Save.rim())
-	var r := 1 + Save.rim()
-	p = Vector2i(N / 2, r - 1)
+	p = lay.start
 	vis = center(p)
 	drawing = false
 	trail.clear()
@@ -557,6 +590,7 @@ func start_level() -> void:
 func end_run() -> void:
 	Save.data.runs = int(Save.data.runs) + 1
 	Save.data.best_level = maxi(int(Save.data.best_level), level)
+	result_selection = 0
 	state = State.OUTRO
 	seq_t = 0.0
 	outro_fx_done = false
@@ -567,6 +601,7 @@ func end_run() -> void:
 
 
 func set_msg(s: String, dur: float) -> void:
+	msg_currency = -1
 	msg = s
 	msg_t = dur
 	msg_dur = dur
@@ -583,7 +618,7 @@ func update(dt: float) -> void:
 	beacon_note_t -= dt
 	pane_t += dt
 	if state == State.DOCK:
-		var key := "%s|%d|%s" % [Save.data.galaxy, int(Save.data.start_sector), Save.data.ship]
+		var key := "%s|%d|%s|%d" % [Save.data.galaxy, int(Save.data.start_sector), Save.data.ship, Save.rim()]
 		if key != pane_key:
 			pane_key = key
 			pane_t = 0.0
@@ -591,6 +626,8 @@ func update(dt: float) -> void:
 			scan_layout = sector_layout(g, clampi(int(Save.data.start_sector), 1, max_start(g.id)), Save.rim())
 	sparks.update(dt)
 	match state:
+		State.BATTLE_ROYALE:
+			if battle.update(dt): go_title()
 		State.DOCK:
 			update_dock()
 			for q in qixes:
@@ -631,12 +668,16 @@ func update(dt: float) -> void:
 			update_title(dt)
 
 
+func arena_enemy_mult() -> float:
+	return SectorArena.enemy_mult(gal.id, level)
+
+
 func qix_speed() -> float:
-	return 70.0 * pow(1.10, level - 1) * Save.qix_mult() * float(gal.qix_mult)
+	return 70.0 * pow(1.10, level - 1) * float(gal.qix_mult) * arena_enemy_mult()
 
 
 func sparx_speed() -> float:
-	return (7.0 + level * 0.7) * Save.sparx_mult()
+	return (7.0 + level * 0.7) * arena_enemy_mult()
 
 
 func read_input() -> Dictionary:
@@ -1191,6 +1232,7 @@ func explode(pos: Vector2) -> void:
 # ------------------------------------------------------------------ anomaly
 func spawn_qix() -> void:
 	var q := QixBody.new()
+	q.len = 80.0 * SectorArena.anomaly_size_mult(gal.id, level)
 	q.c = Vector2(FX + N * CELL * randf_range(0.35, 0.65), FY + N * CELL * randf_range(0.35, 0.65))
 	for tries in 40:
 		# keep it out of the sector's cutouts
@@ -1202,6 +1244,15 @@ func spawn_qix() -> void:
 	q.theta = randf() * TAU
 	q.omega = randf_range(1.5, 3.0) * (1.0 if randf() < 0.5 else -1.0)
 	q.col_off = randi() % 8
+	if not field_arena.is_empty():
+		# Validate the whole beam, especially with a thick purchased rim in a small arena.
+		q.c = center(Vector2i(N / 2, N / 2))
+		for attempt in 64:
+			var candidate: Vector2i = field_arena.free_cells[randi() % field_arena.free_cells.size()]
+			var point := center(candidate)
+			if not qix_blocked(point, q.theta, q.len):
+				q.c = point
+				break
 	qixes.append(q)
 
 
@@ -1236,9 +1287,9 @@ func update_qix(q: QixBody, dt: float, speed: float) -> void:
 		q.omega = randf_range(1.0, 3.5) * (1.0 if randf() < 0.5 else -1.0)
 		q.v = q.v.rotated(randf_range(-1.2, 1.2))
 	q.v = q.v.rotated(randf_range(-1.5, 1.5) * dt).normalized() * speed
-	q.len = 70.0 + 30.0 * sin(time * 1.3 + q.col_off)
+	q.len = (70.0 + 30.0 * sin(time * 1.3 + q.col_off)) * SectorArena.anomaly_size_mult(gal.id, level)
 	var nc := q.c + q.v * dt
-	var nt := q.theta + q.omega * dt
+	var nt := q.theta + q.omega * arena_enemy_mult() * dt
 	if not qix_blocked(nc, nt, q.len):
 		q.c = nc
 		q.theta = nt
@@ -1254,7 +1305,7 @@ func update_qix(q: QixBody, dt: float, speed: float) -> void:
 				break
 		if not ok:
 			q.omega = -q.omega
-			nt = q.theta + q.omega * dt
+			nt = q.theta + q.omega * arena_enemy_mult() * dt
 			if not qix_blocked(q.c, nt, q.len * 0.9):
 				q.theta = nt
 			else:
@@ -1272,10 +1323,10 @@ func spawn_sparx() -> void:
 	var s := SparxBody.new()
 	var best := Vector2i(-1, -1)
 	var best_d := -1
+	if border_cells.is_empty():
+		return
 	for tries in 60:
-		var c := Vector2i(randi() % N, randi() % N)
-		if border[idx(c.x, c.y)] == 0:
-			continue
+		var c := border_cells[randi() % border_cells.size()]
 		var d := maxi(absi(c.x - p.x), absi(c.y - p.y))
 		if d > best_d:
 			best_d = d
@@ -1352,7 +1403,7 @@ func dock_ship_confirm() -> void:
 		lines.spike(3.0, 0.4)
 		sparks.burst(Vector2(PANEL_X + 330, 244), 60, 200.0, 1.5, 0.7, Palette.CYAN)
 	else:
-		set_msg("NEED %d ISO" % int(Ships.get_ship(id).cost), 1.2)
+		set_currency_ask(Ships.get_ship(id).cost, true)
 		lines.spike(1.0, 0.2)
 
 
@@ -1406,6 +1457,22 @@ func fmt(v: float) -> String:
 
 
 func draw() -> void:
+	battle_fill.visible = false
+	if state == State.BATTLE_ROYALE:
+		fill.visible = false
+		battle.draw(lines, battle_fill)
+		return
+	if state == State.DOCK:
+		fill.visible = false
+		draw_dock_field()
+		draw_dock_panel()
+		sparks.draw(lines)
+		if msg_t > 0.0:
+			if msg_currency >= 0:
+				draw_currency_caption(msg, msg_amount, msg_currency == 1, Vector2(800, 712))
+			else:
+				VectorFont.draw(lines, msg, Vector2(800, 705), 14, Palette.YELLOW, 0.0, 0.0, 1)
+		return
 	fill.visible = state != State.OUTRO and state != State.TRANSIT and not (state == State.TITLE and title_t < 0.85)
 	if state == State.TRANSIT:
 		draw_transit()
@@ -1428,10 +1495,8 @@ func draw() -> void:
 			lines.seg(coast[i], coast[i + 1], cc, 0.7, 0.15, 1.0)
 		if state == State.TITLE:
 			draw_title_field()
-		elif state != State.DOCK:
-			draw_play()
 		else:
-			draw_dock_field()
+			draw_play()
 		for q in qixes:
 			draw_qix(q)
 		if boss_bond and qixes.size() >= 2:
@@ -1453,8 +1518,6 @@ func draw() -> void:
 	draw_panel_header()
 	if state == State.TITLE:
 		draw_title_panel()
-	elif state == State.DOCK:
-		draw_dock_panel()
 	else:
 		draw_hud()
 
@@ -1722,19 +1785,13 @@ func draw_hud() -> void:
 		VectorFont.draw(lines, help[i], Vector2(lx, hy + i * 16.0), 10, Palette.DIM, 0.3, 0.1)
 	# --- right column: earnings, the sector's threats, the keys
 	y = 116.0
-	VectorFont.draw(lines, "FLUX %s" % fmt(Save.data.flux), Vector2(rx, y), 18, Palette.GREEN, 0.6, 0.25)
-	y += 26
-	VectorFont.draw(lines, "ISO %d" % int(Save.data.isotope), Vector2(rx, y), 14, Palette.CYAN, 0.6, 0.25)
-	VectorFont.draw(lines, "+%s THIS JUMP" % fmt(run_flux), Vector2(rx + w, y), 11, Palette.LIME, 0.5, 0.2, 2)
-	y += 48
+	draw_dock_currency(Vector2(rx + 12, y + 8), fmt(Save.data.flux), false)
+	draw_dock_currency(Vector2(rx + 170, y + 8), str(int(Save.data.isotope)), true)
+	y += 52
 	var nc := Palette.YELLOW if sector_nodes_captured < nodes.size() else Palette.GREEN
 	VectorFont.draw(lines, "NODES %d/%d" % [sector_nodes_captured, nodes.size()], Vector2(rx, y), 14, nc, 0.5, 0.2)
-	VectorFont.draw(lines, "WORTH %d EACH" % node_value(), Vector2(rx, y + 20), 10, nc, 0.4, 0.12)
-	y += 52
-	VectorFont.draw(lines, "SPARX %d" % sparxes.size(), Vector2(rx, y), 12, Palette.DIM, 0.4, 0.1)
-	VectorFont.draw(lines, "ANOMALY SPEED %d" % int(qix_speed()), Vector2(rx, y + 20), 12, Palette.DIM, 0.4, 0.1)
 	if level == Galaxies.LENGTH and not endless:
-		VectorFont.draw(lines, "BOSS: " + String(gal.boss_name), Vector2(rx, y + 44), 12, Palette.RED, 0.6, 0.2)
+		VectorFont.draw(lines, "BOSS: " + String(gal.boss_name), Vector2(rx, y + 40), 12, Palette.RED, 0.6, 0.2)
 	var keys := ["ARROWS  MOVE", verb.replace(" ", "  "), "SHIFT  SLOW", "ESC  ABORT"]
 	var ky := 866.0 - keys.size() * 16.0
 	lines.seg(Vector2(rx, ky - 14), Vector2(rx + w, ky - 14), Palette.DIM, 0.3, 0.1, 0.7)
@@ -2295,20 +2352,22 @@ func sector_layout(g: Dictionary, lvl: int, rim: int) -> Dictionary:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = hash("%s:%d" % [g.id, lvl])
 	var r := 1 + rim
-	var occupied: Array = [Vector2i(N / 2, r - 1)]
+	var arena := SectorArena.build(lvl, rim) if g.id == "helix" and lvl <= Galaxies.LENGTH else {}
+	var start: Vector2i = arena.start if not arena.is_empty() else Vector2i(N / 2, r - 1)
+	var occupied: Array = [start]
 	var shape := sector_shape(g, lvl, rng)
-	var out := {"nodes": [], "turrets": [], "spawners": [], "shape": shape}
+	var out := {"nodes": [], "turrets": [], "spawners": [], "shape": shape, "arena": arena, "start": start}
 	for i in mini(6, 3 + (lvl - 1) / 3):
-		var c := layout_pick(rng, r + 10, occupied, 26.0, shape)
+		var c := layout_pick(rng, r + 10, occupied, 26.0, shape, arena)
 		occupied.append(c)
 		var rare: bool = lvl >= 2 and rng.randf() < 0.12 + 0.06 * Galaxies.index_of(g.id)
 		out.nodes.append({"cell": c, "rare": rare})
 	for i in Galaxies.turret_count(g, lvl):
-		var c := layout_pick(rng, r + 8, occupied, 22.0, shape)
+		var c := layout_pick(rng, r + 8, occupied, 22.0, shape, arena)
 		occupied.append(c)
 		out.turrets.append({"cell": c, "axis": Vector2i.RIGHT if (i % 2) == 0 else Vector2i.DOWN})
 	for i in Galaxies.spawner_count(g, lvl):
-		var c := layout_pick(rng, r + 8, occupied, 22.0, shape)
+		var c := layout_pick(rng, r + 8, occupied, 22.0, shape, arena)
 		occupied.append(c)
 		out.spawners.append({"cell": c})
 	return out
@@ -2343,11 +2402,13 @@ func sector_shape(g: Dictionary, lvl: int, rng: RandomNumberGenerator) -> Array:
 	return rects
 
 
-func layout_pick(rng: RandomNumberGenerator, margin: int, avoid: Array, want_d: float, shape: Array = []) -> Vector2i:
+func layout_pick(rng: RandomNumberGenerator, margin: int, avoid: Array, want_d: float, shape: Array = [], arena: Dictionary = {}) -> Vector2i:
 	var best := Vector2i(N / 2, N / 2)
 	var best_d := -1.0
 	for tries in 60:
 		var c := Vector2i(rng.randi_range(margin, N - 1 - margin), rng.randi_range(margin, N - 1 - margin))
+		if not arena.is_empty():
+			c = arena.free_cells[rng.randi_range(0, arena.free_cells.size() - 1)]
 		var inside := false
 		for rc in shape:
 			if (rc as Rect2i).grow(3).has_point(c):
@@ -2434,12 +2495,26 @@ func draw_ability_ring() -> void:
 # ------------------------------------------------------------------ title screen
 ## The tube powers on (dot, line, picture: the outro in reverse), the title plots itself in
 ## over a drifting Lissajous with the Anomaly prowling behind it, and a four-item menu waits.
+func start_battle_royale() -> void:
+	battle = BattleRoyale.new()
+	battle.start()
+	state = State.BATTLE_ROYALE
+	lines.zoom = Vector2.ONE
+	shake = 0.0
+	qixes.clear()
+	sparxes.clear()
+	trail.clear()
+	drawing = false
+
+
 func go_title() -> void:
+	field_arena = {}
+	field_shape = []
 	state = State.TITLE
 	set_field_x(FX_DOCK)
 	if OS.has_feature("editor") and not TITLE_ITEMS.has("TUBE"):
-		TITLE_ITEMS.insert(1, "TUBE")
-		TITLE_DESCS.insert(1, "TUNE THE TUBE (DEV)")
+		TITLE_ITEMS.insert(2, "TUBE")
+		TITLE_DESCS.insert(2, "TUNE THE TUBE (DEV)")
 	reset_field(0)
 	trail.clear()
 	drawing = false
@@ -2483,6 +2558,8 @@ func update_title(dt: float) -> void:
 				"JUMP":
 					go_dock()
 					pane_t = 0.0
+				"BATTLE ROYALE":
+					start_battle_royale()
 				"TUBE":
 					get_tree().change_scene_to_file("res://scenes/fx_lab.tscn")
 				"QUIT":
@@ -2499,16 +2576,20 @@ func update_title(dt: float) -> void:
 	if Input.is_action_just_pressed("abort") and show_log:
 		show_log = false
 	if Input.is_action_just_pressed("confirm") or Input.is_action_just_pressed("launch"):
-		if TITLE_ITEMS[title_sel] == "LOG":
-			show_log = not show_log
-			lines.spike(1.5, 0.3)
-			return
-		title_exit = title_sel
-		title_exit_t = 0.0
-		for pth in title_paths():
-			sparks.zap_polyline(pth, Palette.CYAN, 2600.0, 5.0)
-		lines.spike(4.0, 0.5)
-		shake = maxf(shake, 0.4)
+		activate_title_item()
+
+
+func activate_title_item() -> void:
+	if TITLE_ITEMS[title_sel] == "LOG":
+		show_log = not show_log
+		lines.spike(1.5, 0.3)
+		return
+	title_exit = title_sel
+	title_exit_t = 0.0
+	for pth in title_paths():
+		sparks.zap_polyline(pth, Palette.CYAN, 2600.0, 5.0)
+	lines.spike(4.0, 0.5)
+	shake = maxf(shake, 0.4)
 
 
 func draw_title_field() -> void:
@@ -2935,7 +3016,7 @@ func draw_panel_header() -> void:
 func begin_intro(full: bool) -> void:
 	if full:
 		# the ship in the bay bursts off the drawing board
-		for pth in Hulls.paths(ship.id, BAY.position + Vector2(208, 250), 85.0, time * 0.7, 0.4):
+		for pth in Hulls.paths(ship.id, BAY.position + Vector2(208, 190), 85.0, time * 0.7, 0.4):
 			sparks.zap_polyline(pth, Palette.CYAN, 2200.0, 5.0)
 		lines.spike(3.0, 0.4)
 	start_level()
@@ -3021,11 +3102,51 @@ func update_outro(dt: float) -> void:
 			outro_fx_done = true
 			sparks.ripple(lines.zoom_center, 2.0, 500.0, 0.7, Palette.FULLBRIGHT)
 			sparks.burst(lines.zoom_center, 40, 160.0, 2.0, 0.8, Palette.WHITE)
-		var done_t := OUTRO_CARD_T + 3.4
-		if seq_t > OUTRO_CARD_T + 1.0 and (seq_skip_pressed() or Input.is_action_just_pressed("launch")):
-			go_dock()
-		elif autopilot and seq_t > done_t + 2.0:
-			go_dock()
+		if seq_t > OUTRO_CARD_T + 1.0:
+			if Input.is_action_just_pressed("move_left") or Input.is_action_just_pressed("move_right"):
+				result_selection = 1 - result_selection
+			if Input.is_action_just_pressed("confirm") or Input.is_action_just_pressed("launch"):
+				activate_result(result_selection)
+			elif Input.is_action_just_pressed("abort"):
+				go_dock()
+			elif autopilot and seq_t > OUTRO_CARD_T + 5.4:
+				go_dock()
+
+
+func result_button(index: int) -> Rect2:
+	return Rect2(510 + index * 310, 660, 270, 56)
+
+
+func activate_result(index: int) -> void:
+	if index == 0:
+		go_dock()
+		dock_sel = 2
+		switch_dock_tab()
+	else:
+		start_run(level)
+
+
+func _input(event: InputEvent) -> void:
+	if state == State.TITLE and title_t >= 1.0 and title_exit < 0 and not show_log:
+		if event is InputEventMouseMotion or event is InputEventMouseButton:
+			for i in TITLE_ITEMS.size():
+				if Rect2(PANEL_X, 194 + i * 84, PANEL_W, 72).has_point(event.position):
+					title_sel = i
+					if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+						activate_title_item()
+						get_viewport().set_input_as_handled()
+					return
+
+	if state != State.OUTRO or seq_t <= OUTRO_CARD_T + 1.0:
+		return
+	if event is InputEventMouseMotion or event is InputEventMouseButton:
+		for i in 2:
+			if result_button(i).has_point(event.position):
+				result_selection = i
+				if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+					activate_result(i)
+					get_viewport().set_input_as_handled()
+				return
 
 
 func typed(text: String, t0: float, cps := 40.0) -> String:
@@ -3107,34 +3228,29 @@ func draw_report_card() -> void:
 
 func draw_outro_card() -> void:
 	var cx := 800.0
-	var y := 230.0
 	var t := seq_t - OUTRO_CARD_T
-	lines.rect(Rect2(cx - 330, y - 40, 660, 480), Palette.DIM, 0.4, 0.1, 0.8)
 	var title := "GALAXY SECURED" if run_victory else "SIGNAL LOST"
-	lines.trace(VectorFont.paths(title, Vector2(cx, y), 34, 1, VectorFont.display), clampf(t / 0.5, 0.0, 1.0), Palette.GREEN if run_victory else Palette.RED, 1.2, 0.4, 1.3)
-	y += 76
-	var rows := [
-		["SECTORS SECURED", str(run_sectors), Palette.CYAN],
-		["NODES CAPTURED", str(run_nodes), Palette.YELLOW],
-		["HAZARDS SILENCED", str(run_hazards), Palette.ORANGE],
-		["ISOTOPE FOUND", "+%d" % run_isotope, Palette.CYAN],
-		["STARCHARTS", ("+1  (%d)" % int(Save.data.starcharts)) if run_victory else str(int(Save.data.starcharts)), Palette.YELLOW],
-		["BEST CLAIM", "%d%%" % int(run_best_claim * 100.0), Palette.CYAN],
-		["HULL LOST", str(run_deaths), Palette.ORANGE],
-		["FLUX CAPTURED", "+" + fmt(run_flux), Palette.GREEN],
-	]
+	lines.trace(VectorFont.paths(title, Vector2(cx, 230), 34, 1, VectorFont.display), clampf(t / 0.5, 0.0, 1.0), Palette.GREEN if run_victory else Palette.RED, 1.2, 0.4, 1.3)
+	var rows := [["SECTORS CLEARED", str(run_sectors)], ["BEST CAPTURE", "%d%%" % int(run_best_claim * 100.0)]]
 	for i in rows.size():
-		var t0 := OUTRO_CARD_T + 0.5 + i * 0.35
-		VectorFont.draw(lines, typed(rows[i][0], t0), Vector2(cx - 290, y), 15, Palette.WHITE, 0.4, 0.15)
-		VectorFont.draw(lines, typed(rows[i][1], t0 + 0.25), Vector2(cx + 290, y), 15, rows[i][2], 0.4, 0.15, 2)
-		y += 40
-	var t_total := OUTRO_CARD_T + 0.5 + rows.size() * 0.35 + 0.2
-	if seq_t > t_total:
-		lines.seg(Vector2(cx - 290, y - 8), Vector2(cx + 290, y - 8), Palette.DIM, 0.3, 0.1, 0.7)
-		VectorFont.draw(lines, "FLUX BANKED", Vector2(cx - 290, y + 6), 18, Palette.WHITE, 0.5, 0.2)
-		VectorFont.draw(lines, fmt(Save.data.flux), Vector2(cx + 290, y + 6), 18, Palette.YELLOW, 0.6, 0.25, 2)
-	if seq_t > t_total + 0.6 and fmod(time, 1.0) < 0.65:
-		VectorFont.draw(lines, "SPACE   RETURN TO DOCK", Vector2(cx, y + 70), 13, Palette.DIM, 0.5, 0.2, 1)
+		VectorFont.draw(lines, rows[i][0], Vector2(510, 320 + i * 44), 15, Palette.WHITE)
+		VectorFont.draw(lines, rows[i][1], Vector2(1090, 320 + i * 44), 15, Palette.CYAN, 0.4, 0.15, 2)
+	lines.seg(Vector2(510, 418), Vector2(1090, 418), Palette.DIM)
+	VectorFont.draw(lines, "EARNED", Vector2(510, 456), 15, Palette.WHITE)
+	draw_dock_currency(Vector2(820, 463), "+" + fmt(run_flux), false)
+	draw_dock_currency(Vector2(980, 463), "+%d" % run_isotope, true)
+	VectorFont.draw(lines, "BALANCE", Vector2(510, 508), 15, Palette.WHITE)
+	draw_dock_currency(Vector2(820, 515), fmt(Save.data.flux), false)
+	draw_dock_currency(Vector2(980, 515), str(int(Save.data.isotope)), true)
+	if run_victory:
+		VectorFont.draw(lines, "+1 STAR CHART", Vector2(cx, 578), 15, Palette.YELLOW, 0.5, 0.2, 1)
+	if t > 1.0:
+		for i in 2:
+			var rect := result_button(i)
+			var col := Palette.CYAN if result_selection == i else Palette.DIM
+			lines.rect(rect, col, 0.5, 0.2, 1.2)
+			VectorFont.draw(lines, "UPGRADES" if i == 0 else "RESTART", rect.get_center() - Vector2(0, 8), 16, col, 0.5, 0.2, 1)
+		VectorFont.draw(lines, "LEFT/RIGHT CHOOSE   ENTER SELECT   ESC DOCK", Vector2(cx, 746), 11, Palette.DIM, 0.4, 0.1, 1)
 
 
 # ------------------------------------------------------------------ transit (dock -> sector)
@@ -3146,7 +3262,7 @@ func begin_transit(from_dock: bool) -> void:
 		return
 	transit_len = TRANSIT_LEN if from_dock else TRANSIT_SHORT
 	if from_dock:
-		for pth in Hulls.paths(ship.id, BAY.position + Vector2(208, 250), 85.0, time * 0.7, 0.4):
+		for pth in Hulls.paths(ship.id, BAY.position + Vector2(208, 190), 85.0, time * 0.7, 0.4):
 			sparks.zap_polyline(pth, Palette.CYAN, 2200.0, 5.0)
 		lines.spike(3.0, 0.4)
 	lines.zoom = Vector2.ONE
@@ -3406,10 +3522,11 @@ func qix_near(q: QixBody, pt: Vector2, r: float) -> bool:
 
 
 # ------------------------------------------------------------------ dock
-const CHART := Rect2(40, 34, 832, 300)
-const SCAN := Rect2(40, 350, 400, 516)
-const BAY := Rect2(456, 350, 416, 516)
+const CHART := Rect2(200, 205, 1200, 440)
+const SCAN := Rect2(600, 190, 400, 516)
+const BAY := Rect2(592, 205, 416, 400)
 const DOCK_FIXED_ROWS := 3
+
 
 
 func dock_rows() -> int:
@@ -3430,44 +3547,52 @@ func dock_upgrade_at(row: int) -> Array:
 	return []
 
 
+func dock_navigation_rows() -> Array:
+	if dock_tab == 0:
+		return [0, 1, 2]
+	return range(DOCK_FIXED_ROWS, dock_rows() - 1)
+
+
+func switch_dock_tab() -> void:
+	if dock_tab == 0 and dock_sel != 2:
+		return
+	if dock_tab == 0:
+		dock_loadout_sel = dock_sel
+		dock_tab = 1
+		dock_sel = clampi(dock_saved_upgrade, DOCK_FIXED_ROWS, dock_rows() - 2)
+	else:
+		dock_saved_upgrade = dock_sel
+		dock_tab = 0
+		dock_sel = clampi(dock_loadout_sel, 0, 2)
+	pane_t = 0.0
+
+
 func update_dock() -> void:
-	var rows := dock_rows()
+	if Input.is_action_just_pressed("tab"):
+		switch_dock_tab()
+		return
 	if Input.is_action_just_pressed("abort"):
-		go_title()
-		return
-	if Input.is_action_just_pressed("move_up"):
-		dock_sel = (dock_sel - 1 + rows) % rows
-	if Input.is_action_just_pressed("move_down"):
-		dock_sel = (dock_sel + 1) % rows
-	var lr := 0
-	if Input.is_action_just_pressed("move_left"):
-		lr = -1
-	elif Input.is_action_just_pressed("move_right"):
-		lr = 1
-	if lr != 0:
-		if dock_sel == 0:
-			dock_galaxy_step(lr)
-		elif dock_sel == 1:
-			dock_sector_step(lr)
-		elif dock_sel == 2:
-			dock_ship_step(lr)
-	var confirm := Input.is_action_just_pressed("confirm")
-	if Input.is_action_just_pressed("launch") or (confirm and dock_sel == rows - 1):
-		if Galaxies.unlocked(Save.data.galaxy):
-			start_run()
+		if dock_tab == 1:
+			switch_dock_tab()
+		elif dock_sel > 0:
+			dock_sel -= 1
+			pane_t = 0.0
 		else:
-			set_msg("LOCKED: " + Galaxies.unlock_hint(Save.data.galaxy), 1.6)
-			lines.spike(1.0, 0.2)
+			go_title()
 		return
-	if confirm and dock_sel == 0:
-		dock_galaxy_step(1)
-	elif confirm and dock_sel == 1:
-		dock_sector_step(1)
-	elif confirm and dock_sel == 2:
-		dock_ship_confirm()
-	elif confirm and dock_sel >= DOCK_FIXED_ROWS and dock_sel < rows - 1:
+	if dock_tab == 0:
+		update_dock_step()
+		return
+	var choices := dock_navigation_rows()
+	var index := maxi(0, choices.find(dock_sel))
+	if Input.is_action_just_pressed("move_up"):
+		index = (index - 1 + choices.size()) % choices.size()
+	if Input.is_action_just_pressed("move_down"):
+		index = (index + 1) % choices.size()
+	dock_sel = choices[index]
+	if Input.is_action_just_pressed("confirm"):
 		var entry := dock_upgrade_at(dock_sel)
-		var burst_at := Vector2(PANEL_X + 300, 286 + (dock_sel - DOCK_FIXED_ROWS) * 33)
+		var burst_at := Vector2(1050, 285 + (dock_sel - DOCK_FIXED_ROWS - dock_upgrade_scroll) * 48)
 		if entry[0] == "general":
 			var id: String = entry[1].id
 			if Save.buy(id):
@@ -3475,7 +3600,10 @@ func update_dock() -> void:
 				lines.spike(2.0, 0.3)
 				sparks.burst(burst_at, 40, 160.0, 1.5, 0.5, Palette.GREEN)
 			else:
-				set_msg("MAXED" if Save.maxed(id) else "NEED %d FLUX" % int(Save.cost(id)), 1.0)
+				if Save.maxed(id):
+					set_msg("MAXED", 1.0)
+				else:
+					set_currency_ask(Save.cost(id), false)
 				lines.spike(1.0, 0.2)
 		else:
 			var sid: String = Save.data.ship
@@ -3487,27 +3615,75 @@ func update_dock() -> void:
 			elif not Ships.owned(sid):
 				set_msg("COMMISSION THE SHIP FIRST", 1.0)
 			else:
-				set_msg("MAXED" if Ships.up_maxed(sid, uid) else "NEED %d FLUX" % int(Ships.up_cost(sid, uid)), 1.0)
+				if Ships.up_maxed(sid, uid):
+					set_msg("MAXED", 1.0)
+				else:
+					set_currency_ask(Ships.up_cost(sid, uid), false)
 				lines.spike(1.0, 0.2)
 
 
+## One decision per step. Buying a locked ship requires a separate press from launch.
+func update_dock_step() -> void:
+	dock_sel = clampi(dock_sel, 0, 2)
+	var lr := 0
+	if Input.is_action_just_pressed("move_left"):
+		lr = -1
+	elif Input.is_action_just_pressed("move_right"):
+		lr = 1
+	if lr != 0:
+		match dock_sel:
+			0: dock_galaxy_step(lr)
+			1: dock_sector_step(lr)
+			2: dock_ship_step(lr)
+	var confirm := Input.is_action_just_pressed("confirm")
+	var launch := Input.is_action_just_pressed("launch") and dock_sel == 2
+	if not confirm and not launch:
+		return
+	if not Galaxies.unlocked(Save.data.galaxy):
+		set_msg(Galaxies.unlock_hint(Save.data.galaxy), 1.6)
+		return
+	if dock_sel < 2:
+		dock_sel += 1
+		pane_t = 0.0
+	elif not Ships.owned(Save.data.ship):
+		if confirm:
+			dock_ship_confirm()
+		else:
+			set_msg("UNLOCK SHIP FIRST", 1.2)
+	else:
+		start_run()
+
+
 func draw_dock_field() -> void:
-	draw_chart()
-	draw_scan()
-	draw_bay()
-	if beacon_note_t > 0.0:
-		VectorFont.draw(lines, "BEACON +%s FLUX WHILE AWAY" % fmt(Save.offline_gain), Vector2(FX + N * CELL * 0.5, FY + N * CELL - 22), 11, Palette.GREEN, 0.8, 0.3, 1)
+	if dock_tab == 1 or dock_sel == 2:
+		draw_bay(Rect2(180, 220, 416, 400))
+	elif dock_sel == 1:
+		draw_scan()
+	else:
+		draw_chart()
+
+
+func dock_progress_hint() -> String:
+	var g := Galaxies.get_galaxy(Save.data.galaxy)
+	if not Galaxies.unlocked(g.id):
+		return Galaxies.unlock_hint(g.id)
+	var i := Galaxies.index_of(g.id)
+	if i + 1 < Galaxies.LIST.size() and Galaxies.best(g.id) < Galaxies.UNLOCK_AT:
+		if i == 0:
+			return ""
+		return "SECTOR %02d UNLOCKS %s" % [Galaxies.UNLOCK_AT, Galaxies.LIST[i + 1].name]
+	if not Galaxies.cleared(g.id):
+		return "SECTOR %02d: %s" % [Galaxies.LENGTH, g.boss_name]
+	return "GALAXY CLEARED / ENDLESS OPEN"
 
 
 func draw_chart() -> void:
-	var focus := dock_sel <= 1
-	pane_frame(CHART, "STAR CHART", focus)
-	var dimf := 1.0 if focus else 0.55
+	var dimf := 1.0
 	var sel_id: String = Save.data.galaxy
-	var cy := CHART.position.y + 165.0
+	var cy := CHART.position.y + 180.0
 	for i in Galaxies.LIST.size():
 		var g: Dictionary = Galaxies.LIST[i]
-		var cx := CHART.position.x + 150.0 + i * 266.0
+		var cx := CHART.position.x + 200.0 + i * 400.0
 		var selected: bool = g.id == sel_id
 		var unlocked := Galaxies.unlocked(g.id)
 		var pts := constellation(g, Vector2(cx, cy), 1.0)
@@ -3522,12 +3698,14 @@ func draw_chart() -> void:
 			lines.seg(pt, pt, Palette.FULLBRIGHT if selected else col, 1.0, 0.5, 1.5)
 		var nc := Palette.WHITE if unlocked else Palette.RED
 		nc.a = dimf
-		VectorFont.draw(lines, g.name, Vector2(cx, cy + 92), 12, nc, 0.4, 0.15, 1)
+		VectorFont.draw(lines, g.name, Vector2(cx, cy + 120), 18, nc, 0.4, 0.15, 1)
 		if not unlocked:
-			VectorFont.draw(lines, "LOCKED", Vector2(cx, cy + 108), 9, Palette.RED, 0.4, 0.1, 1)
+			VectorFont.draw(lines, "LOCKED", Vector2(cx, cy + 148), 12, Palette.RED, 0.4, 0.1, 1)
 		elif Galaxies.cleared(g.id):
 			var eb := Galaxies.endless_best(g.id)
-			VectorFont.draw(lines, "CLEARED" + (("   ENDLESS %02d" % eb) if eb > 0 else ""), Vector2(cx, cy + 108), 9, Palette.GREEN, 0.4, 0.1, 1)
+			VectorFont.draw(lines, "CLEARED" + (("   ENDLESS %02d" % eb) if eb > 0 else ""), Vector2(cx, cy + 148), 12, Palette.GREEN, 0.4, 0.1, 1)
+		elif unlocked:
+			VectorFont.draw(lines, "%d / %d SECURED" % [mini(Galaxies.best(g.id), Galaxies.LENGTH), Galaxies.LENGTH], Vector2(cx, cy + 148), 12, Palette.GREEN, 0.0, 0.0, 1)
 		if selected:
 			# reticle and the sector ring: secured sectors green, the next one pulsing
 			var ra := time * 0.4
@@ -3536,31 +3714,41 @@ func draw_chart() -> void:
 			for k in 4:
 				var a := ra + k * TAU / 4.0
 				sq.append(Vector2(cx, cy) + Vector2(cos(a), sin(a)) * rr)
-			lines.polyline(sq, true, Palette.CYAN, 0.6, 0.2, 0.7)
-			var best := Galaxies.best(g.id)
-			var ss := clampi(int(Save.data.start_sector), 1, best + 1)
-			for s in range(1, 9):
-				var a := -PI * 0.5 + (s - 1) * TAU / 8.0
-				var pp := Vector2(cx, cy) + Vector2(cos(a), sin(a)) * 98.0
-				var sc := Palette.DIM
-				if s <= best:
-					sc = Palette.GREEN
-				elif s == best + 1:
-					sc = Palette.YELLOW
-					sc.a = 0.5 + 0.5 * sin(time * 6.0)
-				lines.rect(Rect2(pp - Vector2(5, 5), Vector2(10, 10)), sc, 0.5, 0.2, 0.8)
-				if s <= best:
-					lines.seg(pp - Vector2(3, 3), pp + Vector2(3, 3), sc, 0.5, 0.2, 0.7)
-				if s == ss:
-					lines.circle(pp, 9.0, Palette.FULLBRIGHT, 8, 0.8, 0.3, 0.8)
-					VectorFont.draw(lines, "%02d" % s, pp + Vector2(0, 14), 9, Palette.WHITE, 0.4, 0.1, 1)
+			if dock_sel != 1:
+				lines.polyline(sq, true, Palette.CYAN, 0.6, 0.2, 0.7)
+			if unlocked:
+				var best := Galaxies.best(g.id)
+				var ss := clampi(int(Save.data.start_sector), 1, max_start(g.id))
+				for s in range(1, 9):
+					var a := -PI * 0.5 + (s - 1) * TAU / 8.0
+					var pp := Vector2(cx, cy) + Vector2(cos(a), sin(a)) * 98.0
+					var sc := Palette.DIM
+					if s <= best:
+						sc = Palette.GREEN
+					elif s == best + 1:
+						sc = Palette.YELLOW
+						sc.a = 0.5 + 0.5 * sin(time * 6.0)
+					lines.rect(Rect2(pp - Vector2(5, 5), Vector2(10, 10)), sc, 0.5, 0.2, 0.8)
+					if s <= best:
+						lines.seg(pp - Vector2(3, 3), pp + Vector2(3, 3), sc, 0.5, 0.2, 0.7)
+					if s == ss:
+						lines.circle(pp, 9.0, Palette.FULLBRIGHT, 8, 0.8, 0.3, 0.8)
+						VectorFont.draw(lines, "%02d" % s, pp - Vector2(0, 24), 10, Palette.WHITE, 0.0, 0.0, 1)
+				var sector_label := "ENDLESS" if ss > Galaxies.LENGTH else "SECTOR %02d" % ss
+				if ss == Galaxies.LENGTH:
+					sector_label += " / " + String(g.boss_name)
+				VectorFont.draw(lines, "< " + sector_label + " >" if dock_sel == 1 else sector_label,
+					Vector2(cx, cy + 184), 13, Palette.YELLOW if dock_sel == 1 else Palette.CYAN, 0.0, 0.0, 1)
+				if ss > Galaxies.LENGTH:
+					lines.circle(Vector2(cx, cy), 110, Palette.CYAN, 32, 0.0, 0.0, 0.7)
 		if i < Galaxies.LIST.size() - 1:
 			var rc := Palette.DIM
 			rc.a = dimf
-			dashed(Vector2(cx + 120, cy), Vector2(cx + 266 - 120, cy), rc)
+			dashed(Vector2(cx + 120, cy), Vector2(cx + 400 - 120, cy), rc)
 
+	VectorFont.draw(lines, dock_progress_hint(), Vector2(800, CHART.end.y - 36), 15, Palette.YELLOW, 0.0, 0.0, 1)
 
-func draw_scan() -> void:
+func draw_scan(rect: Rect2 = SCAN, compact := false) -> void:
 	var focus := dock_sel == 1
 	var g := Galaxies.get_galaxy(Save.data.galaxy)
 	var ss := clampi(int(Save.data.start_sector), 1, max_start(g.id))
@@ -3569,12 +3757,13 @@ func draw_scan() -> void:
 		scan_title = "BOSS SCAN: " + String(g.boss_name)
 	elif ss > Galaxies.LENGTH:
 		scan_title = "ENDLESS SCAN"
-	pane_frame(SCAN, scan_title, focus)
+	if not compact:
+		VectorFont.draw(lines, scan_title, Vector2(rect.get_center().x, rect.position.y), 14, Palette.CYAN, 0.0, 0.0, 1)
 	if scan_layout.is_empty():
 		return
 	var dimf := 1.0 if focus else 0.6
-	var s := 372.0 / N
-	var o := SCAN.position + Vector2(14, 34)
+	var s := (rect.size.x - 12.0 if compact else rect.size.x - 28.0) / N
+	var o := rect.position + (Vector2(6, 6) if compact else Vector2(14, 34))
 	var r := 1 + Save.rim()
 	var frac := clampf(pane_t / 0.6, 0.0, 1.0)
 	var paths: Array = []
@@ -3586,7 +3775,12 @@ func draw_scan() -> void:
 		rock_shape(o + Vector2(sr.position) * s, o + Vector2(sr.end) * s, frac * dimf)
 	var rc: Color = g.coast
 	rc.a = dimf
-	lines.trace(paths, frac, rc, 0.4, 0.1, 0.8)
+	if scan_layout.arena.is_empty():
+		lines.trace(paths, frac, rc, 0.4, 0.1, 0.8)
+	else:
+		var outline: PackedVector2Array = scan_layout.arena.outline
+		for i in range(0, int(outline.size() * frac) / 2 * 2, 2):
+			lines.seg(o + outline[i] * s, o + outline[i + 1] * s, rc, 0.4, 0.1, 0.8)
 	var oc := Palette.DIM
 	oc.a = 0.5 * dimf
 	lines.rect(Rect2(o, Vector2(N, N) * s), oc, 0.3, 0.1, 0.6)
@@ -3611,29 +3805,30 @@ func draw_scan() -> void:
 			var col := Palette.PURPLE
 			col.a = k * dimf
 			lines.circle(pp, 6.0, col, 6, 0.6, 0.3, 0.9)
-		var sp := o + (Vector2(N / 2, r - 1) + Vector2(0.5, 0.5)) * s
+		var sp := o + (Vector2(scan_layout.start) + Vector2(0.5, 0.5)) * s
 		var pc := Palette.FULLBRIGHT
 		pc.a = k * dimf
 		lines.polyline(PackedVector2Array([sp + Vector2(0, -5), sp + Vector2(5, 0), sp + Vector2(0, 5), sp + Vector2(-5, 0)]), true, pc, 0.6, 0.3, 1.0)
+	if compact:
+		return
 	# legend
-	var ly := SCAN.end.y - 60
+	var ly := rect.end.y - 60
 	var lc := Palette.WHITE
 	lc.a = dimf
 	var haz: int = scan_layout.turrets.size() + scan_layout.spawners.size()
 	VectorFont.draw(lines, "%d NODES   %d HAZARDS" % [scan_layout.nodes.size(), haz], Vector2(o.x, ly), 11, lc, 0.4, 0.15)
 	var dc := Palette.DIM
 	dc.a = dimf
-	var qs := int(70.0 * pow(1.10, ss - 1) * Save.qix_mult() * float(g.qix_mult))
+	var qs := int(70.0 * pow(1.10, ss - 1) * float(g.qix_mult) * SectorArena.enemy_mult(g.id, ss))
 	VectorFont.draw(lines, "ANOMALY %d   %d SPARX   TARGET %d%%" % [qs, 1 + ss / 2, int(TARGET * 100)], Vector2(o.x, ly + 20), 10, dc, 0.4, 0.1)
 
 
-func draw_bay() -> void:
-	var focus := dock_sel >= 2
-	pane_frame(BAY, "SHIP BAY", focus)
+func draw_bay(rect: Rect2 = BAY) -> void:
+	var focus := dock_sel >= 2 and dock_sel < dock_rows() - 1
 	var dimf := 1.0 if focus else 0.6
 	var sh := Ships.get_ship(Save.data.ship)
 	var owned := Ships.owned(sh.id)
-	var center := BAY.position + Vector2(208, 250)
+	var center := rect.position + Vector2(208, 190)
 	var frac := clampf(pane_t / 0.7, 0.0, 1.0)
 	var hc := Palette.CYAN if owned else Palette.DIM
 	hc.a = dimf
@@ -3646,178 +3841,181 @@ func draw_bay() -> void:
 		lines.seg(Vector2(center.x - 120 + k * 12, yy), Vector2(center.x + 120 - k * 12, yy), gc, 0.3, 0.1, 0.6)
 	var nc := Palette.WHITE
 	nc.a = dimf
-	VectorFont.draw(lines, sh.name, Vector2(center.x, BAY.position.y + 30), 22, nc, 0.6, 0.2, 1, 1.2, VectorFont.display)
-	var rl := Palette.YELLOW
-	rl.a = dimf
-	VectorFont.draw(lines, String(sh.rule), Vector2(center.x, BAY.position.y + 62), 10, rl, 0.4, 0.15, 1)
+	VectorFont.draw(lines, sh.name, Vector2(center.x, rect.position.y + 30), 22, nc, 0.6, 0.2, 1, 1.2, VectorFont.display)
 	if owned:
-		VectorFont.draw(lines, "READY", Vector2(center.x, BAY.position.y + 80), 10, Palette.GREEN, 0.4, 0.15, 1)
+		VectorFont.draw(lines, "READY", Vector2(center.x, rect.position.y + 80), 10, Palette.GREEN, 0.4, 0.15, 1)
 	else:
 		var cc := Palette.GREEN if Ships.can_buy(sh.id) else Palette.RED
-		VectorFont.draw(lines, "%d ISO   ENTER TO COMMISSION" % int(sh.cost), Vector2(center.x, BAY.position.y + 80), 10, cc, 0.4, 0.15, 1)
-	var dc := Palette.CYAN
-	dc.a = dimf
-	VectorFont.draw(lines, String(sh.desc), Vector2(center.x, BAY.end.y - 92), 10, dc, 0.4, 0.15, 1)
-	# stats, with the highlighted upgrade called out
-	var sc := Palette.DIM
-	sc.a = dimf
-	VectorFont.draw(lines, "LIVES %d   SPEED %d%%   NODE +%d   RIM %d" % [3 + Save.extra_lives(), int(Save.speed_mult() * 100), Save.node_value(), Save.rim()],
-		Vector2(center.x, BAY.end.y - 66), 10, sc, 0.4, 0.1, 1)
-	var entry := dock_upgrade_at(dock_sel)
-	if not entry.is_empty():
-		var u: Dictionary = entry[1]
-		var lvl: int = Save.level(u.id) if entry[0] == "general" else Ships.up_level(sh.id, u.id)
-		VectorFont.draw(lines, "%s LV %d  >  %s" % [u.name, lvl, u.desc], Vector2(center.x, BAY.end.y - 44), 10, Palette.YELLOW, 0.5, 0.2, 1)
+		VectorFont.draw(lines, "LOCKED", Vector2(center.x, rect.position.y + 80), 10, cc, 0.4, 0.15, 1)
+	# Keep the preview visual; selection details live in one fixed area.
+	VectorFont.draw(lines, "LIVES %d   SPEED %d%%" % [3 + Save.extra_lives(), int(Save.speed_mult() * 100)],
+		Vector2(center.x, rect.end.y - 56), 12, Palette.DIM, 0.4, 0.1, 1)
+
+
+## Match the pickups: yellow hexagon for Flux, cyan four-point star for Isotope.
+func draw_dock_currency(pos: Vector2, amount: String, isotope: bool, affordable := true) -> void:
+	var col := Palette.CYAN if isotope else Palette.YELLOW
+	if isotope:
+		var pts := PackedVector2Array()
+		for k in 8:
+			var angle := -PI * 0.5 + k * TAU / 8.0
+			pts.append(pos + Vector2(cos(angle), sin(angle)) * (12.0 if k % 2 == 0 else 4.0))
+		lines.polyline(pts, true, col, 0.0, 0.0, 1.1)
+	else:
+		lines.circle(pos, 10, col, 6, 0.0, 0.0, 1.1)
+	lines.circle(pos, 2.5, Palette.FULLBRIGHT, 6, 0.0, 0.0, 0.8)
+	VectorFont.draw(lines, amount, pos + Vector2(22, -7), 14, Palette.RED if not affordable else col)
+
+
+func set_currency_ask(amount: float, isotope: bool) -> void:
+	set_msg("NEED", 1.2)
+	msg_currency = 1 if isotope else 0
+	msg_amount = fmt(amount)
+
+
+## Center a currency ask without embedding currency names into the text.
+func draw_currency_caption(label: String, amount: String, isotope: bool, pos: Vector2, suffix := "", affordable := true) -> void:
+	var label_width := VectorFont.width(label + " ", 14)
+	var amount_width := VectorFont.width(amount, 14)
+	var suffix_width := VectorFont.width(suffix, 14)
+	var left := pos.x - (label_width + 34 + amount_width + suffix_width) * 0.5
+	VectorFont.draw(lines, label, Vector2(left, pos.y - 7), 14, Palette.CYAN)
+	draw_dock_currency(Vector2(left + label_width + 12, pos.y), amount, isotope, affordable)
+	VectorFont.draw(lines, suffix, Vector2(left + label_width + 34 + amount_width, pos.y - 7), 14, Palette.CYAN)
 
 
 func draw_dock_panel() -> void:
-	var y := 112.0
-	VectorFont.draw(lines, "DOCK", Vector2(PANEL_X, y), 18, Palette.CYAN, 0.6, 0.2)
-	VectorFont.draw(lines, "FLUX %s   ISO %d   CHARTS %d" % [fmt(Save.data.flux), int(Save.data.isotope), int(Save.data.starcharts)], Vector2(PANEL_X + PANEL_W, y), 16, Palette.GREEN, 0.6, 0.25, 2)
-	y += 30
-	var rate := Save.beacon_rate()
-	var info := "BEST SECTOR %02d   JUMPS %d" % [int(Save.data.best_level), int(Save.data.runs)]
-	if rate > 0.0:
-		info += "   BEACON +%.1f/S" % rate
-	VectorFont.draw(lines, info, Vector2(PANEL_X, y), 11, Palette.DIM, 0.4, 0.1)
-	# --- galaxy and start sector selectors
+	VectorFont.draw(lines, "GALAXTIX", Vector2(800, 35), 30, Palette.WHITE, 0.0, 0.0, 1, 1.2, VectorFont.display)
+	draw_dock_currency(Vector2(1270, 56), fmt(Save.data.flux), false)
+	draw_dock_currency(Vector2(1430, 56), fmt(Save.data.isotope), true)
+	var step := 2 if dock_tab == 1 else dock_sel
+	var steps := ["1 GALAXY", "2 SECTOR", "3 SHIP"]
+	for i in 3:
+		var x := 570.0 + i * 230.0
+		var col := Palette.YELLOW if step == i else (Palette.GREEN if i < step else Palette.DIM)
+		VectorFont.draw(lines, steps[i], Vector2(x, 105), 13, col, 0.0, 0.0, 1)
+		if i < 2:
+			VectorFont.draw(lines, ">", Vector2(x + 115, 105), 12, Palette.DIM, 0.0, 0.0, 1)
 	var g := Galaxies.get_galaxy(Save.data.galaxy)
-	var gsel := dock_sel == 0
-	var ssel := dock_sel == 1
-	var pulse := 0.6 + 0.4 * sin(time * 8.0)
-	y = 176.0
-	if gsel:
-		var mc := Palette.YELLOW
-		mc.a = pulse
-		VectorFont.draw(lines, ">", Vector2(PANEL_X, y), 15, mc, 1.5, 0.5)
-	VectorFont.draw(lines, "GALAXY", Vector2(PANEL_X + 28, y), 15, Palette.WHITE if gsel else Palette.DIM, 0.4, 0.15)
-	var gcol := Palette.CYAN if Galaxies.unlocked(g.id) else Palette.RED
-	VectorFont.draw(lines, "< %s >" % g.name, Vector2(PANEL_X + 300, y), 15, gcol, 0.6 if gsel else 0.3, 0.25)
-	var gbest := Galaxies.best(g.id)
-	VectorFont.draw(lines, ("BEST %02d" % gbest) if gbest > 0 else "NEW", Vector2(PANEL_X + PANEL_W, y), 12, Palette.DIM, 0.4, 0.1, 2)
-	y += 30
-	if gsel:
-		y += draw_dock_desc(y)
-	if ssel:
-		var mc := Palette.YELLOW
-		mc.a = pulse
-		VectorFont.draw(lines, ">", Vector2(PANEL_X, y), 15, mc, 1.5, 0.5)
-	VectorFont.draw(lines, "START SECTOR", Vector2(PANEL_X + 28, y), 15, Palette.WHITE if ssel else Palette.DIM, 0.4, 0.15)
-	var ss := clampi(int(Save.data.start_sector), 1, max_start(g.id))
-	var ss_label := "ENDLESS" if ss > Galaxies.LENGTH else ("%02d" % ss)
-	VectorFont.draw(lines, "< %s >" % ss_label, Vector2(PANEL_X + 300, y), 15, Palette.CYAN, 0.6 if ssel else 0.3, 0.25)
-	var reach := "CLEARED" if Galaxies.cleared(g.id) else ("UP TO %02d" % mini(gbest + 1, Galaxies.LENGTH))
-	VectorFont.draw(lines, reach, Vector2(PANEL_X + PANEL_W, y), 12, Palette.GREEN if Galaxies.cleared(g.id) else Palette.DIM, 0.4, 0.1, 2)
-	y += 30
-	if ssel:
-		y += draw_dock_desc(y)
-	# --- hangar: pick or commission a ship
-	var shsel := dock_sel == 2
 	var sh := Ships.get_ship(Save.data.ship)
-	if shsel:
-		var mc := Palette.YELLOW
-		mc.a = pulse
-		VectorFont.draw(lines, ">", Vector2(PANEL_X, y), 15, mc, 1.5, 0.5)
-	VectorFont.draw(lines, "SHIP", Vector2(PANEL_X + 28, y), 15, Palette.WHITE if shsel else Palette.DIM, 0.4, 0.15)
-	var owned := Ships.owned(sh.id)
-	VectorFont.draw(lines, "< %s >" % sh.name, Vector2(PANEL_X + 300, y), 15, Palette.CYAN if owned else Palette.DIM, 0.6 if shsel else 0.3, 0.25)
-	if owned:
-		VectorFont.draw(lines, "READY", Vector2(PANEL_X + PANEL_W, y), 12, Palette.GREEN, 0.4, 0.1, 2)
-	else:
-		var cc := Palette.GREEN if Ships.can_buy(sh.id) else Palette.RED
-		VectorFont.draw(lines, "%d ISO" % int(sh.cost), Vector2(PANEL_X + PANEL_W, y), 12, cc, 0.4, 0.1, 2)
-	y += 30
-	if shsel:
-		y += draw_dock_desc(y)
-	lines.seg(Vector2(PANEL_X, y - 4), Vector2(PANEL_X + PANEL_W, y - 4), Palette.DIM, 0.3, 0.1, 0.6)
-
-	# --- upgrades
-	y += 14
-	var row_h := 33.0
-	for i in Save.UPGRADES.size():
-		var u: Dictionary = Save.UPGRADES[i]
-		var lvl := Save.level(u.id)
-		var sel := i + DOCK_FIXED_ROWS == dock_sel
-		var col := Palette.WHITE if sel else Palette.DIM
-		if sel:
-			var mc := Palette.YELLOW
-			mc.a = pulse
-			VectorFont.draw(lines, ">", Vector2(PANEL_X, y), 15, mc, 1.5, 0.5)
-		VectorFont.draw(lines, u.name, Vector2(PANEL_X + 28, y), 15, col, 0.6 if sel else 0.3, 0.25 if sel else 0.1)
-		VectorFont.draw(lines, "LV %d" % lvl, Vector2(PANEL_X + 300, y), 15, col, 0.4, 0.1)
-		var cost_s := "MAXED" if Save.maxed(u.id) else fmt(Save.cost(u.id))
-		var cc := Palette.DIM
-		if not Save.maxed(u.id):
-			cc = Palette.GREEN if Save.can_buy(u.id) else Palette.RED
-		VectorFont.draw(lines, cost_s, Vector2(PANEL_X + PANEL_W, y), 15, cc, 0.5, 0.2, 2)
-		y += row_h
-		if sel:
-			y += draw_dock_desc(y)
-	# --- the selected ship's own line
-	var sid: String = Save.data.ship
-	var sups := Ships.upgrades(sid)
-	var so := Ships.owned(sid)
-	for i in sups.size():
-		var u: Dictionary = sups[i]
-		var row := DOCK_FIXED_ROWS + Save.UPGRADES.size() + i
-		var sel := row == dock_sel
-		var col := Palette.WHITE if sel else Palette.DIM
-		if not so:
-			col.a = 0.5
-		if sel:
-			var mc := Palette.YELLOW
-			mc.a = pulse
-			VectorFont.draw(lines, ">", Vector2(PANEL_X, y), 15, mc, 1.5, 0.5)
-		VectorFont.draw(lines, u.name, Vector2(PANEL_X + 28, y), 15, col, 0.6 if sel else 0.3, 0.25 if sel else 0.1)
-		VectorFont.draw(lines, "LV %d" % Ships.up_level(sid, u.id), Vector2(PANEL_X + 300, y), 15, col, 0.4, 0.1)
-		var sc2 := Palette.CYAN
-		sc2.a = col.a
-		VectorFont.draw(lines, Ships.get_ship(sid).name, Vector2(PANEL_X + 380, y + 4), 9, sc2, 0.3, 0.1)
-		var cost_s2 := "MAXED" if Ships.up_maxed(sid, u.id) else fmt(Ships.up_cost(sid, u.id))
-		var cc2 := Palette.DIM
-		if not Ships.up_maxed(sid, u.id):
-			cc2 = Palette.GREEN if Ships.can_buy_up(sid, u.id) else Palette.RED
-		VectorFont.draw(lines, cost_s2, Vector2(PANEL_X + PANEL_W, y), 15, cc2, 0.5, 0.2, 2)
-		y += row_h
-		if sel:
-			y += draw_dock_desc(y)
-	# --- launch
-	lines.seg(Vector2(PANEL_X, y - 6), Vector2(PANEL_X + PANEL_W, y - 6), Palette.DIM, 0.3, 0.1, 0.6)
-	var ly := y + 26
-	var lsel := dock_sel == dock_rows() - 1
-	var lc := Palette.FULLBRIGHT if lsel else Palette.WHITE
-	if lsel:
-		var mc := Palette.YELLOW
-		mc.a = 0.6 + 0.4 * sin(time * 8.0)
-		VectorFont.draw(lines, ">", Vector2(PANEL_X, ly), 20, mc, 1.5, 0.5)
-	VectorFont.draw(lines, "LAUNCH SHIP", Vector2(PANEL_X + 28, ly), 20, lc, 1.0 if lsel else 0.5, 0.4 if lsel else 0.2, 0, 1.3)
-	lines.rect(Rect2(PANEL_X + 20, ly - 10, 260, 42), lc, 0.8, 0.2, 0.8)
-	VectorFont.draw(lines, "%d LIVES   %d%% SPEED   %d FLUX PER NODE   RIM %d" % [3 + Save.extra_lives(),
-		int(Save.speed_mult() * 100), node_value(), Save.rim()], Vector2(PANEL_X, ly + 60), 11, Palette.DIM, 0.4, 0.1)
-	VectorFont.draw(lines, "ARROWS SELECT   ENTER BUY   SPACE LAUNCH", Vector2(PANEL_X, 850), 11, Palette.DIM, 0.3, 0.1)
-
-
-## The selected row's description, indented right under it. Returns the height it took.
-func draw_dock_desc(y: float) -> float:
-	var rows: Array = []   # [text, color, size]
-	var g := Galaxies.get_galaxy(Save.data.galaxy)
-	if dock_sel == 0:
-		if Galaxies.unlocked(g.id):
-			rows.append([String(g.desc), Palette.CYAN, 11])
+	if step == 2:
+		draw_dock_upgrades()
+	if dock_tab == 0:
+		var ss := clampi(int(Save.data.start_sector), 1, max_start(g.id))
+		var sector := "ENDLESS" if ss > Galaxies.LENGTH else "SECTOR %02d" % ss
+		var value: String = g.name
+		var action := "CHOOSE SECTOR"
+		if dock_sel == 1:
+			value = sector
+			action = "CHOOSE SHIP"
+		elif dock_sel == 2:
+			value = sh.name
+			action = "LAUNCH" if Ships.owned(sh.id) else "UNLOCK"
+			VectorFont.draw(lines, "%s / %s" % [g.name, sector], Vector2(800, 175), 12, Palette.DIM, 0.0, 0.0, 1)
+		VectorFont.draw(lines, "< %s >" % value, Vector2(800, 756), 20, Palette.CYAN, 0.0, 0.0, 1)
+		if dock_sel == 2:
+			draw_dock_desc(635, 205, 420)
+		lines.rect(Rect2(580, 804, 440, 44), Palette.CYAN)
+		if dock_sel == 2 and not Ships.owned(sh.id):
+			draw_currency_caption("UNLOCK", str(int(sh.cost)), true, Vector2(800, 826), " [ENTER]", Ships.can_buy(sh.id))
 		else:
-			rows.append(["LOCKED: " + Galaxies.unlock_hint(g.id), Palette.RED, 11])
+			VectorFont.draw(lines, action + " [ENTER]", Vector2(800, 819), 16, Palette.CYAN, 0.0, 0.0, 1)
+	var hint := "UP/DOWN SELECT   ENTER BUY   TAB SHIP   ESC BACK" if dock_tab == 1 else "LEFT/RIGHT CHOOSE   ENTER CONTINUE   ESC BACK"
+	if dock_tab == 0 and dock_sel == 2:
+		hint += "   TAB UPGRADES"
+	if dock_tab == 0 and dock_sel == 2 and Ships.owned(sh.id):
+		hint = "LEFT/RIGHT CHOOSE   ENTER/SPACE LAUNCH   ESC BACK   TAB UPGRADES"
+	VectorFont.draw(lines, hint, Vector2(800, 873), 11, Palette.DIM, 0.0, 0.0, 1)
+
+
+func draw_dock_upgrades() -> void:
+	var sh := Ships.get_ship(Save.data.ship)
+	var total := dock_rows() - DOCK_FIXED_ROWS - 1
+	const VISIBLE := 6
+	dock_upgrade_scroll = clampi(dock_upgrade_scroll, 0, maxi(0, total - VISIBLE))
+	if dock_sel >= DOCK_FIXED_ROWS and dock_sel < dock_rows() - 1:
+		var selected := dock_sel - DOCK_FIXED_ROWS
+		dock_upgrade_scroll = clampi(dock_upgrade_scroll, maxi(0, selected - VISIBLE + 1), selected)
+	VectorFont.draw(lines, "UPGRADES", Vector2(770, 235), 12, Palette.DIM)
+	VectorFont.draw(lines, "%d-%d / %d" % [dock_upgrade_scroll + 1, mini(dock_upgrade_scroll + VISIBLE, total), total],
+		Vector2(1380, 235), 11, Palette.DIM, 0.0, 0.0, 2)
+	for i in range(dock_upgrade_scroll, mini(dock_upgrade_scroll + VISIBLE, total)):
+		var row := DOCK_FIXED_ROWS + i
+		var entry := dock_upgrade_at(row)
+		var u: Dictionary = entry[1]
+		var general: bool = entry[0] == "general"
+		var lvl := Save.level(u.id) if general else Ships.up_level(sh.id, u.id)
+		var maxed := Save.maxed(u.id) if general else Ships.up_maxed(sh.id, u.id)
+		var affordable := Save.can_buy(u.id) if general else Ships.can_buy_up(sh.id, u.id)
+		var cost := Save.cost(u.id) if general else Ships.up_cost(sh.id, u.id)
+		var y := 285.0 + (i - dock_upgrade_scroll) * 48.0
+		var selected := dock_sel == row
+		draw_dock_cursor(y, selected)
+		VectorFont.draw(lines, u.name, Vector2(770, y), 15, Palette.WHITE if selected else Palette.DIM)
+		VectorFont.draw(lines, "LV %d" % lvl, Vector2(1100, y), 13, Palette.DIM)
+		var price := "MAX" if maxed else fmt(cost)
+		if not general and not Ships.owned(sh.id):
+			price = "LOCKED"
+		if price == "MAX" or price == "LOCKED":
+			VectorFont.draw(lines, price, Vector2(1380, y), 14, Palette.DIM, 0.0, 0.0, 2)
+		else:
+			var price_width := VectorFont.width(price, 14)
+			draw_dock_currency(Vector2(1380 - price_width - 22, y + 7), price, false, affordable)
+	lines.seg(Vector2(742, 598), Vector2(1380, 598), Palette.DIM)
+	if dock_tab == 1:
+		draw_dock_desc(635, 770, 580)
+
+
+func draw_dock_cursor(y: float, selected: bool) -> void:
+	if selected:
+		VectorFont.draw(lines, ">", Vector2(742, y), 16, Palette.YELLOW, 0.0, 0.0)
+
+
+## One fixed description area keeps navigation from shifting the layout.
+func draw_dock_desc(y: float, x := 360.0, max_width := 880.0) -> void:
+	var text := ""
+	var col := Palette.CYAN
+	var g := Galaxies.get_galaxy(Save.data.galaxy)
+	var sh := Ships.get_ship(Save.data.ship)
+	if dock_sel == 0:
+		text = String(g.desc) if Galaxies.unlocked(g.id) else Galaxies.unlock_hint(g.id)
+		if not Galaxies.unlocked(g.id):
+			col = Palette.RED
 	elif dock_sel == 1:
-		rows.append(["JUMP STRAIGHT TO ANY SECTOR YOU HAVE SECURED, OR THE NEXT ONE.", Palette.CYAN, 11])
+		var ss := clampi(int(Save.data.start_sector), 1, max_start(g.id))
+		if not Galaxies.unlocked(g.id):
+			text = Galaxies.unlock_hint(g.id)
+			col = Palette.RED
+		elif ss == Galaxies.LENGTH:
+			text = String(g.boss_desc)
+		elif not scan_layout.is_empty():
+			text = "%d NODES / %d HAZARDS / CLAIM 75%%" % [scan_layout.nodes.size(), scan_layout.turrets.size() + scan_layout.spawners.size()]
 	elif dock_sel == 2:
-		var sh := Ships.get_ship(Save.data.ship)
-		rows.append([String(sh.rule) + (("   ENTER: COMMISSION FOR %d ISO" % int(sh.cost)) if not Ships.owned(sh.id) else ""), Palette.YELLOW, 11])
-		rows.append([String(sh.desc), Palette.CYAN, 10])
+		text = String(sh.desc)
+		if not Ships.owned(sh.id):
+			VectorFont.draw(lines, "UNLOCK", Vector2(x, y), 12, Palette.CYAN)
+			draw_dock_currency(Vector2(x + VectorFont.width("UNLOCK", 12) + 18, y + 6), str(int(sh.cost)), true, Ships.can_buy(sh.id))
+			y += 26
 	elif dock_sel < dock_rows() - 1:
 		var entry := dock_upgrade_at(dock_sel)
-		var su: Dictionary = entry[1]
-		rows.append([String(su.desc), Palette.CYAN, 11])
-	var h := 0.0
-	for r in rows:
-		VectorFont.draw(lines, r[0], Vector2(PANEL_X + 28, y - 8 + h), r[2], r[1], 0.5, 0.2)
-		h += 17.0
-	return h + 2.0 if h > 0.0 else 0.0
+		text = String(entry[1].desc)
+		if entry[0] == "ship":
+			text = String(sh.name) + ": " + text
+	else:
+		text = "%s / SECTOR %02d / %s" % [g.name, int(Save.data.start_sector), sh.name]
+		if not Galaxies.unlocked(g.id):
+			text = Galaxies.unlock_hint(g.id)
+			col = Palette.RED
+		elif not Ships.owned(sh.id):
+			text = "UNLOCK SHIP OR CHOOSE AN OWNED SHIP."
+			col = Palette.YELLOW
+	var line := ""
+	for word in text.split(" "):
+		var candidate := word if line.is_empty() else line + " " + word
+		if not line.is_empty() and VectorFont.width(candidate, 12) > max_width:
+			VectorFont.draw(lines, line, Vector2(x, y), 12, col)
+			y += 22
+			line = word
+		else:
+			line = candidate
+	VectorFont.draw(lines, line, Vector2(x, y), 12, col)
