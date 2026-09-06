@@ -13,7 +13,8 @@ Every stage starts on a fresh board with reassigned perimeter home rails. Cell s
 ## Controls
 
 - Enter: start the round, continue after qualifying, or play again after the match.
-- Arrows/WASD: move. Hold Space to leave your territory and draw; reconnect to capture.
+- Arrows/WASD: move. Leaving your territory starts a cut; reconnect to capture. No draw key in this mode.
+- H: host a friends lobby. J: join with an invite code on the clipboard. I: Steam invite overlay (host, when launched through Steam).
 - Q: Harden, usable while safe. Your territory becomes a wall, and you cannot leave it.
 - E: Overdrive, double movement speed.
 - Escape: main menu.
@@ -28,6 +29,12 @@ There are no eliminations during a round. The side panel lists every cutter in a
 
 AI uses the same movement, trail and capture rules. It plans rectangular excursions, values enemy territory more than neutral territory, walks to attack points through its connected territory, and replans around blocked routes. This is the first AI strategy; human playtests should guide tuning.
 
+## Friends online
+
+Press H on the start screen to host. With the Steam client running you get a friends-only Steam lobby and the lobby id is copied to your clipboard; otherwise the game hosts over ENet and copies `ip:port` instead. A friend copies that code and presses J on their own start screen. Up to four people play; the remaining slots stay AI. The host presses Enter in the lobby to start.
+
+The host runs the whole simulation. Guests send only their intent (direction and abilities) and render 20 Hz snapshots, about 1 KB each plus a packed 4-bit board whenever ownership changes. Rounds are rebuilt on guests from the match seed, so only live state crosses the wire. Steam peer ids are not 1, so every RPC in `scripts/net.gd` is `any_peer` with an explicit host check. The transport layer is ported from chrono-pulp; the Spacewar app id 480 in `steam_appid.txt` is for development.
+
 ## Implementation and checks
 
 `scripts/battle_royale.gd` owns simulation and rendering. Campaign state remains in `Game`; it only routes menu/input/drawing to this mode. Territory fills and merged borders are rebuilt after ownership changes; texture uploads happen once per rendered frame.
@@ -39,5 +46,14 @@ godot --headless --path . res://tests/battle_royale_smoke.tscn -- --nosave
 ```
 
 `godot --path . -- --autotest=royale --nosave --shots=<dir>` captures the roster mid-round and the buzzer reveal.
+
+Wire test over ENet on localhost, two processes (`--no-steam` forces the fallback transport):
+
+```
+godot --headless --path . -- --brhost --no-steam --nosave
+godot --headless --path . -- --brjoin=127.0.0.1 --no-steam --nosave
+```
+
+Each prints `[brtest] RESULT ... PASS`. `godot --headless --path . -- --steamtest --nosave` does a real Steam lobby round-trip and needs the Steam client logged in.
 
 The smoke scene checks captures, rail protection, surviving disconnected islands, anchor recovery, Harden displacement, persistent charges, qualification/replay, nine AI rounds, human movement, menu entry/exit, and campaign-save isolation.

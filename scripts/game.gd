@@ -101,6 +101,13 @@ var last_dir := Vector2i.RIGHT
 # run
 var battle_fill: Sprite2D
 var battle: BattleRoyale
+var br_net_wired := false
+var br_snapshot_t := 0.0
+var br_board_sent := 0        # owners_version the last snapshot carried the board for
+var br_input_t := 0.0
+var br_last_dir := Vector2i.ZERO
+var br_slots: Dictionary = {}   # host: peer id -> racer slot, fixed for the whole match
+const BR_SNAPSHOT_HZ := 20.0
 var result_selection := 0
 var state := State.DOCK
 var level := 1
@@ -627,7 +634,7 @@ func update(dt: float) -> void:
 	sparks.update(dt)
 	match state:
 		State.BATTLE_ROYALE:
-			if battle.update(dt): go_title()
+			update_battle_royale(dt)
 		State.DOCK:
 			update_dock()
 			for q in qixes:
@@ -2498,6 +2505,7 @@ func draw_ability_ring() -> void:
 func start_battle_royale() -> void:
 	battle = BattleRoyale.new()
 	battle.start()
+	wire_battle_net()
 	state = State.BATTLE_ROYALE
 	lines.zoom = Vector2.ONE
 	shake = 0.0
@@ -4019,3 +4027,207 @@ func draw_dock_desc(y: float, x := 360.0, max_width := 880.0) -> void:
 		else:
 			line = candidate
 	VectorFont.draw(lines, line, Vector2(x, y), 12, col)
+
+
+# ------------------------------------------------------------------ battle royale online
+## Solo runs the sim locally. Hosting runs the same sim and streams snapshots; guests send
+## intents and render what they are told. `Net` hides whether that is Steam or ENet.
+func wire_battle_net() -> void:
+	if br_net_wired:
+		return
+	br_net_wired = true
+	Net.hosting_started.connect(_br_hosting_started)
+	Net.joined.connect(_br_joined)
+	Net.join_failed.connect(_br_join_failed)
+	Net.disconnected.connect(_br_disconnected)
+	Net.roster_changed.connect(_br_roster_changed)
+	Net.match_started.connect(_br_match_started)
+	Net.snapshot_received.connect(_br_snapshot)
+	Net.input_received.connect(_br_input)
+	Net.ability_received.connect(_br_ability)
+	Net.board_requested.connect(_br_board_requested)
+
+
+func update_battle_royale(dt: float) -> void:
+	if battle.phase == "lobby":
+		update_battle_lobby(dt)
+		return
+	if Net.is_guest():
+		battle.tick_guest(dt)
+		if Input.is_action_just_pressed("abort"):
+			leave_battle_online()
+			go_title()
+			return
+		if battle.phase == "playing":
+			battle.poll_local_input()
+			var me := battle.racer(battle.local_id)
+			if me != null:
+				br_input_t += dt
+				if me.intent_dir != br_last_dir or br_input_t >= 0.1:
+					br_input_t = 0.0
+					br_last_dir = me.intent_dir
+					Net.send_input(me.intent_dir, true)
+				if me.want_harden: Net.send_ability(true)
+				if me.want_drive: Net.send_ability(false)
+				me.want_harden = false
+				me.want_drive = false
+		return
+	if battle.phase == "ready" and Net.is_offline() and not Net.pending():
+		if Input.is_action_just_pressed("br_host"):
+			battle.notice = ""
+			if not Net.host():
+				battle.notice = "COULD NOT HOST"
+				battle.notice_time = 2.0
+			return
+		if Input.is_action_just_pressed("br_join"):
+			var code := DisplayServer.clipboard_get().strip_edges()
+			if code == "" or code.length() > 64:
+				battle.notice = "COPY AN INVITE CODE FIRST"
+				battle.notice_time = 2.0
+			elif not Net.join(code):
+				pass   # join_failed carries the reason
+			else:
+				battle.notice = "JOINING %s..." % code
+				battle.notice_time = 6.0
+			return
+	if Net.pending():
+		battle.notice_time = maxf(0.0, battle.notice_time - dt)
+		return   # a Steam lobby is opening; don't let Enter start a solo round underneath it
+	if battle.update(dt):
+		leave_battle_online()
+		go_title()
+		return
+	if Net.is_host():
+		br_snapshot_t += dt
+		if br_snapshot_t >= 1.0 / BR_SNAPSHOT_HZ:
+			br_snapshot_t = 0.0
+			var with_board := battle.owners_version != br_board_sent
+			Net.send_snapshot(battle.encode_state(with_board), with_board)
+			if with_board: br_board_sent = battle.owners_version
+
+
+func update_battle_lobby(dt: float) -> void:
+	battle.notice_time = maxf(0.0, battle.notice_time - dt)
+	refresh_battle_lobby()
+	if Input.is_action_just_pressed("abort"):
+		leave_battle_online()
+		battle.phase = "ready"
+		return
+	if not Net.is_host():
+		return
+	if Input.is_action_just_pressed("br_invite") and Net.overlay_available():
+		Net.open_invite_overlay()
+	if Input.is_action_just_pressed("confirm") or Input.is_action_just_pressed("launch"):
+		start_hosted_match()
+
+
+func start_hosted_match() -> void:
+	var slots: Array = []
+	for i in Net.peers.size():
+		slots.append([Net.peers[i], i, Net.display_name(Net.peers[i])])
+	Net.start_match(randi() & 0x7fffffff, slots)
+
+
+func refresh_battle_lobby() -> void:
+	var lobby_names: Array = []
+	for peer in Net.peers:
+		lobby_names.append(Net.display_name(peer))
+	battle.lobby = {
+		"host": Net.is_host(),
+		"names": lobby_names,
+		"code": Net.invite_code() if Net.is_host() else "",
+		"overlay": Net.overlay_available(),
+		"message": battle.notice if battle.notice_time > 0.0 else "",
+	}
+
+
+func leave_battle_online() -> void:
+	Net.leave()
+	battle.guest = false
+	battle.humans = 1
+	battle.local_id = 0
+	battle.names.assign(BattleRoyale.NAMES)
+
+
+func _br_hosting_started() -> void:
+	if state != State.BATTLE_ROYALE:
+		return
+	battle.phase = "lobby"
+	var code := Net.invite_code()
+	DisplayServer.clipboard_set(code)
+	battle.notice = "LOBBY OPEN - CODE COPIED"
+	battle.notice_time = 3.0
+	refresh_battle_lobby()
+
+
+func _br_joined() -> void:
+	if state != State.BATTLE_ROYALE:
+		return
+	battle.guest = true
+	battle.phase = "lobby"
+	battle.notice = ""
+	refresh_battle_lobby()
+
+
+func _br_join_failed(reason: String) -> void:
+	if state != State.BATTLE_ROYALE:
+		return
+	battle.phase = "ready"
+	battle.guest = false
+	battle.notice = reason
+	battle.notice_time = 4.0
+
+
+func _br_disconnected() -> void:
+	if state != State.BATTLE_ROYALE:
+		return
+	leave_battle_online()
+	battle.start()
+	battle.notice = "HOST LEFT THE MATCH"
+	battle.notice_time = 4.0
+
+
+func _br_roster_changed() -> void:
+	if state == State.BATTLE_ROYALE and battle.phase == "lobby":
+		refresh_battle_lobby()
+
+
+func _br_match_started(seed_value: int, slots: Array) -> void:
+	if state != State.BATTLE_ROYALE:
+		return
+	br_slots.clear()
+	for entry in slots: br_slots[int(entry[0])] = int(entry[1])
+	battle.start(seed_value)
+	battle.set_slots(slots, Net.local_id())
+	battle.guest = Net.is_guest()
+	battle.phase = "playing"
+	br_board_sent = 0
+	br_snapshot_t = 0.0
+
+
+func _br_snapshot(bytes: PackedByteArray) -> void:
+	if state == State.BATTLE_ROYALE and Net.is_guest() and battle.humans > 1:
+		battle.decode_state(bytes)
+
+
+func _br_input(peer: int, dir: Vector2i, draw: bool) -> void:
+	if state != State.BATTLE_ROYALE or not Net.is_host():
+		return
+	var slot: int = br_slots.get(peer, -1)
+	if slot > 0: battle.set_intent(slot, dir, draw)
+
+
+func _br_ability(peer: int, hard: bool) -> void:
+	if state != State.BATTLE_ROYALE or not Net.is_host():
+		return
+	var slot: int = br_slots.get(peer, -1)
+	var r := battle.racer(slot) if slot > 0 else null
+	if r == null:
+		return
+	if hard: r.want_harden = true
+	else: r.want_drive = true
+
+
+func _br_board_requested(peer: int) -> void:
+	if state == State.BATTLE_ROYALE and Net.is_host():
+		Net.send_board(peer, battle.encode_state(true))

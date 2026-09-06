@@ -53,6 +53,18 @@ func _ready() -> void:
 			autotest = true
 			auto_mode = "royale"
 			shot_times = [4.0, 12.5, 14.6, 16.6]   # roster mid-round, buzzer beat, mid reveal, last slot + card
+		elif a == "--brhost" or a.begins_with("--brjoin"):
+			# Two-process wire test (pair with --no-steam for ENet on localhost):
+			#   godot --headless --path . -- --brhost --no-steam
+			#   godot --headless --path . -- --brjoin=127.0.0.1 --no-steam
+			autotest = true
+			auto_mode = "brhost" if a == "--brhost" else "brjoin"
+			br_target = a.substr(9) if a.begins_with("--brjoin=") else "127.0.0.1"
+			shot_times = [1.5, 6.0, 15.0]   # lobby, mid-match, final report
+		elif a == "--steamtest":
+			autotest = true
+			auto_mode = "steamtest"
+			shot_times = [8.0]
 		elif a.begins_with("--autotest=boss"):
 			autotest = true
 			auto_mode = a.substr(11)   # boss, boss:belt, boss:deep
@@ -101,6 +113,16 @@ func _ready() -> void:
 			seed(4242)   # a seed where the Anomaly starts away from the top edge
 	if autotest and auto_mode == "dock":
 		game.go_dock()
+	if autotest and auto_mode in ["brhost", "brjoin"]:
+		game.start_battle_royale()
+		Net.snapshot_received.connect(func(b: PackedByteArray) -> void: br_snapshots += 1; br_bytes += b.size())
+		Net.join_failed.connect(func(reason: String) -> void: print("[brtest] join failed: %s" % reason))
+		if auto_mode == "brhost":
+			print("[brtest] host: %s" % Net.host())
+		else:
+			print("[brtest] join %s: %s" % [br_target, Net.join(br_target)])
+	if autotest and auto_mode == "steamtest":
+		_steamtest()
 	if autotest and auto_mode == "royale":
 		game.start_battle_royale()
 		game.battle.start(1337)
@@ -241,6 +263,9 @@ func _setup_input() -> void:
 		"tab": [KEY_TAB],
 		"br_harden": [KEY_Q],
 		"br_overdrive": [KEY_E],
+		"br_host": [KEY_H],
+		"br_join": [KEY_J],
+		"br_invite": [KEY_I],
 	}
 	for action in map:
 		if not InputMap.has_action(action):
@@ -270,6 +295,8 @@ func _process(dt: float) -> void:
 	display.end_draw()
 	script_ms = (Time.get_ticks_usec() - t0) / 1000.0
 
+	if autotest and auto_mode in ["brhost", "brjoin"]:
+		_br_wire_test(dt)
 	if autotest:
 		if auto_mode == "sector" and t > 6.5 and game.state == Game.State.PLAYING:
 			game.level_clear()   # force a clear to watch the sector-to-sector jump
@@ -332,6 +359,61 @@ func _unhandled_input(event: InputEvent) -> void:
 		_:
 			return
 	Save.save_data()
+
+
+var br_target := ""
+var br_snapshots := 0
+var br_bytes := 0
+var br_started := false
+
+## Host waits for one guest, starts the match, and reports after a few seconds of play.
+## Guest joins, counts snapshots, and checks it rebuilt the host's board.
+func _br_wire_test(_dt: float) -> void:
+	var b := game.battle
+	if auto_mode == "brhost" and not br_started and b.phase == "lobby" and Net.peers.size() >= 2 and Net.names.size() >= 2:
+		br_started = true
+		print("[brtest] roster %s names %s" % [Net.peers, Net.names])
+		game.start_hosted_match()
+		print("[brtest] match started with %d humans" % Net.peers.size())
+	if auto_mode == "brjoin" and b.phase == "playing" and b.humans > 1:
+		var me := b.racer(b.local_id)
+		if me != null:
+			b.set_intent(b.local_id, Vector2i.DOWN if me.pos.y < b.size.y / 2 else Vector2i.UP, true)
+			Net.send_input(me.intent_dir, true)
+	if t >= (14.0 if auto_mode == "brhost" else 8.5):   # the host outlives the guest's report
+		if auto_mode == "brhost":
+			var guest := b.racer(1)
+			var moved := guest != null and guest.pos != guest.rail[3]
+			print("[brtest] host: phase=%s humans=%d guest_moved=%s owners_version=%d %s" % [b.phase, b.humans, moved, b.owners_version, Net.diag_line()])
+			print("[brtest] RESULT host %s" % ("PASS" if br_started and moved else "FAIL"))
+		else:
+			var ok := br_snapshots > 20 and b.humans > 1 and b.phase == "playing" and b.local_id == 1
+			print("[brtest] guest: snapshots=%d bytes=%d phase=%s humans=%d local=%d owners_version=%d %s" % [br_snapshots, br_bytes, b.phase, b.humans, b.local_id, b.owners_version, Net.diag_line()])
+			print("[brtest] RESULT guest %s" % ("PASS" if ok else "FAIL"))
+		Net.leave()
+		get_tree().quit()
+
+
+## One-instance Steam probe: init result, persona, and a real lobby round-trip.
+## Needs the Steam client running and logged in; you'll show as playing Spacewar.
+func _steamtest() -> void:
+	print("[steamtest] SteamMultiplayerPeer class = %s" % ClassDB.class_exists("SteamMultiplayerPeer"))
+	print("[steamtest] steam_ok = %s" % Net.steam_ok)
+	if not Net.steam_ok:
+		print("[steamtest] FAIL: Steam did not initialise (is the client running?)")
+		get_tree().quit()
+		return
+	print("[steamtest] persona = %s   loggedOn = %s" % [Net.steam.getPersonaName(), Net.steam.loggedOn()])
+	Net.hosting_started.connect(func() -> void:
+		print("[steamtest] lobby = %d   host = %s   overlay = %s" % [Net.lobby_id, Net.is_host(), Net.overlay_available()])
+		print("[steamtest] invite code = %s" % Net.invite_code())
+		print("[steamtest] %s" % ("PASS" if Net.lobby_id != 0 else "FAIL: hosted over ENet, no Steam lobby"))
+		Net.leave()
+		get_tree().quit())
+	Net.join_failed.connect(func(reason: String) -> void:
+		print("[steamtest] FAIL: %s" % reason)
+		get_tree().quit())
+	print("[steamtest] host started = %s" % Net.host())
 
 
 func _take_shot(i: int) -> void:

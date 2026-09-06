@@ -1,6 +1,10 @@
 class_name BattleRoyale
 extends RefCounted
 ## Shared-board qualifying. Owned islands survive severance; excursions can reconnect to any owned territory.
+##
+## Multiplayer: the host runs this simulation for everyone. Human racers occupy ids 0..humans-1 and
+## move from per-racer intents (set by the local keyboard or by `Net`); everything else is AI.
+## Guests never call `update`; they rebuild rounds from the match seed and apply `decode_state`.
 const SIZES := [Vector2i(68, 42), Vector2i(56, 34), Vector2i(46, 28)]
 const TIMES := [90.0, 75.0, 60.0]
 const CUTS := [6, 4, 1]
@@ -35,6 +39,10 @@ class Racer:
 	var tie := 0
 	var wall_edges: Array = []
 	var wall_hatching: Array = []
+	var intent_dir := Vector2i.ZERO   # what this human wants this tick (AI ignores these)
+	var intent_draw := false
+	var want_harden := false          # edge-triggered ability requests, consumed by update
+	var want_drive := false
 
 var racers: Array[Racer] = []
 var standings: Array[Racer] = []
@@ -55,8 +63,17 @@ var territory_segments: Array = []
 var territory_image: Image
 var territory_texture: ImageTexture
 var texture_dirty := false
-var rng := RandomNumberGenerator.new()
+var rng := RandomNumberGenerator.new()          # AI and hazard randomness (host only)
+var layout_rng := RandomNumberGenerator.new()   # per-round board layout, reproducible from the seed
 var turn := 0
+var humans := 1                    # racer ids below this are people
+var local_id := 0                  # which racer this machine plays
+var names: Array[String] = []      # per racer id; human slots get persona names
+var match_seed := 0
+var owners_version := 0            # bumps on every ownership change so guests know to refetch
+var guest := false                 # true when this instance only renders snapshots
+var board_request_t := 0.0
+var lobby: Dictionary = {}         # phase "lobby": {host, names, code, pending, message}
 var roster: Array[Racer] = []       # fixed on-screen order during a round; no live ranking
 var reveal_order: Array = []        # groups of standings slots in the order the buzzer reveals them
 var reveal_count := 0
@@ -69,15 +86,38 @@ const REVEAL_HOLD := 1.6
 func start(seed_value := -1) -> void:
 	if seed_value < 0:
 		rng.randomize()
-	else:
-		rng.seed = seed_value
+		seed_value = rng.randi() & 0x7fffffff
+	match_seed = seed_value
+	rng.seed = match_seed
 	racers.clear()
 	for id in 12:
 		var r := Racer.new()
 		r.id = id
 		racers.append(r)
+	if names.size() != 12:
+		names.assign(NAMES)
 	round_index = 0
 	begin_round()
+
+## Human slots from the lobby: [[peer, racer_id, name], ...]. Everything else stays AI.
+func set_slots(slots: Array, my_peer: int) -> void:
+	names.assign(NAMES)
+	humans = 0
+	for entry in slots:
+		var slot := int(entry[1])
+		names[slot] = String(entry[2]).to_upper().substr(0, 10)
+		humans = maxi(humans, slot + 1)
+		if int(entry[0]) == my_peer: local_id = slot
+	names[0] = names[0] if humans > 1 else "YOU"
+
+func label(id: int) -> String:
+	return "YOU" if id == local_id and humans == 1 else names[id]
+
+func set_intent(id: int, dir: Vector2i, draw: bool) -> void:
+	var r := racer(id)
+	if r != null:
+		r.intent_dir = dir
+		r.intent_draw = draw
 
 func index(c: Vector2i) -> int:
 	return c.y * size.x + c.x
@@ -100,7 +140,8 @@ func color(id: int) -> Color:
 func point(c: Vector2i) -> Vector2:
 	return origin + (Vector2(c) + Vector2.ONE * 0.5) * CELL
 
-func begin_round() -> void:
+func begin_round(shuffle := true) -> void:
+	layout_rng.seed = hash([match_seed, round_index])
 	size = SIZES[round_index]
 	origin = FRAME.get_center() - Vector2(size) * CELL * 0.5
 	territory_image = Image.create(size.x, size.y, false, Image.FORMAT_RGBA8)
@@ -116,13 +157,15 @@ func begin_round() -> void:
 	for y in range(1, size.y): perimeter.append(Vector2i(size.x - 1, y))
 	for x in range(size.x - 2, -1, -1): perimeter.append(Vector2i(x, size.y - 1))
 	for y in range(size.y - 2, 0, -1): perimeter.append(Vector2i(0, y))
-	# Shuffle spawn assignments without relying on global gameplay randomness.
-	for i in range(racers.size() - 1, 0, -1):
-		var j := rng.randi_range(0, i)
-		var tmp := racers[i]
-		racers[i] = racers[j]
-		racers[j] = tmp
-	var offset := rng.randi_range(0, perimeter.size() - 1)
+	# Shuffle spawn assignments from the layout rng so a guest can rebuild the same board.
+	# The offset is drawn first so a guest handed the already-shuffled order can skip the shuffle.
+	var offset := layout_rng.randi_range(0, perimeter.size() - 1)
+	if shuffle:
+		for i in range(racers.size() - 1, 0, -1):
+			var j := layout_rng.randi_range(0, i)
+			var tmp := racers[i]
+			racers[i] = racers[j]
+			racers[j] = tmp
 	for i in racers.size():
 		var r := racers[i]
 		r.rail.clear()
@@ -132,7 +175,11 @@ func begin_round() -> void:
 		r.harden = 0.0
 		r.drive = 0.0
 		r.acc = 0.0
-		r.think = rng.randf_range(0.3, 1.0)
+		r.think = layout_rng.randf_range(0.3, 1.0)
+		r.intent_dir = Vector2i.ZERO
+		r.intent_draw = false
+		r.want_harden = false
+		r.want_drive = false
 		r.failures = 0
 		r.biggest = 0
 		r.tie = i
@@ -151,9 +198,13 @@ func begin_round() -> void:
 	phase = "ready"
 	phase_time = 0.0
 	hazard = Vector2(size) * 0.5
+	reveal_time.clear()
+	reveal_count = 0
+	reveal_finish = INF
 	rebuild()
 
 func rebuild() -> void:
+	owners_version += 1
 	for r in racers:
 		r.owned.clear()
 		r.score = 0
@@ -254,7 +305,7 @@ func fail(r: Racer) -> void:
 	r.plan.clear()
 	r.failures += 1
 	r.think = 0.5
-	if r.id == 0:
+	if r.id == local_id:
 		notice = "TRAIL HIT - BACK TO ANCHOR"
 		notice_time = 1.6
 
@@ -433,6 +484,9 @@ func finish_round() -> void:
 	rebuild()
 	phase = "results"
 	phase_time = 0.0
+	setup_reveal()
+
+func setup_reveal() -> void:
 	reveal_order.clear()
 	reveal_time.clear()
 	reveal_count = 0
@@ -485,16 +539,30 @@ func percent(r: Racer) -> float:
 
 func qualified() -> bool:
 	for i in mini(CUTS[round_index], standings.size()):
-		if standings[i].id == 0: return true
+		if standings[i].id == local_id: return true
 	return false
 
+## Solo: the match ends when you are cut. Multiplayer: it runs on while any human is still in.
 func advance() -> void:
-	if round_index == 2 or not qualified():
+	var anyone := false
+	for i in mini(CUTS[round_index], standings.size()):
+		if standings[i].id < humans: anyone = true
+	if round_index == 2 or not anyone:
 		start()
 		return
 	racers.assign(standings.slice(0, CUTS[round_index]))
 	round_index += 1
 	begin_round()
+
+func poll_local_input() -> void:
+	var d := Vector2i.ZERO
+	for pair in [["move_up", Vector2i.UP], ["move_right", Vector2i.RIGHT], ["move_down", Vector2i.DOWN], ["move_left", Vector2i.LEFT]]:
+		if Input.is_action_pressed(pair[0]): d = pair[1]
+	set_intent(local_id, d, true)   # no draw key in this mode: leaving your land is the cut
+	var me := racer(local_id)
+	if me == null: return
+	if Input.is_action_just_pressed("br_harden"): me.want_harden = true
+	if Input.is_action_just_pressed("br_overdrive"): me.want_drive = true
 
 func update(dt: float, human_input := true) -> bool:
 	phase_time += dt
@@ -504,12 +572,14 @@ func update(dt: float, human_input := true) -> bool:
 		if human_input and (Input.is_action_just_pressed("confirm") or Input.is_action_just_pressed("launch")):
 			phase = "playing"
 		return false
+	if phase == "lobby": return false
 	if phase == "results":
 		while reveal_count < reveal_order.size() and phase_time >= reveal_at(reveal_count): reveal_next()
 		if human_input and phase_time > 0.3 and (Input.is_action_just_pressed("confirm") or Input.is_action_just_pressed("launch")):
 			if reveal_complete(): advance()
 			else: skip_reveal()
 		return false
+	if human_input: poll_local_input()
 	remaining = maxf(0.0, remaining - dt)
 	turn += 1
 	for offset in racers.size():
@@ -517,10 +587,12 @@ func update(dt: float, human_input := true) -> bool:
 		r.harden = maxf(0.0, r.harden - dt)
 		r.drive = maxf(0.0, r.drive - dt)
 		r.think -= dt
-		if r.id == 0 and human_input:
-			if Input.is_action_just_pressed("br_harden"): ability(r, true)
-			if Input.is_action_just_pressed("br_overdrive"): ability(r, false)
-		elif r.id != 0:
+		if r.id < humans:
+			if r.want_harden: ability(r, true)
+			if r.want_drive: ability(r, false)
+			r.want_harden = false
+			r.want_drive = false
+		else:
 			if remaining < 18.0 and r.has_drive and r.exposed: ability(r, false)
 			if remaining < 6.0 and r.has_harden and not r.exposed: ability(r, true)
 		var speed := 10.0 if r.exposed else 18.0
@@ -528,12 +600,9 @@ func update(dt: float, human_input := true) -> bool:
 		r.acc = minf(r.acc + dt * speed, 2.0)
 		while r.acc >= 1.0:
 			r.acc -= 1.0
-			if r.id == 0 and human_input:
-				var d := Vector2i.ZERO
-				for pair in [["move_up", Vector2i.UP], ["move_right", Vector2i.RIGHT], ["move_down", Vector2i.DOWN], ["move_left", Vector2i.LEFT]]:
-					if Input.is_action_pressed(pair[0]): d = pair[1]
-				if d != Vector2i.ZERO: step(r, d, Input.is_action_pressed("draw"))
-			elif r.id != 0:
+			if r.id < humans:
+				if r.intent_dir != Vector2i.ZERO: step(r, r.intent_dir, r.intent_draw)
+			else:
 				if r.plan.is_empty() and r.think <= 0.0:
 					plan_ai(r)
 					r.think = rng.randf_range(0.25, 0.7)
@@ -557,6 +626,156 @@ func update(dt: float, human_input := true) -> bool:
 	if remaining <= 0.0: finish_round()
 	return false
 
+# ---------------------------------------------------------------------------
+# Snapshots: the host encodes the whole live state; a guest applies it verbatim.
+# ---------------------------------------------------------------------------
+const PHASES := ["ready", "playing", "results", "lobby"]
+
+func board_bytes() -> PackedByteArray:
+	# 4 bits per cell: owner + 1 (0 = neutral). Q1 is 2856 cells, so 1428 bytes.
+	var out := PackedByteArray()
+	out.resize((owners.size() + 1) / 2)
+	for i in owners.size():
+		var v := owners[i] + 1
+		if i % 2 == 0: out[i / 2] = v
+		else: out[i / 2] |= v << 4
+	return out
+
+func encode_state(with_board: bool) -> PackedByteArray:
+	var b := StreamPeerBuffer.new()
+	b.put_u8(1 if with_board else 0)
+	b.put_64(match_seed)
+	b.put_u8(round_index)
+	b.put_u8(PHASES.find(phase))
+	b.put_float(phase_time)
+	b.put_float(remaining)
+	b.put_float(hazard.x)
+	b.put_float(hazard.y)
+	b.put_u32(owners_version)
+	b.put_u8(reveal_count)
+	b.put_u8(racers.size())
+	for r in racers: b.put_u8(r.id)
+	for r in standings: b.put_u8(r.id)
+	for r in racers:
+		b.put_u8(r.pos.x)
+		b.put_u8(r.pos.y)
+		b.put_u8(DIRS.find(r.facing))
+		b.put_u8(r.anchor.x)
+		b.put_u8(r.anchor.y)
+		b.put_u8((1 if r.exposed else 0) | (2 if r.has_harden else 0) | (4 if r.has_drive else 0))
+		b.put_u16(int(r.harden * 100.0))
+		b.put_u16(int(r.drive * 100.0))
+		b.put_u8(mini(r.failures, 255))
+		b.put_u16(r.biggest)
+		b.put_u16(r.score)
+		b.put_u16(r.trail.size())
+		for c in r.trail:
+			b.put_u8(c.x)
+			b.put_u8(c.y)
+	if with_board:
+		b.put_data(board_bytes())
+	return b.data_array
+
+## Rebuild the racer list and board for a round the host has moved to. `ids` arrive in the
+## host's already-shuffled order, so the layout shuffle is skipped and the rails line up.
+func reset_round(seed_value: int, round_i: int, ids: PackedByteArray) -> void:
+	match_seed = seed_value
+	round_index = round_i
+	var fresh: Array[Racer] = []
+	for id in ids:
+		var old := racer(id)
+		var r := Racer.new()
+		r.id = id
+		if old != null and round_i > 0:
+			r.has_harden = old.has_harden
+			r.has_drive = old.has_drive
+		fresh.append(r)
+	racers = fresh
+	begin_round(false)
+
+func decode_state(bytes: PackedByteArray) -> void:
+	var b := StreamPeerBuffer.new()
+	b.data_array = bytes
+	var with_board := b.get_u8() == 1
+	var seed_value := b.get_64()
+	var round_i := b.get_u8()
+	var phase_i := b.get_u8()
+	var p_time := b.get_float()
+	var p_remaining := b.get_float()
+	var hz := Vector2(b.get_float(), b.get_float())
+	var version := b.get_u32()
+	var remote_reveal := b.get_u8()
+	var count := b.get_u8()
+	var ids := PackedByteArray()
+	for i in count: ids.append(b.get_u8())
+	var order := PackedByteArray()
+	for i in count: order.append(b.get_u8())
+	var same := seed_value == match_seed and round_i == round_index and ids.size() == racers.size()
+	if same:
+		for i in count:
+			if racers[i].id != ids[i]: same = false
+	if not same:
+		reset_round(seed_value, round_i, ids)
+	var was_results := phase == "results"
+	phase = PHASES[phase_i]
+	phase_time = p_time
+	remaining = p_remaining
+	hazard = hz
+	trails.fill(-1)
+	var my_failures := racer(local_id).failures if racer(local_id) != null else 0
+	for i in count:
+		var r := racers[i]
+		r.pos = Vector2i(b.get_u8(), b.get_u8())
+		r.facing = DIRS[b.get_u8()]
+		r.anchor = Vector2i(b.get_u8(), b.get_u8())
+		var flags := b.get_u8()
+		r.exposed = flags & 1 != 0
+		r.has_harden = flags & 2 != 0
+		r.has_drive = flags & 4 != 0
+		r.harden = b.get_u16() / 100.0
+		r.drive = b.get_u16() / 100.0
+		r.failures = b.get_u8()
+		r.biggest = b.get_u16()
+		r.score = b.get_u16()
+		var n := b.get_u16()
+		r.trail.clear()
+		for k in n:
+			var c := Vector2i(b.get_u8(), b.get_u8())
+			r.trail.append(c)
+			trails[index(c)] = r.id
+	var me := racer(local_id)
+	if me != null and me.failures > my_failures:
+		notice = "TRAIL HIT - BACK TO ANCHOR"
+		notice_time = 1.6
+	if with_board:
+		var packed: PackedByteArray = b.get_data((owners.size() + 1) / 2)[1]
+		for i in owners.size():
+			var v: int = packed[i / 2] >> (4 * (i % 2)) & 15
+			owners[i] = v - 1
+		rebuild()
+		owners_version = version   # after rebuild, which bumps it
+		board_request_t = 0.0
+	elif version != owners_version and board_request_t <= 0.0:
+		board_request_t = 0.5   # ask again after a beat if the reliable reply is still in flight
+		Net.request_board()
+	# rebuild() re-derives scores from the board; the host's numbers and order still win.
+	var by_id := {}
+	for r in racers: by_id[r.id] = r
+	standings.clear()
+	for id in order: standings.append(by_id[id])
+	if phase == "results":
+		if not was_results or reveal_order.is_empty(): setup_reveal()
+		while reveal_count < remote_reveal and reveal_count < reveal_order.size(): reveal_next()
+	elif was_results:
+		refresh_fill()
+
+## Guest-side clock between snapshots so timers and the reveal animate smoothly.
+func tick_guest(dt: float) -> void:
+	phase_time += dt
+	notice_time = maxf(0.0, notice_time - dt)
+	board_request_t = maxf(0.0, board_request_t - dt)
+	if phase == "playing": remaining = maxf(0.0, remaining - dt)
+
 func text(lines: ScopeLines, value: String, pos: Vector2, font_size := 14, col := Color.WHITE, align := 0) -> void:
 	VectorFont.draw(lines, value, pos, font_size, col, 0.0, 0.0, align)
 
@@ -567,9 +786,12 @@ func draw(lines: ScopeLines, fill: Sprite2D) -> void:
 	fill.texture = territory_texture
 	fill.position = origin
 	fill.scale = Vector2.ONE * CELL
-	fill.visible = true
+	fill.visible = phase != "lobby"
 	lines.rect(FRAME, Palette.DIM, 0.0, 0.0, 0.8)
 	text(lines, "BATTLE ROYALE", Vector2(LX, 70), 22, Palette.CYAN)
+	if phase == "lobby":
+		draw_lobby(lines)
+		return
 	text(lines, LABELS[round_index], Vector2(LX, 116), 18, Palette.WHITE)
 	text(lines, "%02d:%02d" % [ceili(remaining) / 60, ceili(remaining) % 60], Vector2(LX + COL_W, 116), 20, Palette.WHITE, 2)
 	text(lines, "TOP %d %s" % [CUTS[round_index], "WIN" if round_index == 2 else "ADVANCE"], Vector2(LX, 146), 13, Palette.GREEN)
@@ -610,7 +832,7 @@ func draw(lines: ScopeLines, fill: Sprite2D) -> void:
 			lines.circle(point(r.anchor), 5, col, 8)
 		lines.circle(point(r.pos), 5.0, col, 4, 0.0, 0.0, 1.3)
 		lines.seg(point(r.pos), point(r.pos) + Vector2(r.facing) * 8.0, col, 0.0, 0.0, 1.0)
-		if r.id == 0:
+		if r.id == local_id:
 			text(lines, "YOU", point(r.pos) + Vector2(0, -20), 10, Palette.WHITE, 1)
 	var hp := origin + hazard * CELL
 	lines.seg(hp - Vector2(6, 8), hp + Vector2(6, 8), Palette.MAGENTA, 0.0, 0.0, 1.8)
@@ -619,7 +841,7 @@ func draw(lines: ScopeLines, fill: Sprite2D) -> void:
 		draw_reveal(lines)
 	else:
 		draw_roster(lines)
-	var player := racer(0)
+	var player := racer(local_id)
 	if phase != "results":
 		text(lines, "YOUR TERRITORY", Vector2(LX, 206), 13, Palette.DIM)
 		text(lines, "%.1f%%" % percent(player), Vector2(LX + COL_W, 206), 16, Palette.CYAN, 2)
@@ -632,19 +854,24 @@ func draw(lines: ScopeLines, fill: Sprite2D) -> void:
 		elif player.exposed:
 			text(lines, "CUTTING", Vector2(LX, 282), 13, Palette.ORANGE)
 	text(lines, "ARROWS MOVE", Vector2(LX, 786), 12, Palette.WHITE)
-	text(lines, "HOLD SPACE TO DRAW", Vector2(LX, 810), 12, Palette.WHITE)
+	text(lines, "LEAVE YOUR LAND TO CUT", Vector2(LX, 810), 12, Palette.WHITE)
 	text(lines, "ESC MENU", Vector2(LX, 846), 11, Palette.DIM)
 	if notice_time > 0.0: text(lines, notice, Vector2(FRAME.get_center().x, 740), 12, Palette.YELLOW, 1)
 	if phase != "playing":
 		var title := "SURVEYORS ONLY - CLOSE A LOOP TO CLAIM"
 		var sub := "ENTER START - TOP %d %s" % [CUTS[round_index], "WINS" if round_index == 2 else "ADVANCE"]
+		if guest: sub = "WAITING FOR THE HOST"
+		elif humans == 1 and Net.is_offline(): sub += "   H HOST FOR FRIENDS   J JOIN"
 		if phase == "results":
 			title = "QUALIFIED" if qualified() else "ELIMINATED"
-			if round_index == 2: title = "CHAMPION" if qualified() else "%s WINS" % NAMES[standings[0].id]
+			if round_index == 2: title = "CHAMPION" if qualified() else "%s WINS" % label(standings[0].id)
 			sub = "ENTER NEXT ROUND" if qualified() and round_index < 2 else "ENTER PLAY AGAIN"
+			if humans > 1 and not qualified() and round_index < 2: sub = "ENTER WATCH THE NEXT ROUND"
+			if guest: sub = "WAITING FOR THE HOST"
 			if not reveal_complete():
 				title = "TIME" if phase_time < REVEAL_BEAT else "FINAL STANDINGS"
-				sub = "ENTER SKIP"
+				sub = "WAITING FOR THE HOST" if guest else "ENTER SKIP"
+		if Net.pending(): sub = "OPENING A STEAM LOBBY..."
 		text(lines, title, Vector2(FRAME.get_center().x, 130), 18, Palette.YELLOW, 1)
 		text(lines, sub, Vector2(FRAME.get_center().x, 166), 12, Palette.WHITE, 1)
 	text(lines, "H HARDEN   O OVERDRIVE", Vector2(RX, 786), 11, Palette.DIM)
@@ -658,8 +885,8 @@ func draw_roster(lines: ScopeLines) -> void:
 		var r := roster[i]
 		var y := 156.0 + i * 43.0
 		var col := color(r.id)
-		if r.id == 0: lines.rect(Rect2(RX - 8, y - 8, COL_W + 16, 33), Palette.CYAN, 0.0, 0.0, 0.8)
-		text(lines, "%s%s" % ["> " if r.id == 0 else "", NAMES[r.id]], Vector2(RX, y), 16, col)
+		if r.id == local_id: lines.rect(Rect2(RX - 8, y - 8, COL_W + 16, 33), Palette.CYAN, 0.0, 0.0, 0.8)
+		text(lines, "%s%s" % ["> " if r.id == local_id else "", label(r.id)], Vector2(RX, y), 16, col)
 		if r.harden > 0.0:
 			text(lines, "HARD %.1fS" % r.harden, Vector2(RX + 128, y + 2), 10, Palette.WHITE)
 		elif r.drive > 0.0:
@@ -695,16 +922,42 @@ func draw_reveal(lines: ScopeLines) -> void:
 		var from := Vector2(LX, 240.0 + i * 30.0)
 		if not revealed(r.id):
 			col.a = 0.45
-			text(lines, NAMES[r.id], from, 14, col)
+			text(lines, label(r.id), from, 14, col)
 			continue
 		var rank := standings.find(r)
 		var to := Vector2(RX + 44, 156.0 + rank * 43.0)
 		var t: float = clampf((phase_time - reveal_time[r.id]) / 0.5, 0.0, 1.0)
 		t = t * t * (3.0 - 2.0 * t)
 		var pos := from.lerp(to, t)
-		if r.id == 0 and t >= 1.0:
+		if r.id == local_id and t >= 1.0:
 			lines.rect(Rect2(RX - 8, to.y - 8, COL_W + 16, 33), Palette.CYAN, 0.0, 0.0, 0.8)
-		text(lines, "%s%s" % ["> " if r.id == 0 else "", NAMES[r.id]], pos, int(lerpf(14.0, 16.0, t)), col)
+		text(lines, "%s%s" % ["> " if r.id == local_id else "", label(r.id)], pos, int(lerpf(14.0, 16.0, t)), col)
 		if t >= 1.0:
 			var pct_col := Palette.GREEN if rank < cut else Palette.RED
 			text(lines, "%.1f%%" % percent(r), Vector2(RX + COL_W, to.y), 14, pct_col, 2)
+
+## Friends lobby: who is here, how to invite, and who presses Enter.
+func draw_lobby(lines: ScopeLines) -> void:
+	var cx := FRAME.get_center().x
+	text(lines, "FRIENDS LOBBY", Vector2(cx, 130), 18, Palette.YELLOW, 1)
+	var code: String = lobby.get("code", "")
+	if code != "":
+		text(lines, "INVITE CODE", Vector2(cx, 300), 12, Palette.DIM, 1)
+		text(lines, code, Vector2(cx, 330), 20 if code.length() < 20 else 14, Palette.WHITE, 1)
+		text(lines, "COPIED TO CLIPBOARD - FRIENDS PRESS J WITH IT COPIED", Vector2(cx, 364), 10, Palette.DIM, 1)
+	var lobby_names: Array = lobby.get("names", [])
+	for i in lobby_names.size():
+		var y := 430.0 + i * 36.0
+		var col := color(i)
+		text(lines, "%d  %s" % [i + 1, String(lobby_names[i]).to_upper()], Vector2(cx, y), 16, col, 1)
+	for i in range(lobby_names.size(), 4):
+		text(lines, "%d  ---" % (i + 1), Vector2(cx, 430.0 + i * 36.0), 16, Palette.DIM, 1)
+	text(lines, "%d AI CUTTERS FILL THE REST" % (12 - maxi(1, lobby_names.size())), Vector2(cx, 590), 10, Palette.DIM, 1)
+	var message: String = lobby.get("message", "")
+	if message != "": text(lines, message, Vector2(cx, 640), 12, Palette.YELLOW, 1)
+	if lobby.get("host", false):
+		text(lines, "ENTER START THE MATCH" if lobby_names.size() > 1 else "WAITING FOR FRIENDS - ENTER STARTS ANYWAY", Vector2(cx, 166), 12, Palette.WHITE, 1)
+		if lobby.get("overlay", false): text(lines, "I STEAM INVITE OVERLAY", Vector2(cx, 700), 11, Palette.CYAN, 1)
+	else:
+		text(lines, "WAITING FOR THE HOST TO START", Vector2(cx, 166), 12, Palette.WHITE, 1)
+	text(lines, "ESC LEAVE", Vector2(LX, 846), 11, Palette.DIM)
