@@ -673,7 +673,6 @@ func draw_reveal(lines: ScopeLines) -> void:
 		if i == cut and phase_time >= REVEAL_BEAT:
 			lines.seg(Vector2(1176, y - 16), Vector2(1540, y - 16), Palette.RED)
 		text(lines, "%02d" % (i + 1), Vector2(1180, y), 16, Palette.DIM)
-		lines.seg(Vector2(1230, y + 6), Vector2(1530, y + 6), Color(Palette.DIM, 0.35))
 	for i in roster.size():
 		var r := roster[i]
 		var col := color(r.id)
