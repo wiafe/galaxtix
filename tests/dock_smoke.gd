@@ -15,7 +15,8 @@ func check_dock() -> void:
 	# Every ship's complete upgrade list remains reachable and visible.
 	for ship in Ships.LIST:
 		save.data.ship = ship.id
-		for row in game.dock_rows():
+		for row in range(game.dock_rows() - 1):
+			game.dock_tab = 1 if row >= Game.DOCK_FIXED_ROWS and row < game.dock_rows() - 1 else 0
 			game.dock_sel = row
 			main.display.begin_draw()
 			game.draw_dock_panel()
@@ -24,14 +25,84 @@ func check_dock() -> void:
 				var upgrade := row - Game.DOCK_FIXED_ROWS
 				assert(upgrade >= game.dock_upgrade_scroll)
 				assert(upgrade < game.dock_upgrade_scroll + 6)
-	# Locked ships cannot silently launch as Surveyor.
+	# Sector selection stops at the next unsecured sector.
+	game.dock_tab = 0
+	game.dock_sel = 1
+	save.data.galaxy = "helix"
+	save.data.galaxy_best.helix = 3
+	save.data.start_sector = 3
+	await press_dock(game, "move_right")
+	assert(int(save.data.start_sector) == 4 and game.dock_sel == 1)
+	await press_dock(game, "move_right")
+	assert(int(save.data.start_sector) == 4)
+	main.display.begin_draw()
+	game.draw_dock_field()
+	assert(main.display.lines.count < ScopeLines.MAX_SEGS)
+	save.data.galaxy_clear.helix = true
+	save.data.galaxy_best.helix = 8
+	save.data.start_sector = 8
+	await press_dock(game, "move_right")
+	assert(int(save.data.start_sector) == 9)
+	main.display.begin_draw()
+	game.draw_dock_field()
+	save.data.galaxy_clear.clear()
+	save.data.galaxy_best.clear()
+	save.data.start_sector = 1
+	# Enter advances, Escape reverses, and Space cannot skip earlier decisions.
+	game.dock_sel = 0
+	await press_dock(game, "launch")
+	assert(game.dock_sel == 0 and game.state == Game.State.DOCK)
+	save.data.galaxy = "deep"
+	await press_dock(game, "confirm")
+	assert(game.dock_sel == 0)
+	save.data.galaxy = "helix"
+	await press_dock(game, "confirm")
+	assert(game.dock_sel == 1)
+	await press_dock(game, "confirm")
+	assert(game.dock_sel == 2)
+	await press_dock(game, "abort")
+	assert(game.dock_sel == 1 and save.data.galaxy == "helix")
+	await press_dock(game, "abort")
+	assert(game.dock_sel == 0)
+	await press_dock(game, "tab")
+	assert(game.dock_tab == 0 and game.dock_sel == 0)
+	# Tabs preserve each selection and exclude upgrades from the launch flow.
+	game.dock_tab = 0
+	game.dock_sel = 2
+	await press_dock(game, "move_down")
+	assert(game.dock_sel == 2)
+	await press_dock(game, "tab")
+	assert(game.dock_tab == 1 and game.dock_sel >= Game.DOCK_FIXED_ROWS)
+	game.dock_sel = game.dock_rows() - 2
+	await press_dock(game, "abort")
+	assert(game.dock_tab == 0 and game.state == Game.State.DOCK)
+	assert(game.dock_sel == 2)
+	await press_dock(game, "tab")
+	assert(game.dock_sel == game.dock_rows() - 2)
+	# Progress guidance changes at the galaxy unlock and boss milestones.
+	save.data.galaxy = "helix"
+	assert(game.dock_progress_hint().is_empty())
+	save.data.galaxy_best.helix = Galaxies.UNLOCK_AT
+	assert(Galaxies.unlocked("belt"))
+	assert(game.dock_progress_hint().contains("TWIN HELIX"))
+	save.data.galaxy_clear.helix = true
+	assert(game.dock_progress_hint().contains("ENDLESS"))
+	save.data.galaxy_clear.clear()
+	save.data.galaxy_best.clear()
+	# Unlocking a ship does not launch it until the next confirmation.
+	game.dock_tab = 0
+	game.dock_sel = 2
 	save.data.ship = "sapper"
-	Input.action_press("launch")
-	game.update_dock()
-	Input.action_release("launch")
-	assert(game.state == Game.State.DOCK)
-	await get_tree().process_frame
-	await get_tree().process_frame
+	await press_dock(game, "launch")
+	assert(game.state == Game.State.DOCK and not Ships.owned("sapper"))
+	save.data.isotope = 8
+	await press_dock(game, "confirm")
+	assert(Ships.owned("sapper") and game.state == Game.State.DOCK)
+	await press_dock(game, "confirm")
+	assert(game.state == Game.State.TRANSIT)
+	game.go_dock()
+	game.dock_sel = 2
+	game.switch_dock_tab()
 	# The last ship-specific upgrade can still be purchased after scrolling.
 	save.data.ships.sapper = true
 	save.data.flux = 100
@@ -48,6 +119,19 @@ func check_dock() -> void:
 	save.data.upgrades.bulk = 1
 	game.update(0.016)
 	assert(game.pane_key != key)
+	# A locked destination blocks launch; an owned ship in an open galaxy launches.
+	game.dock_tab = 0
+	game.dock_sel = 2
+	save.data.ship = "surveyor"
+	save.data.galaxy = "deep"
+	await press_dock(game, "launch")
+	assert(game.state == Game.State.DOCK)
+	save.data.galaxy = "helix"
+	game.dock_sel = 2
+	await press_dock(game, "confirm")
+	assert(game.state == Game.State.TRANSIT)
+	game.go_dock()
+	assert(game.dock_tab == 0 and game.dock_sel == 0)
 	# Cached text must match the original outline renderer at each alignment.
 	var lines: ScopeLines = main.display.lines
 	for align in 3:
@@ -68,5 +152,33 @@ func check_dock() -> void:
 		lines.begin()
 		VectorFont.draw(lines, str(i), Vector2.ZERO, 12, Palette.WHITE)
 	assert(VectorFont._draw_cache.size() <= VectorFont.DRAW_CACHE_LIMIT)
-	print("PASS: dock rows, locked launch, purchase, preview invalidation, text geometry and cache bound")
+	# Result actions preserve the wallet and skip straight to the requested destination.
+	var balance: float = save.data.flux
+	game.activate_result(0)
+	assert(game.state == Game.State.DOCK and game.dock_tab == 1 and game.dock_loadout_sel == 2)
+	save.data.start_sector = 1
+	game.level = 4
+	game.state = Game.State.OUTRO
+	game.seq_t = Game.OUTRO_CARD_T + 2.0
+	var click := InputEventMouseButton.new()
+	click.position = game.result_button(1).get_center()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	game._input(click)
+	assert(game.state == Game.State.TRANSIT or game.state == Game.State.INTRO)
+	assert(game.run_flux == 0 and save.data.flux == balance)
+	assert(game.level == 4 and save.data.start_sector == 1, "Restart retries the lost sector")
+	game.level = 12
+	game.activate_result(1)
+	assert(game.level == 12 and game.endless, "Endless retries preserve the lost sector too")
+	print("PASS: step navigation, backtracking, unlock-before-launch, tabs, progression milestones, dock rows, locked launch, purchase, preview invalidation, text geometry and cache bound")
 	get_tree().quit()
+
+func press_dock(game: Game, action: String) -> void:
+	await get_tree().process_frame
+	await get_tree().process_frame
+	Input.action_press(action)
+	game.update_dock()
+	Input.action_release(action)
+	await get_tree().process_frame
+	await get_tree().process_frame

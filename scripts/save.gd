@@ -13,8 +13,6 @@ const UPGRADES := [
 	{"id": "yield", "name": "REFINERY", "desc": "+1 FLUX PER NODE", "base": 5.0, "growth": 1.8, "max": 0},
 	{"id": "prospect", "name": "PROSPECTOR", "desc": "EXTRA NODES SURFACE OVER TIME", "base": 6.0, "growth": 1.7, "max": 8},
 	{"id": "thrust", "name": "THRUSTERS", "desc": "+10% SPEED", "base": 3.0, "growth": 1.5, "max": 15},
-	{"id": "damp", "name": "DAMPENER", "desc": "-6% ANOMALY SPEED", "base": 4.0, "growth": 1.6, "max": 10},
-	{"id": "jam", "name": "JAMMER", "desc": "-8% SPARX SPEED", "base": 3.0, "growth": 1.6, "max": 8},
 	{"id": "hull", "name": "HULL PLATING", "desc": "+1 LIFE", "base": 8.0, "growth": 2.0, "max": 6},
 	{"id": "bulk", "name": "BULKHEADS", "desc": "+1 CELL OF RIM PRE-CLAIMED", "base": 4.0, "growth": 1.7, "max": 12},
 	{"id": "fuse", "name": "FUSE DELAY", "desc": "+0.5S BEFORE THE FUSE LIGHTS", "base": 2.0, "growth": 1.5, "max": 8},
@@ -74,7 +72,7 @@ func maxed(id: String) -> bool:
 
 
 func can_buy(id: String) -> bool:
-	return not maxed(id) and data.flux >= cost(id)
+	return not def(id).is_empty() and not maxed(id) and data.flux >= cost(id)
 
 
 func buy(id: String) -> bool:
@@ -106,14 +104,6 @@ func speed_mult() -> float:
 	return 1.0 + 0.10 * level("thrust")
 
 
-func qix_mult() -> float:
-	return max(0.4, 1.0 - 0.06 * level("damp"))
-
-
-func sparx_mult() -> float:
-	return max(0.35, 1.0 - 0.08 * level("jam"))
-
-
 func extra_lives() -> int:
 	return level("hull")
 
@@ -139,6 +129,14 @@ func save_data() -> void:
 	var f := FileAccess.open(PATH, FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(data))
+
+
+## Refund retired enemy-slowing upgrades once; removing their keys makes this idempotent.
+func refund_retired_upgrades() -> void:
+	for retired in [{"id": "damp", "base": 4.0, "max": 10}, {"id": "jam", "base": 3.0, "max": 8}]:
+		for purchased_level in clampi(level(retired.id), 0, retired.max):
+			data.flux += round(retired.base * pow(1.6, purchased_level))
+		data.upgrades.erase(retired.id)
 
 
 func load_data() -> void:
@@ -186,6 +184,7 @@ func load_data() -> void:
 		data.total_flux = 0.0
 		data.upgrades = {}
 		data.version = SAVE_VERSION
+	refund_retired_upgrades()
 	var rate := beacon_rate()
 	if rate > 0.0 and float(data.last_ts) > 0.0:
 		var elapsed: float = clamp(Time.get_unix_time_from_system() - float(data.last_ts), 0.0, OFFLINE_CAP_SEC)

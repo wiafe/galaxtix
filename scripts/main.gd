@@ -230,6 +230,8 @@ func _setup_input() -> void:
 		"abort": [KEY_ESCAPE],
 		"special": [KEY_E, KEY_CTRL],
 		"tab": [KEY_TAB],
+		"br_harden": [KEY_Q],
+		"br_overdrive": [KEY_E],
 	}
 	for action in map:
 		if not InputMap.has_action(action):
