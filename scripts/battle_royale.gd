@@ -8,7 +8,10 @@ const LABELS := ["Q1", "Q2", "FINAL"]
 const DIRS := [Vector2i.UP, Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT]
 const NAMES := ["YOU", "NOVA", "VEGA", "ION", "ORBIT", "ECHO", "COMET", "PULSE", "LYRA", "QUARK", "SOL", "RIFT"]
 const CELL := 11.0
-const FRAME := Rect2(40, 40, 836, 836)
+const FRAME := Rect2(384, 34, 832, 832)   # centred like a campaign run, readouts in columns either side
+const LX := 40.0
+const RX := 1256.0
+const COL_W := 304.0
 
 class Racer:
 	var id := 0
@@ -566,8 +569,10 @@ func draw(lines: ScopeLines, fill: Sprite2D) -> void:
 	fill.scale = Vector2.ONE * CELL
 	fill.visible = true
 	lines.rect(FRAME, Palette.DIM, 0.0, 0.0, 0.8)
-	text(lines, "BATTLE ROYALE", Vector2(70, 66), 24, Palette.CYAN)
-	text(lines, "%s   %02d:%02d" % [LABELS[round_index], ceili(remaining) / 60, ceili(remaining) % 60], Vector2(846, 70), 20, Palette.WHITE, 2)
+	text(lines, "BATTLE ROYALE", Vector2(LX, 70), 22, Palette.CYAN)
+	text(lines, LABELS[round_index], Vector2(LX, 116), 18, Palette.WHITE)
+	text(lines, "%02d:%02d" % [ceili(remaining) / 60, ceili(remaining) % 60], Vector2(LX + COL_W, 116), 20, Palette.WHITE, 2)
+	text(lines, "TOP %d %s" % [CUTS[round_index], "WIN" if round_index == 2 else "ADVANCE"], Vector2(LX, 146), 13, Palette.GREEN)
 	for segment in territory_segments:
 		var col := color(segment[2])
 		col.a = 0.55 if racer(segment[2]).harden <= 0.0 else 1.0
@@ -609,21 +614,27 @@ func draw(lines: ScopeLines, fill: Sprite2D) -> void:
 			text(lines, "YOU", point(r.pos) + Vector2(0, -20), 10, Palette.WHITE, 1)
 	var hp := origin + hazard * CELL
 	lines.seg(hp - Vector2(6, 8), hp + Vector2(6, 8), Palette.MAGENTA, 0.0, 0.0, 1.8)
-	text(lines, "STANDINGS" if phase == "results" else "CUTTERS", Vector2(940, 70), 24, Palette.WHITE)
-	text(lines, "TOP %d %s" % [CUTS[round_index], "WIN" if round_index == 2 else "ADVANCE"], Vector2(940, 110), 13, Palette.GREEN)
+	text(lines, "STANDINGS" if phase == "results" else "CUTTERS", Vector2(RX, 70), 22, Palette.WHITE)
 	if phase == "results":
 		draw_reveal(lines)
 	else:
 		draw_roster(lines)
 	var player := racer(0)
-	text(lines, "ARROWS MOVE   HOLD SPACE TO DRAW", Vector2(70, 786), 12, Palette.WHITE)
-	if player.harden > 0.0:
-		text(lines, "HARDENED  %.1fS" % player.harden, Vector2(846, 815), 13, Palette.WHITE, 2)
 	if phase != "results":
-		text(lines, "YOUR TERRITORY  %.1f%%" % percent(player), Vector2(846, 786), 13, Palette.CYAN, 2)
-	text(lines, "Q HARDEN %s   E OVERDRIVE %s" % ["1" if player.has_harden else "0", "1" if player.has_drive else "0"], Vector2(70, 815), 12, Palette.CYAN)
-	text(lines, "ESC MENU", Vector2(70, 846), 11, Palette.DIM)
-	if notice_time > 0.0: text(lines, notice, Vector2(458, 740), 12, Palette.YELLOW, 1)
+		text(lines, "YOUR TERRITORY", Vector2(LX, 206), 13, Palette.DIM)
+		text(lines, "%.1f%%" % percent(player), Vector2(LX + COL_W, 206), 16, Palette.CYAN, 2)
+		text(lines, "Q HARDEN", Vector2(LX, 250), 12, Palette.CYAN if player.has_harden else Palette.DIM)
+		text(lines, "E OVERDRIVE", Vector2(LX + 150, 250), 12, Palette.CYAN if player.has_drive else Palette.DIM)
+		if player.harden > 0.0:
+			text(lines, "HARDENED  %.1fS" % player.harden, Vector2(LX, 282), 13, Palette.WHITE)
+		elif player.drive > 0.0:
+			text(lines, "OVERDRIVE  %.1fS" % player.drive, Vector2(LX, 282), 13, Palette.WHITE)
+		elif player.exposed:
+			text(lines, "CUTTING", Vector2(LX, 282), 13, Palette.ORANGE)
+	text(lines, "ARROWS MOVE", Vector2(LX, 786), 12, Palette.WHITE)
+	text(lines, "HOLD SPACE TO DRAW", Vector2(LX, 810), 12, Palette.WHITE)
+	text(lines, "ESC MENU", Vector2(LX, 846), 11, Palette.DIM)
+	if notice_time > 0.0: text(lines, notice, Vector2(FRAME.get_center().x, 740), 12, Palette.YELLOW, 1)
 	if phase != "playing":
 		var title := "SURVEYORS ONLY - CLOSE A LOOP TO CLAIM"
 		var sub := "ENTER START - TOP %d %s" % [CUTS[round_index], "WINS" if round_index == 2 else "ADVANCE"]
@@ -634,26 +645,27 @@ func draw(lines: ScopeLines, fill: Sprite2D) -> void:
 			if not reveal_complete():
 				title = "TIME" if phase_time < REVEAL_BEAT else "FINAL STANDINGS"
 				sub = "ENTER SKIP"
-		text(lines, title, Vector2(458, 130), 18, Palette.YELLOW, 1)
-		text(lines, sub, Vector2(458, 166), 12, Palette.WHITE, 1)
-	text(lines, "H HARDEN   O OVERDRIVE", Vector2(940, 724), 11, Palette.DIM)
-	text(lines, "TIES: BIGGEST CAPTURE, FEWEST FAILS, DRAW", Vector2(940, 754), 9, Palette.DIM)
+		text(lines, title, Vector2(FRAME.get_center().x, 130), 18, Palette.YELLOW, 1)
+		text(lines, sub, Vector2(FRAME.get_center().x, 166), 12, Palette.WHITE, 1)
+	text(lines, "H HARDEN   O OVERDRIVE", Vector2(RX, 786), 11, Palette.DIM)
+	text(lines, "TIES: BIGGEST CAPTURE,", Vector2(RX, 816), 9, Palette.DIM)
+	text(lines, "FEWEST FAILS, DRAW", Vector2(RX, 834), 9, Palette.DIM)
 
 ## Mid-round panel: every cutter in a fixed order with charges, no ranks, no cut line, no percentages.
 func draw_roster(lines: ScopeLines) -> void:
-	text(lines, "H  O", Vector2(1480, 110), 11, Palette.DIM)
+	text(lines, "H  O", Vector2(RX + COL_W - 44, 110), 11, Palette.DIM)
 	for i in roster.size():
 		var r := roster[i]
 		var y := 156.0 + i * 43.0
 		var col := color(r.id)
-		if r.id == 0: lines.rect(Rect2(932, y - 8, 608, 33), Palette.CYAN, 0.0, 0.0, 0.8)
-		text(lines, "%s%s" % ["> " if r.id == 0 else "", NAMES[r.id]], Vector2(940, y), 16, col)
+		if r.id == 0: lines.rect(Rect2(RX - 8, y - 8, COL_W + 16, 33), Palette.CYAN, 0.0, 0.0, 0.8)
+		text(lines, "%s%s" % ["> " if r.id == 0 else "", NAMES[r.id]], Vector2(RX, y), 16, col)
 		if r.harden > 0.0:
-			text(lines, "HARDENED %.1fS" % r.harden, Vector2(1180, y + 2), 11, Palette.WHITE)
+			text(lines, "HARD %.1fS" % r.harden, Vector2(RX + 128, y + 2), 10, Palette.WHITE)
 		elif r.drive > 0.0:
-			text(lines, "OVERDRIVE %.1fS" % r.drive, Vector2(1180, y + 2), 11, Palette.WHITE)
+			text(lines, "DRIVE %.1fS" % r.drive, Vector2(RX + 128, y + 2), 10, Palette.WHITE)
 		elif r.exposed:
-			text(lines, "CUTTING", Vector2(1180, y + 2), 11, Palette.DIM)
+			text(lines, "CUTTING", Vector2(RX + 128, y + 2), 10, Palette.DIM)
 		draw_charges(lines, r, y)
 
 func draw_charges(lines: ScopeLines, r: Racer, y: float) -> void:
@@ -661,7 +673,7 @@ func draw_charges(lines: ScopeLines, r: Racer, y: float) -> void:
 	for a in 2:
 		var available := r.has_harden if a == 0 else r.has_drive
 		var active := r.harden > 0.0 if a == 0 else r.drive > 0.0
-		var pos := Vector2(1485 + a * 30, y + 6)
+		var pos := Vector2(RX + COL_W - 40 + a * 28, y + 6)
 		lines.circle(pos, 5, Palette.WHITE if active else (col if available else Palette.DIM), 4)
 		if available or active: lines.circle(pos, 2, col, 4)
 
@@ -671,24 +683,28 @@ func draw_reveal(lines: ScopeLines) -> void:
 	for i in standings.size():
 		var y := 156.0 + i * 43.0
 		if i == cut and phase_time >= REVEAL_BEAT:
-			lines.seg(Vector2(1176, y - 16), Vector2(1540, y - 16), Palette.RED)
-		text(lines, "%02d" % (i + 1), Vector2(1180, y), 16, Palette.DIM)
+			lines.seg(Vector2(RX - 8, y - 16), Vector2(RX + COL_W + 8, y - 16), Palette.RED)
+		text(lines, "%02d" % (i + 1), Vector2(RX, y), 16, Palette.DIM)
+	var waiting := 0
+	for r in roster:
+		if not revealed(r.id) or phase_time - reveal_time[r.id] < 0.5: waiting += 1
+	if waiting > 0: text(lines, "WAITING", Vector2(LX, 206), 13, Palette.DIM)
 	for i in roster.size():
 		var r := roster[i]
 		var col := color(r.id)
-		var from := Vector2(940, 156.0 + i * 43.0)
+		var from := Vector2(LX, 240.0 + i * 30.0)
 		if not revealed(r.id):
 			col.a = 0.45
-			text(lines, NAMES[r.id], from, 16, col)
+			text(lines, NAMES[r.id], from, 14, col)
 			continue
 		var rank := standings.find(r)
-		var to := Vector2(1236, 156.0 + rank * 43.0)
-		var t: float = clampf((phase_time - reveal_time[r.id]) / 0.35, 0.0, 1.0)
+		var to := Vector2(RX + 44, 156.0 + rank * 43.0)
+		var t: float = clampf((phase_time - reveal_time[r.id]) / 0.5, 0.0, 1.0)
 		t = t * t * (3.0 - 2.0 * t)
 		var pos := from.lerp(to, t)
 		if r.id == 0 and t >= 1.0:
-			lines.rect(Rect2(1172, to.y - 8, 368, 33), Palette.CYAN, 0.0, 0.0, 0.8)
-		text(lines, "%s%s" % ["> " if r.id == 0 else "", NAMES[r.id]], pos, 16, col)
+			lines.rect(Rect2(RX - 8, to.y - 8, COL_W + 16, 33), Palette.CYAN, 0.0, 0.0, 0.8)
+		text(lines, "%s%s" % ["> " if r.id == 0 else "", NAMES[r.id]], pos, int(lerpf(14.0, 16.0, t)), col)
 		if t >= 1.0:
 			var pct_col := Palette.GREEN if rank < cut else Palette.RED
-			text(lines, "%.1f%%" % percent(r), Vector2(1530, to.y), 14, pct_col, 2)
+			text(lines, "%.1f%%" % percent(r), Vector2(RX + COL_W, to.y), 14, pct_col, 2)
