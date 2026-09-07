@@ -21,12 +21,10 @@ const LIST := [
 		]},
 	{"id": "leaper", "name": "LEAPER", "cost": 8,
 		"rule": "BREAKS: THE PEN",
-		"desc": "HOLD SPACE TO AIM; ARROWS TURN. RELEASE TO JUMP AND SPLIT A WALL BOTH WAYS. THE FIRST SIDE TO LAND HARDENS; A HIT ON THE OTHER ONLY DROPS IT.",
+		"desc": "FROM THE COAST, HOLD SPACE TO AIM; ARROWS TURN. RELEASE TO LEAP TO THE TIP AND SPLIT A WALL BOTH WAYS, OR HOLD TO THE FAR COAST. THE FIRST SIDE TO LAND HARDENS.",
 		"upgrades": [
 			{"id": "stride", "name": "STRIDE", "desc": "+25% LINE BUILD SPEED", "base": 4.0, "growth": 1.6, "max": 3},
 			{"id": "arm", "name": "LONG ARM", "desc": "+5 CELLS MAX LINE", "base": 3.0, "growth": 1.6, "max": 4},
-			{"id": "pad", "name": "LANDING PAD", "desc": "ISLANDS ARE 5X5", "base": 6.0, "growth": 2.0, "max": 1},
-			{"id": "tide", "name": "TIDE", "desc": "ISLANDS GROW A RING EVERY 10S, +1 RING PER LEVEL", "base": 6.0, "growth": 1.8, "max": 3},
 		]},
 	{"id": "lancer", "name": "LANCER", "cost": 10,
 		"rule": "BREAKS: THE WALK",

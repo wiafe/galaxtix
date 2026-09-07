@@ -33,8 +33,14 @@ const TRANSIT_SHORT := 2.2      # between sectors
 
 ## Title menu. TUBE (the FX lab) is a development tool: it only exists when running from the
 ## editor and the lab files are excluded from exports.
-var TITLE_ITEMS: Array[String] = ["JUMP", "BATTLE ROYALE", "LOG", "QUIT"]
-var TITLE_DESCS: Array[String] = ["TO THE DOCK", "8 CUTTERS. THREE ROUNDS. ONE WINNER.", "JUMP LOG", "POWER DOWN"]
+var TITLE_ITEMS: Array[String] = ["JUMP", "BATTLE ROYALE", "LOG", "RESPEC", "RESET", "QUIT"]
+var TITLE_DESCS: Array[String] = ["TO THE DOCK", "8 CUTTERS. THREE ROUNDS. ONE WINNER.", "JUMP LOG", "REFUND EVERY UPGRADE. ENTER TWICE.", "WIPE THE SAVE. ENTER TWICE.", "POWER DOWN"]
+## Destructive title items arm on the first Enter and fire on the second; anything else disarms.
+const ARMED_DESCS := {
+	"RESPEC": "SURE? ENTER AGAIN REFUNDS ALL UPGRADES. ARROWS CANCEL.",
+	"RESET": "SURE? ENTER AGAIN WIPES EVERYTHING. ARROWS CANCEL.",
+}
+var armed_item := ""
 
 const INTRO_LEN := 2.6
 const INTRO_QIX_T := 1.4
@@ -817,6 +823,8 @@ func update_play(dt: float) -> void:
 		elif leap_building:
 			if inp.draw:
 				leap_aim(dt, aim_dir)
+				if leap_reached_coast():
+					finish_leap(true)
 			else:
 				finish_leap(false)
 			if state != State.PLAYING:
@@ -1778,7 +1786,7 @@ func draw_hud() -> void:
 			verb = "SPACE CHARGE"
 		"leaper":
 			help1 = "HOLD SPACE TO AIM THE BUOY, ARROWS TURN IT. RELEASE: LEAP."
-			help2 = "A WALL SPLITS FROM THE BUOY BOTH WAYS. FIRST SIDE TO LAND HARDENS; A CUT ON THE OTHER ONLY DROPS IT."
+			help2 = "RELEASE: LEAP TO THE TIP, A WALL SPLITS BOTH WAYS. HOLD TO THE FAR COAST TO LEAP THERE. FIRST SIDE TO LAND HARDENS."
 			verb = "SPACE LEAP"
 		"lancer":
 			help1 = "SPACE: LANCE A TETHER AHEAD AND RIDE IT TO LAND."
@@ -2591,6 +2599,8 @@ func update_title(dt: float) -> void:
 	if Input.is_action_just_pressed("move_down"):
 		title_sel = (title_sel + 1) % TITLE_ITEMS.size()
 		lines.spike(0.8, 0.2)
+	if armed_item != "" and (TITLE_ITEMS[title_sel] != armed_item or Input.is_action_just_pressed("abort")):
+		disarm_title()
 	if Input.is_action_just_pressed("abort") and show_log:
 		show_log = false
 	if Input.is_action_just_pressed("confirm") or Input.is_action_just_pressed("launch"):
@@ -2598,9 +2608,26 @@ func update_title(dt: float) -> void:
 
 
 func activate_title_item() -> void:
-	if TITLE_ITEMS[title_sel] == "LOG":
+	var item := TITLE_ITEMS[title_sel]
+	if item == "LOG":
 		show_log = not show_log
 		lines.spike(1.5, 0.3)
+		return
+	if ARMED_DESCS.has(item):
+		if armed_item != item:
+			armed_item = item
+			TITLE_DESCS[title_sel] = ARMED_DESCS[item]
+			lines.spike(1.5, 0.3)
+			return
+		if item == "RESET":
+			Save.reset_data()
+			set_msg("SAVE WIPED", 1.5)
+		else:
+			set_msg("+%s FLUX REFUNDED" % fmt(Save.respec()), 1.5)
+		disarm_title()
+		sparks.burst(Vector2(PANEL_X + 100, 300), 60, 260.0, 1.5, 0.8, Palette.RED if item == "RESET" else Palette.GREEN)
+		lines.spike(4.0, 0.5)
+		shake = maxf(shake, 0.6)
 		return
 	title_exit = title_sel
 	title_exit_t = 0.0
@@ -2608,6 +2635,12 @@ func activate_title_item() -> void:
 		sparks.zap_polyline(pth, Palette.CYAN, 2600.0, 5.0)
 	lines.spike(4.0, 0.5)
 	shake = maxf(shake, 0.4)
+
+
+func disarm_title() -> void:
+	armed_item = ""
+	TITLE_DESCS[TITLE_ITEMS.find("RESPEC")] = "REFUND EVERY UPGRADE. ENTER TWICE."
+	TITLE_DESCS[TITLE_ITEMS.find("RESET")] = "WIPE THE SAVE. ENTER TWICE."
 
 
 func draw_title_field() -> void:
@@ -3407,7 +3440,7 @@ func leap_max() -> int:
 
 ## Island half-size: 1 = 3x3, 2 = 5x5 with the Landing Pad.
 func pad_r() -> int:
-	return 1 + up("pad")
+	return 1
 
 
 ## Free cells ahead of `from` in `dir` before land, a line, or the edge.
@@ -3431,19 +3464,24 @@ func leap_start(dir: Vector2i) -> Vector2i:
 
 
 ## Start aiming: nothing is built yet, so nothing can be cut. Arrows turn the aim while held.
+## Only from the coast, and from the cell the ship stands on: no leaping out of the interior.
 func start_leap() -> void:
+	if border[idx(p.x, p.y)] == 0:
+		set_msg("COAST ONLY", 0.5)
+		lines.spike(1.0, 0.2)
+		return
 	var dir := last_dir
-	if dir == Vector2i.ZERO or ray_len(leap_start(dir), dir) < 1:
+	if dir == Vector2i.ZERO or ray_len(p, dir) < 1:
 		dir = Vector2i.ZERO
 		for d in [Vector2i.DOWN, Vector2i.UP, Vector2i.RIGHT, Vector2i.LEFT]:
-			if ray_len(leap_start(d), d) >= 1:
+			if ray_len(p, d) >= 1:
 				dir = d
 				break
 	if dir == Vector2i.ZERO:
 		set_msg("NO ROOM", 0.5)
 		lines.spike(1.0, 0.2)
 		return
-	anchor = leap_start(dir)
+	anchor = p
 	leap_dir = dir
 	leap_len = 0.0
 	leap_building = true
@@ -3451,11 +3489,16 @@ func start_leap() -> void:
 
 
 func leap_aim(dt: float, aim: Vector2i) -> void:
-	if aim != Vector2i.ZERO and aim != leap_dir and ray_len(leap_start(aim), aim) >= 1:
+	if aim != Vector2i.ZERO and aim != leap_dir and ray_len(p, aim) >= 1:
 		leap_dir = aim
-		anchor = leap_start(aim)
 		last_dir = aim
 	leap_len = minf(leap_len + leap_rate() * dt, float(mini(leap_max(), ray_len(anchor, leap_dir))))
+
+
+## Held all the way: the aim has touched the far coast, so the ship leaps to the end of it.
+func leap_reached_coast() -> bool:
+	var reach := ray_len(anchor, leap_dir)
+	return reach >= 1 and reach <= leap_max() and leap_len >= float(reach)
 
 
 ## The landing cell for the current aim.
@@ -3463,9 +3506,9 @@ func leap_target() -> Vector2i:
 	return anchor + leap_dir * maxi(1, int(floor(leap_len)))
 
 
-## The leap: the ship dashes to the buoy, which lands as a small island, and a wall builds out
-## from it along the facing axis, ahead and back, until each end meets land. Only then does the
-## wall become land and the flood fill decide the split. The wall can be cut the whole time.
+## The leap: the ship dashes to the tip of the aim and a wall splits from there along the leap
+## axis, ahead and back, until each end meets land. The tip is the first cell of the wall; the
+## ship stands on it. Held to the far coast, the ahead side lands at once and hardens.
 func finish_leap(_on_land: bool) -> void:
 	leap_building = false
 	if leap_len < 1.0:
@@ -3482,23 +3525,14 @@ func finish_leap(_on_land: bool) -> void:
 	sparks.burst(center(landing), 40, 220.0, 1.5, 0.5, Palette.CYAN)
 	lines.spike(2.0, 0.3)
 	shake = maxf(shake, 0.25)
-	var r := pad_r()
-	var gained := 0
-	for dy in range(-r, r + 1):
-		for dx in range(-r, r + 1):
-			var q := leap_tip + Vector2i(dx, dy)
-			if in_bounds(q) and cells[idx(q.x, q.y)] == FREE:
-				cells[idx(q.x, q.y)] = CLAIMED
-				gained += 1
-	free_count -= gained
-	run_cells += gained
-	islands.append({"c": leap_tip, "r": r, "t": 0.0})
+	cells[idx(leap_tip.x, leap_tip.y)] = TRAIL
 	trail.clear()
+	trail.append(leap_tip)
 	trail_slow = false
 	drawing = true
 	fuse_on = false
 	wall_dirs = [leap_dir, -leap_dir]
-	wall_ends = [leap_tip + leap_dir * r, leap_tip - leap_dir * r]
+	wall_ends = [leap_tip, leap_tip]
 	wall_done = [false, false]
 	wall_cells = [[], []]
 	wall_building = true
@@ -3540,7 +3574,7 @@ func wall_grow(dt: float) -> void:
 ## The first side to land becomes coast at once: a bridge from the island to whatever it reached.
 func wall_harden(s: int) -> void:
 	var n := 0
-	for c in wall_cells[s]:
+	for c in wall_cells[s] + [leap_tip]:
 		var rc: Vector2i = c
 		if cells[idx(rc.x, rc.y)] == TRAIL:
 			cells[idx(rc.x, rc.y)] = CLAIMED
@@ -3560,7 +3594,7 @@ func wall_harden(s: int) -> void:
 func wall_hit(c: Vector2i) -> bool:
 	var s := -1
 	for k in 2:
-		if wall_cells[k].has(c):
+		if wall_cells[k].has(c) or (c == leap_tip and not wall_done[k]):
 			s = k
 	if s < 0 or not (wall_done[0] or wall_done[1]):
 		return true

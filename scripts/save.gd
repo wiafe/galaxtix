@@ -19,25 +19,28 @@ const UPGRADES := [
 	{"id": "beacon", "name": "BEACON", "desc": "+6 FLUX PER HOUR, EVEN OFFLINE", "base": 10.0, "growth": 2.0, "max": 0},
 ]
 
-var data := {
-	"version": SAVE_VERSION,
-	"flux": 0.0,
-	"upgrades": {},
-	"best_level": 0,
-	"runs": 0,
-	"total_flux": 0.0,
-	"last_ts": 0.0,
-	"galaxy": "helix",
-	"galaxy_best": {},
-	"start_sector": 1,
-	"isotope": 0,
-	"ships": {},
-	"ship": "surveyor",
-	"ship_upgrades": {},
-	"galaxy_clear": {},
-	"endless_best": {},
-	"starcharts": 0,
-}
+static func fresh() -> Dictionary:
+	return {
+		"version": SAVE_VERSION,
+		"flux": 0.0,
+		"upgrades": {},
+		"best_level": 0,
+		"runs": 0,
+		"total_flux": 0.0,
+		"last_ts": 0.0,
+		"galaxy": "helix",
+		"galaxy_best": {},
+		"start_sector": 1,
+		"isotope": 0,
+		"ships": {},
+		"ship": "surveyor",
+		"ship_upgrades": {},
+		"galaxy_clear": {},
+		"endless_best": {},
+		"starcharts": 0,
+	}
+
+var data := fresh()
 var enabled := true
 var offline_gain := 0.0
 var _save_timer := 0.0
@@ -122,6 +125,40 @@ func beacon_rate() -> float:
 
 
 # --- persistence ---
+## Wipe everything: currencies, upgrades, ships, records. Written to disk at once so a crash
+## right after cannot bring the old save back.
+func reset_data() -> void:
+	data = fresh()
+	offline_gain = 0.0
+	save_data()
+
+
+## Refund every dock and ship upgrade at the price each level was bought for. Ships themselves
+## (paid in Isotope) and all records stay. Returns the Flux handed back.
+func respec() -> float:
+	var refund := 0.0
+	for id in data.upgrades.keys():
+		var u := def(String(id))
+		if u.is_empty():
+			continue
+		for k in clampi(int(data.upgrades[id]), 0, 64):
+			refund += round(float(u.base) * pow(float(u.growth), k))
+	for key in data.ship_upgrades.keys():
+		var parts := String(key).split(":")
+		if parts.size() != 2:
+			continue
+		var u := Ships.up_def(parts[0], parts[1])
+		if u.is_empty():
+			continue
+		for k in clampi(int(data.ship_upgrades[key]), 0, 64):
+			refund += round(float(u.base) * pow(float(u.growth), k))
+	data.upgrades = {}
+	data.ship_upgrades = {}
+	data.flux += refund
+	save_data()
+	return refund
+
+
 func save_data() -> void:
 	if not enabled:
 		return
@@ -137,6 +174,11 @@ func refund_retired_upgrades() -> void:
 		for purchased_level in clampi(level(retired.id), 0, retired.max):
 			data.flux += round(retired.base * pow(1.6, purchased_level))
 		data.upgrades.erase(retired.id)
+	# the Leaper lost its islands, so Landing Pad and Tide went with them
+	for retired in [{"id": "leaper:pad", "base": 6.0, "growth": 2.0, "max": 1}, {"id": "leaper:tide", "base": 6.0, "growth": 1.8, "max": 3}]:
+		for purchased_level in clampi(int(data.ship_upgrades.get(retired.id, 0)), 0, retired.max):
+			data.flux += round(retired.base * pow(retired.growth, purchased_level))
+		data.ship_upgrades.erase(retired.id)
 
 
 func load_data() -> void:

@@ -182,7 +182,7 @@ func _ready() -> void:
 		Save.data.ship = auto_mode
 		Save.data.isotope = 3
 		if auto_mode == "leaper":
-			Save.data.ship_upgrades = {"leaper:tide": 1}
+			Save.data.ship_upgrades = {"leaper:arm": 1}
 			shot_times = [7.5, 8.6, 12.5, 16.5]   # aiming, wall growing, wall up, later
 		if auto_mode == "lancer":
 			Save.data.ship_upgrades = {"lancer:bend": 1, "lancer:lattice": 1}

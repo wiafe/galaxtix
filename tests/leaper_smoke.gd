@@ -47,7 +47,8 @@ func check() -> void:
 		assert(game.cells[game.idx(c.x, c.y)] == Game.TRAIL)
 	var island: Vector2i = game.leap_tip
 	var toward: Vector2i = game.wall_dirs[hard]
-	assert(game.cells[game.idx(island.x + toward.x * (game.pad_r() + 1), island.y + toward.y * (game.pad_r() + 1))] == Game.CLAIMED, "Hardened side is coast")
+	assert(game.cells[game.idx(island.x + toward.x, island.y + toward.y)] == Game.CLAIMED, "Hardened side is coast")
+	assert(game.cells[game.idx(island.x, island.y)] == Game.CLAIMED, "The tip hardens with the first side")
 	# 2. A hit on the running side now drops it and hurts nobody.
 	var lives := game.lives
 	var hit := running_cell(game, soft)
@@ -55,7 +56,8 @@ func check() -> void:
 	assert(game.cells[game.idx(hit.x, hit.y)] == Game.FREE)
 	assert(not game.wall_building and not game.drawing and game.trail.is_empty())
 	assert(game.lives == lives and game.state == Game.State.PLAYING)
-	assert(game.cells[game.idx(island.x, island.y)] == Game.CLAIMED, "The island stays")
+	assert(game.cells[game.idx(island.x, island.y)] == Game.CLAIMED, "The tip stays as coast")
+	assert(game.p == island and game.border[game.idx(game.p.x, game.p.y)] == 1, "The ship stands on coast")
 	# 3. A hit while both sides are still running hurts.
 	fresh(game)
 	game.wall_grow(0.05)
@@ -78,5 +80,27 @@ func check() -> void:
 		if cell == Game.FREE:
 			counted += 1
 	assert(counted == game.free_count, "Free-cell accounting survives hardening and claiming")
-	print("PASS: first side hardens, harmless cut after that, lethal cut while both run, full wall splits")
+	# 5. Leaping is only allowed from the coast, and from where the ship stands.
+	game.level = 3
+	game.start_level()
+	game.state = Game.State.PLAYING
+	game.p = game.p + Vector2i(0, -1)   # one step into the rim's interior
+	assert(game.border[game.idx(game.p.x, game.p.y)] == 0)
+	game.last_dir = Vector2i.DOWN
+	game.start_leap()
+	assert(not game.leap_building, "No leap from off the coast")
+	game.p = game.p + Vector2i(0, 1)
+	game.start_leap()
+	assert(game.leap_building and game.anchor == game.p, "The aim starts under the ship")
+	# 6. Held to the far coast: the aim touches land and the ship leaps to the end of it.
+	get_tree().root.get_node("Save").data.ship_upgrades = {"leaper:arm": 10}
+	game.leap_aim(0.05, Vector2i.ZERO)
+	assert(not game.leap_reached_coast())
+	var reach := game.ray_len(game.anchor, game.leap_dir)
+	if reach <= game.leap_max():
+		game.leap_aim(100.0, Vector2i.ZERO)
+		assert(game.leap_reached_coast(), "A full hold reaches the far coast")
+		game.finish_leap(true)
+		assert(game.p == game.anchor + game.leap_dir * reach)
+	print("PASS: first side hardens, harmless cut after that, lethal cut while both run, full wall splits, coast-only leaps, hold to the far coast")
 	get_tree().quit()
