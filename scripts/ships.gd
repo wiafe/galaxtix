@@ -21,7 +21,7 @@ const LIST := [
 		]},
 	{"id": "leaper", "name": "LEAPER", "cost": 8,
 		"rule": "BREAKS: THE PEN",
-		"desc": "HOLD SPACE TO AIM; USE ARROWS TO TURN. RELEASE TO JUMP AND BUILD A WALL.",
+		"desc": "HOLD SPACE TO AIM; ARROWS TURN. RELEASE TO JUMP AND SPLIT A WALL BOTH WAYS. THE FIRST SIDE TO LAND HARDENS; A HIT ON THE OTHER ONLY DROPS IT.",
 		"upgrades": [
 			{"id": "stride", "name": "STRIDE", "desc": "+25% LINE BUILD SPEED", "base": 4.0, "growth": 1.6, "max": 3},
 			{"id": "arm", "name": "LONG ARM", "desc": "+5 CELLS MAX LINE", "base": 3.0, "growth": 1.6, "max": 4},

@@ -224,6 +224,7 @@ var braced := false            # bulwark: Space released mid-void, rooted while 
 var wall_building := false
 var wall_ends: Array[Vector2i] = [Vector2i.ZERO, Vector2i.ZERO]
 var wall_dirs: Array[Vector2i] = [Vector2i.LEFT, Vector2i.RIGHT]
+var wall_cells: Array = [[], []]   # the trail cells each side of the wall has laid so far
 var wall_done: Array[bool] = [false, false]
 var sector_isotope := 0
 var run_isotope := 0
@@ -1579,10 +1580,11 @@ func draw_play() -> void:
 			# the wall growing out of the buoy both ways along the leap axis, bright heads while moving
 			var tip := center(leap_tip)
 			for s in 2:
+				if wall_done[s]:
+					continue   # a hardened side is coast now and draws itself
 				var e := center(wall_ends[s])
 				lines.seg(tip, e, Palette.YELLOW, 2.2, 0.45, 1.3)
-				if not wall_done[s]:
-					lines.circle(e, 3.0 + 1.5 * sin(time * 20.0), Palette.FULLBRIGHT, 6, 1.5, 0.6, 1.1)
+				lines.circle(e, 3.0 + 1.5 * sin(time * 20.0), Palette.FULLBRIGHT, 6, 1.5, 0.6, 1.1)
 		else:
 			lines.polyline(pts, false, tc, 2.2, 0.45, 1.3)
 		lines.circle(center(anchor), 4.0, Palette.ORANGE, 8, 1.0, 0.3, 0.8)
@@ -1710,7 +1712,7 @@ func draw_hud() -> void:
 				ab = leap_len / float(leap_max())
 				ab_col = Palette.YELLOW
 			elif wall_building:
-				sub = "WALL BUILDING"
+				sub = "ONE SIDE HARD - OTHER RUNNING" if (wall_done[0] or wall_done[1]) else "WALL BUILDING - A HIT HURTS"
 				ab_col = Palette.YELLOW
 			else:
 				sub = "HOLD SPACE: BUILD A LINE"
@@ -2934,6 +2936,8 @@ func qix_trail_cell(q: QixBody) -> Vector2i:
 ## Something touched a trail cell. Returns true if that kills the pilot. With LATTICE, a hit on
 ## the un-ridden tether ahead is absorbed once: that part drops away and the ride ends in place.
 func tether_hit(c: Vector2i) -> bool:
+	if wall_building:
+		return wall_hit(c)
 	if not (tether_active and lattice_ok):
 		return true
 	var i := trail.find(c)
@@ -3496,13 +3500,16 @@ func finish_leap(_on_land: bool) -> void:
 	wall_dirs = [leap_dir, -leap_dir]
 	wall_ends = [leap_tip + leap_dir * r, leap_tip - leap_dir * r]
 	wall_done = [false, false]
+	wall_cells = [[], []]
 	wall_building = true
 	leap_acc = 0.0
 	set_msg("LEAP", 0.5)
 
 
-## The wall grows one cell per side per step until each side meets land, the edge, or a line.
-## Both sides done: the line and the wall become land and the flood fill decides the split.
+## JezzBall rules. The wall grows one cell per side per step. The first side to meet land, the
+## edge or a line hardens on the spot and is safe from then on. The other side keeps running;
+## when it lands too, the flood fill decides the split. A hit on the running side after the first
+## has hardened just drops that side, no harm done. A hit while both are still running hurts.
 func wall_grow(dt: float) -> void:
 	leap_acc += leap_rate() * 2.0 * dt   # the wall runs twice as fast as the aim
 	while leap_acc >= 1.0 and wall_building:
@@ -3514,16 +3521,62 @@ func wall_grow(dt: float) -> void:
 			if not in_bounds(nxt) or cells[idx(nxt.x, nxt.y)] != FREE:
 				wall_done[s] = true
 				sparks.burst(center(wall_ends[s]), 16, 140.0, 1.5, 0.4, Palette.CYAN)
+				if wall_done[1 - s]:
+					# the closing side: the flood fill takes it from here
+					wall_building = false
+					set_msg("WALL UP", 0.6)
+					complete_claim()
+					return
+				wall_harden(s)
 				continue
 			cells[idx(nxt.x, nxt.y)] = TRAIL
 			trail.append(nxt)
+			wall_cells[s].append(nxt)
 			wall_ends[s] = nxt
 			if randf() < 0.6:
 				sparks.emit(center(nxt), Vector2(randf_range(-40, 40), randf_range(-40, 40)), 0.3, Palette.YELLOW, 2.0)
-		if wall_done[0] and wall_done[1]:
-			wall_building = false
-			set_msg("WALL UP", 0.6)
-			complete_claim()
+
+
+## The first side to land becomes coast at once: a bridge from the island to whatever it reached.
+func wall_harden(s: int) -> void:
+	var n := 0
+	for c in wall_cells[s]:
+		var rc: Vector2i = c
+		if cells[idx(rc.x, rc.y)] == TRAIL:
+			cells[idx(rc.x, rc.y)] = CLAIMED
+			n += 1
+		trail.erase(rc)
+	wall_cells[s] = []
+	if n > 0:
+		free_count -= n
+		run_cells += n
+		grid_changed()
+	set_msg("SIDE HARDENED", 0.5)
+	lines.spike(1.2, 0.2)
+
+
+## Something touched the wall while it was building. Both sides still running: that hurts.
+## One side already hardened: the running side just stops and drops away.
+func wall_hit(c: Vector2i) -> bool:
+	var s := -1
+	for k in 2:
+		if wall_cells[k].has(c):
+			s = k
+	if s < 0 or not (wall_done[0] or wall_done[1]):
+		return true
+	for cc in wall_cells[s]:
+		var rc: Vector2i = cc
+		if cells[idx(rc.x, rc.y)] == TRAIL:
+			cells[idx(rc.x, rc.y)] = FREE
+	wall_cells = [[], []]
+	trail.clear()
+	wall_building = false
+	drawing = false
+	draw_armed = false
+	sparks.burst(center(c), 30, 200.0, 1.5, 0.5, Palette.YELLOW)
+	lines.spike(2.0, 0.3)
+	set_msg("WALL CUT", 0.6)
+	return false
 
 
 ## Is the ship hittable by things that only hurt a ship off the coast? Drawing, or a Sapper out
