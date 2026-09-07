@@ -69,6 +69,10 @@ func _ready() -> void:
 			autotest = true
 			auto_mode = a.substr(11)   # boss, boss:belt, boss:deep
 			shot_times = [3.0, 6.0, 9.0, 12.0]
+		elif a.begins_with("--autotest=field:"):
+			autotest = true
+			auto_mode = a.substr(11)   # field:<galaxy>:<sector>, e.g. field:belt:3
+			shot_times = [2.5, 5.0]
 		elif a == "--autotest=hazards":
 			autotest = true
 			auto_mode = "hazards"
@@ -130,6 +134,15 @@ func _ready() -> void:
 		game.battle.remaining = 8.0   # short round so the buzzer reveal fits in the shot window
 	if autotest and (auto_mode in ["intro", "outro", "transit", "sector"]):
 		game.autopilot = true   # no inputs, just watch the sequences
+		game.start_run()
+	if autotest and auto_mode.begins_with("field:"):
+		# jump straight into any sector of any galaxy (in memory only) and watch it
+		var parts := auto_mode.split(":")
+		Save.data.galaxy_best = {"helix": 9, "belt": 9, "deep": 9}
+		Save.data.galaxy = parts[1]
+		Save.data.start_sector = int(parts[2])
+		game.autopilot = true
+		game.auto_script = [[8.0, Vector2i.ZERO, false, false]]
 		game.start_run()
 	if autotest and auto_mode.begins_with("boss"):
 		# jump straight into a galaxy's boss sector (in memory only)

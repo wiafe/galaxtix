@@ -2359,10 +2359,12 @@ func sector_layout(g: Dictionary, lvl: int, rim: int) -> Dictionary:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = hash("%s:%d" % [g.id, lvl])
 	var r := 1 + rim
-	var arena := SectorArena.build(lvl, rim) if g.id == "helix" and lvl <= Galaxies.LENGTH else {}
+	var shape := sector_shape(g, lvl, rng)
+	# Carved galaxies go through the arena builder: the silhouette is the outline and every pillar
+	# in `shape` becomes a hole with its own one-cell rail (an inner coast you can cut to and from).
+	var arena := SectorArena.build(lvl, rim, g.id, shape) if SectorArena.carved(g.id, lvl) else {}
 	var start: Vector2i = arena.start if not arena.is_empty() else Vector2i(N / 2, r - 1)
 	var occupied: Array = [start]
-	var shape := sector_shape(g, lvl, rng)
 	var out := {"nodes": [], "turrets": [], "spawners": [], "shape": shape, "arena": arena, "start": start}
 	for i in mini(6, 3 + (lvl - 1) / 3):
 		var c := layout_pick(rng, r + 10, occupied, 26.0, shape, arena)
@@ -2382,6 +2384,7 @@ func sector_layout(g: Dictionary, lvl: int, rim: int) -> Dictionary:
 
 ## The sector's rock, as Rect2i in cells: pylons out in the void for galaxies that have them.
 ## They grow with the sector; the boss arena has a fixed four; endless sectors keep the vocabulary.
+## In a carved galaxy each pylon sits inside the silhouette and gets a rail from the arena builder.
 func sector_shape(g: Dictionary, lvl: int, rng: RandomNumberGenerator) -> Array:
 	var rects: Array = []
 	if String(g.shape) != "pillar":
@@ -2389,6 +2392,9 @@ func sector_shape(g: Dictionary, lvl: int, rng: RandomNumberGenerator) -> Array:
 	if lvl == Galaxies.LENGTH:
 		for off in [Vector2i(-30, -30), Vector2i(22, -30), Vector2i(-30, 22), Vector2i(22, 22)]:
 			rects.append(Rect2i(Vector2i(N / 2, N / 2) + off, Vector2i(8, 8)))
+		return rects
+	if g.id == "belt" and lvl == 5:
+		rects.append(Rect2i(Vector2i(N / 2 - 12, N / 2 - 12), Vector2i(24, 24)))   # the moat's core
 		return rects
 	var grade := mini(lvl, Galaxies.LENGTH)
 	var n := mini(4, 1 + (grade + 1) / 2)
@@ -2403,6 +2409,8 @@ func sector_shape(g: Dictionary, lvl: int, rng: RandomNumberGenerator) -> Array:
 				if (o as Rect2i).grow(12).intersects(rr):
 					ok = false
 					break
+			if ok and SectorArena.carved(g.id, lvl) and not SectorArena.rect_inside(g.id, lvl, rr, 7):
+				ok = false   # keep a pylon and its rail clear of the carve so the rail is a real island
 			if ok:
 				rects.append(rr)
 				break
