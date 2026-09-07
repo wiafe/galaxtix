@@ -11,6 +11,19 @@ func check_dock() -> void:
 	var game: Game = main.game
 	var save = get_tree().root.get_node("Save")
 	assert(not save.enabled, "Run with --nosave")
+	# Respec refunds every level at its purchase price; reset wipes to factory defaults.
+	save.data.flux = 0.0
+	save.data.upgrades = {"thrust": 2}
+	save.data.ships = {"leaper": true}
+	save.data.ship_upgrades = {"leaper:stride": 1, "bogus:thing": 3}
+	var expect: float = round(float(save.def("thrust").base)) + round(float(save.def("thrust").base) * float(save.def("thrust").growth)) + round(float(Ships.up_def("leaper", "stride").base))
+	assert(is_equal_approx(save.respec(), expect), "Respec refunds each purchased level")
+	assert(is_equal_approx(float(save.data.flux), expect) and save.data.upgrades.is_empty() and save.data.ship_upgrades.is_empty())
+	assert(save.data.ships.has("leaper"), "Ships are kept on respec")
+	save.data.isotope = 7
+	save.data.galaxy_best = {"helix": 5}
+	save.reset_data()
+	assert(int(save.data.isotope) == 0 and save.data.galaxy_best.is_empty() and save.data.ships.is_empty() and float(save.data.flux) == 0.0)
 	game.go_dock()
 	# Every ship's complete upgrade list remains reachable and visible.
 	for ship in Ships.LIST:
@@ -66,11 +79,23 @@ func check_dock() -> void:
 	assert(game.dock_sel == 0)
 	await press_dock(game, "tab")
 	assert(game.dock_tab == 0 and game.dock_sel == 0)
-	# Tabs preserve each selection and exclude upgrades from the launch flow.
+	# The ship row sits on top of the upgrade list: Down enters it, Up from the first row leaves it.
 	game.dock_tab = 0
 	game.dock_sel = 2
 	await press_dock(game, "move_down")
-	assert(game.dock_sel == 2)
+	assert(game.dock_tab == 1 and game.dock_sel == Game.DOCK_FIXED_ROWS)
+	await press_dock(game, "move_up")
+	assert(game.dock_tab == 0 and game.dock_sel == 2)
+	await press_dock(game, "move_down")
+	await press_dock(game, "move_down")
+	assert(game.dock_tab == 1 and game.dock_sel == Game.DOCK_FIXED_ROWS + 1)
+	var ship_before: String = save.data.ship
+	await press_dock(game, "move_right")
+	assert(save.data.ship != ship_before and game.dock_tab == 1, "Ship changes from an upgrade row too")
+	save.data.ship = ship_before
+	game.dock_tab = 0
+	game.dock_sel = 2
+	# Tabs still preserve each selection and exclude upgrades from the launch flow.
 	await press_dock(game, "tab")
 	assert(game.dock_tab == 1 and game.dock_sel >= Game.DOCK_FIXED_ROWS)
 	game.dock_sel = game.dock_rows() - 2

@@ -22,9 +22,9 @@ func _ready() -> void:
 	for a in args:
 		if a == "--autotest":
 			autotest = true
-		elif a == "--autotest=dock":
+		elif a == "--autotest=dock" or a == "--autotest=dock:ship":
 			autotest = true
-			auto_mode = "dock"
+			auto_mode = a.substr(11)   # dock, dock:ship
 			shot_times = [1.5, 3.0]
 		elif a == "--autotest=intro":
 			autotest = true
@@ -69,6 +69,10 @@ func _ready() -> void:
 			autotest = true
 			auto_mode = a.substr(11)   # boss, boss:belt, boss:deep
 			shot_times = [3.0, 6.0, 9.0, 12.0]
+		elif a.begins_with("--autotest=field:"):
+			autotest = true
+			auto_mode = a.substr(11)   # field:<galaxy>:<sector>, e.g. field:belt:3
+			shot_times = [2.5, 5.0]
 		elif a == "--autotest=hazards":
 			autotest = true
 			auto_mode = "hazards"
@@ -111,8 +115,13 @@ func _ready() -> void:
 		game.transit_skip = not (auto_mode in ["intro", "outro", "transit", "sector"])
 		if auto_mode == "bulwark":
 			seed(4242)   # a seed where the Anomaly starts away from the top edge
-	if autotest and auto_mode == "dock":
+	if autotest and auto_mode.begins_with("dock"):
 		game.go_dock()
+		if auto_mode == "dock:ship":
+			Save.data.ships = {"surveyor": true, "bulwark": true}
+			Save.data.ship = "bulwark"
+			Save.data.upgrades = {"yield": 3, "thrust": 2, "bulk": 4}
+			game.dock_sel = 2
 	if autotest and auto_mode in ["brhost", "brjoin"]:
 		game.start_battle_royale()
 		Net.snapshot_received.connect(func(b: PackedByteArray) -> void: br_snapshots += 1; br_bytes += b.size())
@@ -130,6 +139,15 @@ func _ready() -> void:
 		game.battle.remaining = 8.0   # short round so the buzzer reveal fits in the shot window
 	if autotest and (auto_mode in ["intro", "outro", "transit", "sector"]):
 		game.autopilot = true   # no inputs, just watch the sequences
+		game.start_run()
+	if autotest and auto_mode.begins_with("field:"):
+		# jump straight into any sector of any galaxy (in memory only) and watch it
+		var parts := auto_mode.split(":")
+		Save.data.galaxy_best = {"helix": 9, "belt": 9, "deep": 9}
+		Save.data.galaxy = parts[1]
+		Save.data.start_sector = int(parts[2])
+		game.autopilot = true
+		game.auto_script = [[8.0, Vector2i.ZERO, false, false]]
 		game.start_run()
 	if autotest and auto_mode.begins_with("boss"):
 		# jump straight into a galaxy's boss sector (in memory only)
@@ -169,7 +187,7 @@ func _ready() -> void:
 		Save.data.ship = auto_mode
 		Save.data.isotope = 3
 		if auto_mode == "leaper":
-			Save.data.ship_upgrades = {"leaper:tide": 1}
+			Save.data.ship_upgrades = {"leaper:arm": 1}
 			shot_times = [7.5, 8.6, 12.5, 16.5]   # aiming, wall growing, wall up, later
 		if auto_mode == "lancer":
 			Save.data.ship_upgrades = {"lancer:bend": 1, "lancer:lattice": 1}

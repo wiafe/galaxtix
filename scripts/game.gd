@@ -33,8 +33,14 @@ const TRANSIT_SHORT := 2.2      # between sectors
 
 ## Title menu. TUBE (the FX lab) is a development tool: it only exists when running from the
 ## editor and the lab files are excluded from exports.
-var TITLE_ITEMS: Array[String] = ["JUMP", "BATTLE ROYALE", "LOG", "QUIT"]
-var TITLE_DESCS: Array[String] = ["TO THE DOCK", "8 CUTTERS. THREE ROUNDS. ONE WINNER.", "JUMP LOG", "POWER DOWN"]
+var TITLE_ITEMS: Array[String] = ["JUMP", "BATTLE ROYALE", "LOG", "RESPEC", "RESET", "QUIT"]
+var TITLE_DESCS: Array[String] = ["TO THE DOCK", "8 CUTTERS. THREE ROUNDS. ONE WINNER.", "JUMP LOG", "REFUND EVERY UPGRADE. ENTER TWICE.", "WIPE THE SAVE. ENTER TWICE.", "POWER DOWN"]
+## Destructive title items arm on the first Enter and fire on the second; anything else disarms.
+const ARMED_DESCS := {
+	"RESPEC": "SURE? ENTER AGAIN REFUNDS ALL UPGRADES. ARROWS CANCEL.",
+	"RESET": "SURE? ENTER AGAIN WIPES EVERYTHING. ARROWS CANCEL.",
+}
+var armed_item := ""
 
 const INTRO_LEN := 2.6
 const INTRO_QIX_T := 1.4
@@ -224,6 +230,7 @@ var braced := false            # bulwark: Space released mid-void, rooted while 
 var wall_building := false
 var wall_ends: Array[Vector2i] = [Vector2i.ZERO, Vector2i.ZERO]
 var wall_dirs: Array[Vector2i] = [Vector2i.LEFT, Vector2i.RIGHT]
+var wall_cells: Array = [[], []]   # the trail cells each side of the wall has laid so far
 var wall_done: Array[bool] = [false, false]
 var sector_isotope := 0
 var run_isotope := 0
@@ -816,6 +823,8 @@ func update_play(dt: float) -> void:
 		elif leap_building:
 			if inp.draw:
 				leap_aim(dt, aim_dir)
+				if leap_reached_coast():
+					finish_leap(true)
 			else:
 				finish_leap(false)
 			if state != State.PLAYING:
@@ -1579,10 +1588,11 @@ func draw_play() -> void:
 			# the wall growing out of the buoy both ways along the leap axis, bright heads while moving
 			var tip := center(leap_tip)
 			for s in 2:
+				if wall_done[s]:
+					continue   # a hardened side is coast now and draws itself
 				var e := center(wall_ends[s])
 				lines.seg(tip, e, Palette.YELLOW, 2.2, 0.45, 1.3)
-				if not wall_done[s]:
-					lines.circle(e, 3.0 + 1.5 * sin(time * 20.0), Palette.FULLBRIGHT, 6, 1.5, 0.6, 1.1)
+				lines.circle(e, 3.0 + 1.5 * sin(time * 20.0), Palette.FULLBRIGHT, 6, 1.5, 0.6, 1.1)
 		else:
 			lines.polyline(pts, false, tc, 2.2, 0.45, 1.3)
 		lines.circle(center(anchor), 4.0, Palette.ORANGE, 8, 1.0, 0.3, 0.8)
@@ -1710,7 +1720,7 @@ func draw_hud() -> void:
 				ab = leap_len / float(leap_max())
 				ab_col = Palette.YELLOW
 			elif wall_building:
-				sub = "WALL BUILDING"
+				sub = "ONE SIDE HARD - OTHER RUNNING" if (wall_done[0] or wall_done[1]) else "WALL BUILDING - A HIT HURTS"
 				ab_col = Palette.YELLOW
 			else:
 				sub = "HOLD SPACE: BUILD A LINE"
@@ -1776,7 +1786,7 @@ func draw_hud() -> void:
 			verb = "SPACE CHARGE"
 		"leaper":
 			help1 = "HOLD SPACE TO AIM THE BUOY, ARROWS TURN IT. RELEASE: LEAP."
-			help2 = "A WALL GROWS FROM THE BUOY AHEAD AND BACK. IT CAN BE CUT."
+			help2 = "RELEASE: LEAP TO THE TIP, A WALL SPLITS BOTH WAYS. HOLD TO THE FAR COAST TO LEAP THERE. FIRST SIDE TO LAND HARDENS."
 			verb = "SPACE LEAP"
 		"lancer":
 			help1 = "SPACE: LANCE A TETHER AHEAD AND RIDE IT TO LAND."
@@ -2359,10 +2369,12 @@ func sector_layout(g: Dictionary, lvl: int, rim: int) -> Dictionary:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = hash("%s:%d" % [g.id, lvl])
 	var r := 1 + rim
-	var arena := SectorArena.build(lvl, rim) if g.id == "helix" and lvl <= Galaxies.LENGTH else {}
+	var shape := sector_shape(g, lvl, rng)
+	# Carved galaxies go through the arena builder: the silhouette is the outline and every pillar
+	# in `shape` becomes a hole with its own one-cell rail (an inner coast you can cut to and from).
+	var arena := SectorArena.build(lvl, rim, g.id, shape) if SectorArena.carved(g.id, lvl) else {}
 	var start: Vector2i = arena.start if not arena.is_empty() else Vector2i(N / 2, r - 1)
 	var occupied: Array = [start]
-	var shape := sector_shape(g, lvl, rng)
 	var out := {"nodes": [], "turrets": [], "spawners": [], "shape": shape, "arena": arena, "start": start}
 	for i in mini(6, 3 + (lvl - 1) / 3):
 		var c := layout_pick(rng, r + 10, occupied, 26.0, shape, arena)
@@ -2382,6 +2394,7 @@ func sector_layout(g: Dictionary, lvl: int, rim: int) -> Dictionary:
 
 ## The sector's rock, as Rect2i in cells: pylons out in the void for galaxies that have them.
 ## They grow with the sector; the boss arena has a fixed four; endless sectors keep the vocabulary.
+## In a carved galaxy each pylon sits inside the silhouette and gets a rail from the arena builder.
 func sector_shape(g: Dictionary, lvl: int, rng: RandomNumberGenerator) -> Array:
 	var rects: Array = []
 	if String(g.shape) != "pillar":
@@ -2389,6 +2402,9 @@ func sector_shape(g: Dictionary, lvl: int, rng: RandomNumberGenerator) -> Array:
 	if lvl == Galaxies.LENGTH:
 		for off in [Vector2i(-30, -30), Vector2i(22, -30), Vector2i(-30, 22), Vector2i(22, 22)]:
 			rects.append(Rect2i(Vector2i(N / 2, N / 2) + off, Vector2i(8, 8)))
+		return rects
+	if g.id == "belt" and lvl == 5:
+		rects.append(Rect2i(Vector2i(N / 2 - 12, N / 2 - 12), Vector2i(24, 24)))   # the moat's core
 		return rects
 	var grade := mini(lvl, Galaxies.LENGTH)
 	var n := mini(4, 1 + (grade + 1) / 2)
@@ -2403,6 +2419,8 @@ func sector_shape(g: Dictionary, lvl: int, rng: RandomNumberGenerator) -> Array:
 				if (o as Rect2i).grow(12).intersects(rr):
 					ok = false
 					break
+			if ok and SectorArena.carved(g.id, lvl) and not SectorArena.rect_inside(g.id, lvl, rr, 7):
+				ok = false   # keep a pylon and its rail clear of the carve so the rail is a real island
 			if ok:
 				rects.append(rr)
 				break
@@ -2581,6 +2599,8 @@ func update_title(dt: float) -> void:
 	if Input.is_action_just_pressed("move_down"):
 		title_sel = (title_sel + 1) % TITLE_ITEMS.size()
 		lines.spike(0.8, 0.2)
+	if armed_item != "" and (TITLE_ITEMS[title_sel] != armed_item or Input.is_action_just_pressed("abort")):
+		disarm_title()
 	if Input.is_action_just_pressed("abort") and show_log:
 		show_log = false
 	if Input.is_action_just_pressed("confirm") or Input.is_action_just_pressed("launch"):
@@ -2588,9 +2608,26 @@ func update_title(dt: float) -> void:
 
 
 func activate_title_item() -> void:
-	if TITLE_ITEMS[title_sel] == "LOG":
+	var item := TITLE_ITEMS[title_sel]
+	if item == "LOG":
 		show_log = not show_log
 		lines.spike(1.5, 0.3)
+		return
+	if ARMED_DESCS.has(item):
+		if armed_item != item:
+			armed_item = item
+			TITLE_DESCS[title_sel] = ARMED_DESCS[item]
+			lines.spike(1.5, 0.3)
+			return
+		if item == "RESET":
+			Save.reset_data()
+			set_msg("SAVE WIPED", 1.5)
+		else:
+			set_msg("+%s FLUX REFUNDED" % fmt(Save.respec()), 1.5)
+		disarm_title()
+		sparks.burst(Vector2(PANEL_X + 100, 300), 60, 260.0, 1.5, 0.8, Palette.RED if item == "RESET" else Palette.GREEN)
+		lines.spike(4.0, 0.5)
+		shake = maxf(shake, 0.6)
 		return
 	title_exit = title_sel
 	title_exit_t = 0.0
@@ -2598,6 +2635,12 @@ func activate_title_item() -> void:
 		sparks.zap_polyline(pth, Palette.CYAN, 2600.0, 5.0)
 	lines.spike(4.0, 0.5)
 	shake = maxf(shake, 0.4)
+
+
+func disarm_title() -> void:
+	armed_item = ""
+	TITLE_DESCS[TITLE_ITEMS.find("RESPEC")] = "REFUND EVERY UPGRADE. ENTER TWICE."
+	TITLE_DESCS[TITLE_ITEMS.find("RESET")] = "WIPE THE SAVE. ENTER TWICE."
 
 
 func draw_title_field() -> void:
@@ -2926,6 +2969,8 @@ func qix_trail_cell(q: QixBody) -> Vector2i:
 ## Something touched a trail cell. Returns true if that kills the pilot. With LATTICE, a hit on
 ## the un-ridden tether ahead is absorbed once: that part drops away and the ride ends in place.
 func tether_hit(c: Vector2i) -> bool:
+	if wall_building:
+		return wall_hit(c)
 	if not (tether_active and lattice_ok):
 		return true
 	var i := trail.find(c)
@@ -3395,7 +3440,7 @@ func leap_max() -> int:
 
 ## Island half-size: 1 = 3x3, 2 = 5x5 with the Landing Pad.
 func pad_r() -> int:
-	return 1 + up("pad")
+	return 1
 
 
 ## Free cells ahead of `from` in `dir` before land, a line, or the edge.
@@ -3419,19 +3464,24 @@ func leap_start(dir: Vector2i) -> Vector2i:
 
 
 ## Start aiming: nothing is built yet, so nothing can be cut. Arrows turn the aim while held.
+## Only from the coast, and from the cell the ship stands on: no leaping out of the interior.
 func start_leap() -> void:
+	if border[idx(p.x, p.y)] == 0:
+		set_msg("COAST ONLY", 0.5)
+		lines.spike(1.0, 0.2)
+		return
 	var dir := last_dir
-	if dir == Vector2i.ZERO or ray_len(leap_start(dir), dir) < 1:
+	if dir == Vector2i.ZERO or ray_len(p, dir) < 1:
 		dir = Vector2i.ZERO
 		for d in [Vector2i.DOWN, Vector2i.UP, Vector2i.RIGHT, Vector2i.LEFT]:
-			if ray_len(leap_start(d), d) >= 1:
+			if ray_len(p, d) >= 1:
 				dir = d
 				break
 	if dir == Vector2i.ZERO:
 		set_msg("NO ROOM", 0.5)
 		lines.spike(1.0, 0.2)
 		return
-	anchor = leap_start(dir)
+	anchor = p
 	leap_dir = dir
 	leap_len = 0.0
 	leap_building = true
@@ -3439,11 +3489,16 @@ func start_leap() -> void:
 
 
 func leap_aim(dt: float, aim: Vector2i) -> void:
-	if aim != Vector2i.ZERO and aim != leap_dir and ray_len(leap_start(aim), aim) >= 1:
+	if aim != Vector2i.ZERO and aim != leap_dir and ray_len(p, aim) >= 1:
 		leap_dir = aim
-		anchor = leap_start(aim)
 		last_dir = aim
 	leap_len = minf(leap_len + leap_rate() * dt, float(mini(leap_max(), ray_len(anchor, leap_dir))))
+
+
+## Held all the way: the aim has touched the far coast, so the ship leaps to the end of it.
+func leap_reached_coast() -> bool:
+	var reach := ray_len(anchor, leap_dir)
+	return reach >= 1 and reach <= leap_max() and leap_len >= float(reach)
 
 
 ## The landing cell for the current aim.
@@ -3451,9 +3506,9 @@ func leap_target() -> Vector2i:
 	return anchor + leap_dir * maxi(1, int(floor(leap_len)))
 
 
-## The leap: the ship dashes to the buoy, which lands as a small island, and a wall builds out
-## from it along the facing axis, ahead and back, until each end meets land. Only then does the
-## wall become land and the flood fill decide the split. The wall can be cut the whole time.
+## The leap: the ship dashes to the tip of the aim and a wall splits from there along the leap
+## axis, ahead and back, until each end meets land. The tip is the first cell of the wall; the
+## ship stands on it. Held to the far coast, the ahead side lands at once and hardens.
 func finish_leap(_on_land: bool) -> void:
 	leap_building = false
 	if leap_len < 1.0:
@@ -3470,31 +3525,25 @@ func finish_leap(_on_land: bool) -> void:
 	sparks.burst(center(landing), 40, 220.0, 1.5, 0.5, Palette.CYAN)
 	lines.spike(2.0, 0.3)
 	shake = maxf(shake, 0.25)
-	var r := pad_r()
-	var gained := 0
-	for dy in range(-r, r + 1):
-		for dx in range(-r, r + 1):
-			var q := leap_tip + Vector2i(dx, dy)
-			if in_bounds(q) and cells[idx(q.x, q.y)] == FREE:
-				cells[idx(q.x, q.y)] = CLAIMED
-				gained += 1
-	free_count -= gained
-	run_cells += gained
-	islands.append({"c": leap_tip, "r": r, "t": 0.0})
+	cells[idx(leap_tip.x, leap_tip.y)] = TRAIL
 	trail.clear()
+	trail.append(leap_tip)
 	trail_slow = false
 	drawing = true
 	fuse_on = false
 	wall_dirs = [leap_dir, -leap_dir]
-	wall_ends = [leap_tip + leap_dir * r, leap_tip - leap_dir * r]
+	wall_ends = [leap_tip, leap_tip]
 	wall_done = [false, false]
+	wall_cells = [[], []]
 	wall_building = true
 	leap_acc = 0.0
 	set_msg("LEAP", 0.5)
 
 
-## The wall grows one cell per side per step until each side meets land, the edge, or a line.
-## Both sides done: the line and the wall become land and the flood fill decides the split.
+## JezzBall rules. The wall grows one cell per side per step. The first side to meet land, the
+## edge or a line hardens on the spot and is safe from then on. The other side keeps running;
+## when it lands too, the flood fill decides the split. A hit on the running side after the first
+## has hardened just drops that side, no harm done. A hit while both are still running hurts.
 func wall_grow(dt: float) -> void:
 	leap_acc += leap_rate() * 2.0 * dt   # the wall runs twice as fast as the aim
 	while leap_acc >= 1.0 and wall_building:
@@ -3506,16 +3555,62 @@ func wall_grow(dt: float) -> void:
 			if not in_bounds(nxt) or cells[idx(nxt.x, nxt.y)] != FREE:
 				wall_done[s] = true
 				sparks.burst(center(wall_ends[s]), 16, 140.0, 1.5, 0.4, Palette.CYAN)
+				if wall_done[1 - s]:
+					# the closing side: the flood fill takes it from here
+					wall_building = false
+					set_msg("WALL UP", 0.6)
+					complete_claim()
+					return
+				wall_harden(s)
 				continue
 			cells[idx(nxt.x, nxt.y)] = TRAIL
 			trail.append(nxt)
+			wall_cells[s].append(nxt)
 			wall_ends[s] = nxt
 			if randf() < 0.6:
 				sparks.emit(center(nxt), Vector2(randf_range(-40, 40), randf_range(-40, 40)), 0.3, Palette.YELLOW, 2.0)
-		if wall_done[0] and wall_done[1]:
-			wall_building = false
-			set_msg("WALL UP", 0.6)
-			complete_claim()
+
+
+## The first side to land becomes coast at once: a bridge from the island to whatever it reached.
+func wall_harden(s: int) -> void:
+	var n := 0
+	for c in wall_cells[s] + [leap_tip]:
+		var rc: Vector2i = c
+		if cells[idx(rc.x, rc.y)] == TRAIL:
+			cells[idx(rc.x, rc.y)] = CLAIMED
+			n += 1
+		trail.erase(rc)
+	wall_cells[s] = []
+	if n > 0:
+		free_count -= n
+		run_cells += n
+		grid_changed()
+	set_msg("SIDE HARDENED", 0.5)
+	lines.spike(1.2, 0.2)
+
+
+## Something touched the wall while it was building. Both sides still running: that hurts.
+## One side already hardened: the running side just stops and drops away.
+func wall_hit(c: Vector2i) -> bool:
+	var s := -1
+	for k in 2:
+		if wall_cells[k].has(c) or (c == leap_tip and not wall_done[k]):
+			s = k
+	if s < 0 or not (wall_done[0] or wall_done[1]):
+		return true
+	for cc in wall_cells[s]:
+		var rc: Vector2i = cc
+		if cells[idx(rc.x, rc.y)] == TRAIL:
+			cells[idx(rc.x, rc.y)] = FREE
+	wall_cells = [[], []]
+	trail.clear()
+	wall_building = false
+	drawing = false
+	draw_armed = false
+	sparks.burst(center(c), 30, 200.0, 1.5, 0.5, Palette.YELLOW)
+	lines.spike(2.0, 0.3)
+	set_msg("WALL CUT", 0.6)
+	return false
 
 
 ## Is the ship hittable by things that only hurt a ship off the coast? Drawing, or a Sapper out
@@ -3589,15 +3684,28 @@ func update_dock() -> void:
 			go_title()
 		return
 	if dock_tab == 0:
+		# on the ship step the selector is the top row of the list: Down walks into the upgrades
+		if dock_sel == 2 and Input.is_action_just_pressed("move_down"):
+			switch_dock_tab()
+			dock_sel = DOCK_FIXED_ROWS
+			return
 		update_dock_step()
 		return
 	var choices := dock_navigation_rows()
 	var index := maxi(0, choices.find(dock_sel))
 	if Input.is_action_just_pressed("move_up"):
-		index = (index - 1 + choices.size()) % choices.size()
+		if index == 0:
+			switch_dock_tab()   # back up onto the ship row
+			return
+		index -= 1
 	if Input.is_action_just_pressed("move_down"):
-		index = (index + 1) % choices.size()
+		index = mini(index + 1, choices.size() - 1)
 	dock_sel = choices[index]
+	if Input.is_action_just_pressed("move_left") or Input.is_action_just_pressed("move_right"):
+		# changing ship from an upgrade row: the list underneath changes with it
+		dock_ship_step(-1 if Input.is_action_just_pressed("move_left") else 1)
+		dock_sel = clampi(dock_sel, DOCK_FIXED_ROWS, dock_rows() - 2)
+		dock_upgrade_scroll = 0
 	if Input.is_action_just_pressed("confirm"):
 		var entry := dock_upgrade_at(dock_sel)
 		var burst_at := Vector2(1050, 285 + (dock_sel - DOCK_FIXED_ROWS - dock_upgrade_scroll) * 48)
@@ -3919,20 +4027,20 @@ func draw_dock_panel() -> void:
 		elif dock_sel == 2:
 			value = sh.name
 			action = "LAUNCH" if Ships.owned(sh.id) else "UNLOCK"
-			VectorFont.draw(lines, "%s / %s" % [g.name, sector], Vector2(800, 175), 12, Palette.DIM, 0.0, 0.0, 1)
-		VectorFont.draw(lines, "< %s >" % value, Vector2(800, 756), 20, Palette.CYAN, 0.0, 0.0, 1)
-		if dock_sel == 2:
+		if dock_sel < 2:
+			VectorFont.draw(lines, "< %s >" % value, Vector2(800, 756), 20, Palette.CYAN, 0.0, 0.0, 1)
+		else:
 			draw_dock_desc(635, 205, 420)
 		lines.rect(Rect2(580, 804, 440, 44), Palette.CYAN)
 		if dock_sel == 2 and not Ships.owned(sh.id):
 			draw_currency_caption("UNLOCK", str(int(sh.cost)), true, Vector2(800, 826), " [ENTER]", Ships.can_buy(sh.id))
 		else:
 			VectorFont.draw(lines, action + " [ENTER]", Vector2(800, 819), 16, Palette.CYAN, 0.0, 0.0, 1)
-	var hint := "UP/DOWN SELECT   ENTER BUY   TAB SHIP   ESC BACK" if dock_tab == 1 else "LEFT/RIGHT CHOOSE   ENTER CONTINUE   ESC BACK"
-	if dock_tab == 0 and dock_sel == 2:
-		hint += "   TAB UPGRADES"
-	if dock_tab == 0 and dock_sel == 2 and Ships.owned(sh.id):
-		hint = "LEFT/RIGHT CHOOSE   ENTER/SPACE LAUNCH   ESC BACK   TAB UPGRADES"
+	var hint := "LEFT/RIGHT CHOOSE   ENTER CONTINUE   ESC BACK"
+	if dock_tab == 1:
+		hint = "UP/DOWN ROW   LEFT/RIGHT SHIP   ENTER BUY   ESC BACK"
+	elif dock_sel == 2:
+		hint = "LEFT/RIGHT SHIP   DOWN UPGRADES   %s   ESC BACK" % ("ENTER/SPACE LAUNCH" if Ships.owned(sh.id) else "ENTER UNLOCK")
 	VectorFont.draw(lines, hint, Vector2(800, 873), 11, Palette.DIM, 0.0, 0.0, 1)
 
 
@@ -3944,9 +4052,29 @@ func draw_dock_upgrades() -> void:
 	if dock_sel >= DOCK_FIXED_ROWS and dock_sel < dock_rows() - 1:
 		var selected := dock_sel - DOCK_FIXED_ROWS
 		dock_upgrade_scroll = clampi(dock_upgrade_scroll, maxi(0, selected - VISIBLE + 1), selected)
-	VectorFont.draw(lines, "UPGRADES", Vector2(770, 235), 12, Palette.DIM)
+	# the ship selector is the first row of the list, so Down from it lands on the upgrades
+	var g := Galaxies.get_galaxy(Save.data.galaxy)
+	var ss := clampi(int(Save.data.start_sector), 1, max_start(g.id))
+	VectorFont.draw(lines, "%s / %s" % [g.name, "ENDLESS" if ss > Galaxies.LENGTH else "SECTOR %02d" % ss], Vector2(770, 175), 12, Palette.DIM)
+	# the ship row, as the hangar row always looked: label, arrows in the middle, status on the right
+	var on_ship := dock_tab == 0 and dock_sel == 2
+	var ship_y := 214.0
+	if on_ship:
+		var mc := Palette.YELLOW
+		mc.a = 0.6 + 0.4 * sin(time * 8.0)
+		VectorFont.draw(lines, ">", Vector2(742, ship_y), 15, mc, 1.5, 0.5)
+	VectorFont.draw(lines, "SHIP", Vector2(770, ship_y), 15, Palette.WHITE if on_ship else Palette.DIM, 0.4, 0.15)
+	var owned := Ships.owned(sh.id)
+	VectorFont.draw(lines, "< %s >" % sh.name, Vector2(1061, ship_y), 15, Palette.CYAN if owned else Palette.DIM, 0.6 if on_ship else 0.3, 0.25, 1)
+	if owned:
+		VectorFont.draw(lines, "READY", Vector2(1380, ship_y), 12, Palette.GREEN, 0.4, 0.1, 2)
+	else:
+		var cc := Palette.GREEN if Ships.can_buy(sh.id) else Palette.RED
+		VectorFont.draw(lines, "%d ISO" % int(sh.cost), Vector2(1380, ship_y), 12, cc, 0.4, 0.1, 2)
+	lines.seg(Vector2(742, ship_y + 28), Vector2(1380, ship_y + 28), Palette.DIM, 0.3, 0.1, 0.6)
+	VectorFont.draw(lines, "UPGRADES", Vector2(770, 257), 10, Palette.DIM)
 	VectorFont.draw(lines, "%d-%d / %d" % [dock_upgrade_scroll + 1, mini(dock_upgrade_scroll + VISIBLE, total), total],
-		Vector2(1380, 235), 11, Palette.DIM, 0.0, 0.0, 2)
+		Vector2(1380, 257), 10, Palette.DIM, 0.0, 0.0, 2)
 	for i in range(dock_upgrade_scroll, mini(dock_upgrade_scroll + VISIBLE, total)):
 		var row := DOCK_FIXED_ROWS + i
 		var entry := dock_upgrade_at(row)
