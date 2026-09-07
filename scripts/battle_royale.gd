@@ -5,7 +5,7 @@ extends RefCounted
 ## Multiplayer: the host runs this simulation for everyone. Human racers occupy ids 0..humans-1 and
 ## move from per-racer intents (set by the local keyboard or by `Net`); everything else is AI.
 ## Guests never call `update`; they rebuild rounds from the match seed and apply `decode_state`.
-const SIZES := [Vector2i(68, 42), Vector2i(56, 34), Vector2i(46, 28)]
+const SIZES := [Vector2i(56, 34), Vector2i(50, 30), Vector2i(46, 28)]   # sized for 8, 6, 4 cutters
 const TIMES := [90.0, 75.0, 60.0]
 const FIELD := 8               # cutters at the start; two are cut in each qualifier
 const CUTS := [6, 4, 1]
