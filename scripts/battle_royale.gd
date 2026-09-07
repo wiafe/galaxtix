@@ -5,13 +5,16 @@ extends RefCounted
 ## Multiplayer: the host runs this simulation for everyone. Human racers occupy ids 0..humans-1 and
 ## move from per-racer intents (set by the local keyboard or by `Net`); everything else is AI.
 ## Guests never call `update`; they rebuild rounds from the match seed and apply `decode_state`.
-const SIZES := [Vector2i(68, 42), Vector2i(56, 34), Vector2i(46, 28)]
+const SIZES := [Vector2i(56, 34), Vector2i(50, 30), Vector2i(46, 28)]   # sized for 8, 6, 4 cutters
 const TIMES := [90.0, 75.0, 60.0]
+const FIELD := 8               # cutters at the start; two are cut in each qualifier
 const CUTS := [6, 4, 1]
 const LABELS := ["Q1", "Q2", "FINAL"]
 const DIRS := [Vector2i.UP, Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT]
 const NAMES := ["YOU", "NOVA", "VEGA", "ION", "ORBIT", "ECHO", "COMET", "PULSE", "LYRA", "QUARK", "SOL", "RIFT"]
 const CELL := 11.0
+const CUT_SPEED := 8.0         # cells per second while exposed (was 10)
+const SAFE_SPEED := 14.0       # cells per second on your own land (was 18); Overdrive doubles both
 const FRAME := Rect2(384, 34, 832, 832)   # centred like a campaign run, readouts in columns either side
 const LX := 40.0
 const RX := 1256.0
@@ -90,11 +93,11 @@ func start(seed_value := -1) -> void:
 	match_seed = seed_value
 	rng.seed = match_seed
 	racers.clear()
-	for id in 12:
+	for id in FIELD:
 		var r := Racer.new()
 		r.id = id
 		racers.append(r)
-	if names.size() != 12:
+	if names.size() != NAMES.size():
 		names.assign(NAMES)
 	round_index = 0
 	begin_round()
@@ -595,7 +598,7 @@ func update(dt: float, human_input := true) -> bool:
 		else:
 			if remaining < 18.0 and r.has_drive and r.exposed: ability(r, false)
 			if remaining < 6.0 and r.has_harden and not r.exposed: ability(r, true)
-		var speed := 10.0 if r.exposed else 18.0
+		var speed := CUT_SPEED if r.exposed else SAFE_SPEED
 		if r.drive > 0.0: speed *= 2.0
 		r.acc = minf(r.acc + dt * speed, 2.0)
 		while r.acc >= 1.0:
@@ -952,7 +955,7 @@ func draw_lobby(lines: ScopeLines) -> void:
 		text(lines, "%d  %s" % [i + 1, String(lobby_names[i]).to_upper()], Vector2(cx, y), 16, col, 1)
 	for i in range(lobby_names.size(), 4):
 		text(lines, "%d  ---" % (i + 1), Vector2(cx, 430.0 + i * 36.0), 16, Palette.DIM, 1)
-	text(lines, "%d AI CUTTERS FILL THE REST" % (12 - maxi(1, lobby_names.size())), Vector2(cx, 590), 10, Palette.DIM, 1)
+	text(lines, "%d AI CUTTERS FILL THE REST" % (FIELD - maxi(1, lobby_names.size())), Vector2(cx, 590), 10, Palette.DIM, 1)
 	var message: String = lobby.get("message", "")
 	if message != "": text(lines, message, Vector2(cx, 640), 12, Palette.YELLOW, 1)
 	if lobby.get("host", false):

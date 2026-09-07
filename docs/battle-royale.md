@@ -1,14 +1,14 @@
 # Battle Royale
 
-Open **Battle Royale** below **Jump** on the main menu. This is a local match against 11 AI cutters. Everyone uses the Surveyor hull and the same base movement speeds and drawing rules, regardless of the campaign ship selection. There are no campaign upgrade bonuses or currency rewards.
+Open **Battle Royale** below **Jump** on the main menu. This is a match of eight cutters; solo, the other seven are AI. Everyone uses the Surveyor hull and the same base movement speeds and drawing rules, regardless of the campaign ship selection. There are no campaign upgrade bonuses or currency rewards.
 
 | Stage | Cutters | Board | Time | Advance |
 | --- | --- | --- | --- | --- |
-| Q1 | 12 | 68 × 42 | 90 seconds | Top 6 |
-| Q2 | 6 | 56 × 34 | 75 seconds | Top 4 |
+| Q1 | 8 | 56 × 34 | 90 seconds | Top 6 |
+| Q2 | 6 | 50 × 30 | 75 seconds | Top 4 |
 | Final | 4 | 46 × 28 | 60 seconds | First place wins |
 
-Every stage starts on a fresh board with reassigned perimeter home rails. Cell size stays fixed, so later boards occupy less of the outer square. Timings and AI aggression are initial playtest values.
+Cutters move 8 cells per second while exposed and 14 on their own land; Overdrive doubles both. Every stage starts on a fresh board with reassigned perimeter home rails. Cell size stays fixed, so later boards occupy less of the outer square. Timings and AI aggression are initial playtest values.
 
 ## Controls
 
