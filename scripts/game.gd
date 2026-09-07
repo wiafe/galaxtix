@@ -4056,14 +4056,25 @@ func draw_dock_upgrades() -> void:
 	var g := Galaxies.get_galaxy(Save.data.galaxy)
 	var ss := clampi(int(Save.data.start_sector), 1, max_start(g.id))
 	VectorFont.draw(lines, "%s / %s" % [g.name, "ENDLESS" if ss > Galaxies.LENGTH else "SECTOR %02d" % ss], Vector2(770, 175), 12, Palette.DIM)
+	# the ship row, as the hangar row always looked: label, arrows in the middle, status on the right
 	var on_ship := dock_tab == 0 and dock_sel == 2
-	draw_dock_cursor(222.0, on_ship)
-	VectorFont.draw(lines, "< %s >" % sh.name, Vector2(770, 222), 18, Palette.CYAN if on_ship else Palette.WHITE)
-	if not Ships.owned(sh.id):
-		VectorFont.draw(lines, "LOCKED", Vector2(1100, 224), 12, Palette.DIM)
+	var ship_y := 214.0
+	if on_ship:
+		var mc := Palette.YELLOW
+		mc.a = 0.6 + 0.4 * sin(time * 8.0)
+		VectorFont.draw(lines, ">", Vector2(742, ship_y), 15, mc, 1.5, 0.5)
+	VectorFont.draw(lines, "SHIP", Vector2(770, ship_y), 15, Palette.WHITE if on_ship else Palette.DIM, 0.4, 0.15)
+	var owned := Ships.owned(sh.id)
+	VectorFont.draw(lines, "< %s >" % sh.name, Vector2(1061, ship_y), 15, Palette.CYAN if owned else Palette.DIM, 0.6 if on_ship else 0.3, 0.25, 1)
+	if owned:
+		VectorFont.draw(lines, "READY", Vector2(1380, ship_y), 12, Palette.GREEN, 0.4, 0.1, 2)
+	else:
+		var cc := Palette.GREEN if Ships.can_buy(sh.id) else Palette.RED
+		VectorFont.draw(lines, "%d ISO" % int(sh.cost), Vector2(1380, ship_y), 12, cc, 0.4, 0.1, 2)
+	lines.seg(Vector2(742, ship_y + 28), Vector2(1380, ship_y + 28), Palette.DIM, 0.3, 0.1, 0.6)
+	VectorFont.draw(lines, "UPGRADES", Vector2(770, 257), 10, Palette.DIM)
 	VectorFont.draw(lines, "%d-%d / %d" % [dock_upgrade_scroll + 1, mini(dock_upgrade_scroll + VISIBLE, total), total],
-		Vector2(1380, 235), 11, Palette.DIM, 0.0, 0.0, 2)
-	VectorFont.draw(lines, "UPGRADES", Vector2(770, 255), 10, Palette.DIM)
+		Vector2(1380, 257), 10, Palette.DIM, 0.0, 0.0, 2)
 	for i in range(dock_upgrade_scroll, mini(dock_upgrade_scroll + VISIBLE, total)):
 		var row := DOCK_FIXED_ROWS + i
 		var entry := dock_upgrade_at(row)
