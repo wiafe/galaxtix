@@ -111,12 +111,12 @@ func check() -> void:
 			assert(b.round_index == round_index + 1)
 			assert(b.racer(0).score == 0 and not b.racer(0).has_drive)
 	b.advance()
-	assert(b.round_index == 0 and b.racers.size() == 12 and b.racer(0).has_drive)
+	assert(b.round_index == 0 and b.racers.size() == BattleRoyale.FIELD and b.racer(0).has_drive)
 	b.racer(0).failures = 99
 	b.finish_round()
 	assert(not b.qualified())
 	b.advance()
-	assert(b.round_index == 0 and b.racers.size() == 12)
+	assert(b.round_index == 0 and b.racers.size() == BattleRoyale.FIELD)
 	# Whole matches: AI really moves/captures, qualifiers and charges survive fresh boards.
 	for seed_value in [7, 22, 94]:
 		b = BattleRoyale.new()
@@ -158,7 +158,7 @@ func check() -> void:
 	click.pressed = true
 	game._input(click)
 	game.update_title(0.6)
-	assert(game.state == Game.State.BATTLE_ROYALE and game.battle.racers.size() == 12)
+	assert(game.state == Game.State.BATTLE_ROYALE and game.battle.racers.size() == BattleRoyale.FIELD)
 	game.battle.phase = "playing"
 	var human := game.battle.racer(0)
 	var start := human.pos

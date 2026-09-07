@@ -34,7 +34,7 @@ const TRANSIT_SHORT := 2.2      # between sectors
 ## Title menu. TUBE (the FX lab) is a development tool: it only exists when running from the
 ## editor and the lab files are excluded from exports.
 var TITLE_ITEMS: Array[String] = ["JUMP", "BATTLE ROYALE", "LOG", "QUIT"]
-var TITLE_DESCS: Array[String] = ["TO THE DOCK", "12 CUTTERS. THREE ROUNDS. ONE WINNER.", "JUMP LOG", "POWER DOWN"]
+var TITLE_DESCS: Array[String] = ["TO THE DOCK", "8 CUTTERS. THREE ROUNDS. ONE WINNER.", "JUMP LOG", "POWER DOWN"]
 
 const INTRO_LEN := 2.6
 const INTRO_QIX_T := 1.4
