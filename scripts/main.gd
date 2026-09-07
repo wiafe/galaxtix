@@ -22,9 +22,9 @@ func _ready() -> void:
 	for a in args:
 		if a == "--autotest":
 			autotest = true
-		elif a == "--autotest=dock":
+		elif a == "--autotest=dock" or a == "--autotest=dock:ship":
 			autotest = true
-			auto_mode = "dock"
+			auto_mode = a.substr(11)   # dock, dock:ship
 			shot_times = [1.5, 3.0]
 		elif a == "--autotest=intro":
 			autotest = true
@@ -115,8 +115,13 @@ func _ready() -> void:
 		game.transit_skip = not (auto_mode in ["intro", "outro", "transit", "sector"])
 		if auto_mode == "bulwark":
 			seed(4242)   # a seed where the Anomaly starts away from the top edge
-	if autotest and auto_mode == "dock":
+	if autotest and auto_mode.begins_with("dock"):
 		game.go_dock()
+		if auto_mode == "dock:ship":
+			Save.data.ships = {"surveyor": true, "bulwark": true}
+			Save.data.ship = "bulwark"
+			Save.data.upgrades = {"yield": 3, "thrust": 2, "bulk": 4}
+			game.dock_sel = 2
 	if autotest and auto_mode in ["brhost", "brjoin"]:
 		game.start_battle_royale()
 		Net.snapshot_received.connect(func(b: PackedByteArray) -> void: br_snapshots += 1; br_bytes += b.size())

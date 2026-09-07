@@ -30,7 +30,7 @@ func check_arenas() -> void:
 		var arena := SectorArena.build(sector, 0)
 		assert(arena.base_free > previous, "Areas must grow each sector")
 		previous = arena.base_free
-		for rim in [0, 12]:
+		for rim in [0, 4]:
 			save.data.upgrades.bulk = rim
 			game.level = sector
 			game.start_level()

@@ -3684,15 +3684,28 @@ func update_dock() -> void:
 			go_title()
 		return
 	if dock_tab == 0:
+		# on the ship step the selector is the top row of the list: Down walks into the upgrades
+		if dock_sel == 2 and Input.is_action_just_pressed("move_down"):
+			switch_dock_tab()
+			dock_sel = DOCK_FIXED_ROWS
+			return
 		update_dock_step()
 		return
 	var choices := dock_navigation_rows()
 	var index := maxi(0, choices.find(dock_sel))
 	if Input.is_action_just_pressed("move_up"):
-		index = (index - 1 + choices.size()) % choices.size()
+		if index == 0:
+			switch_dock_tab()   # back up onto the ship row
+			return
+		index -= 1
 	if Input.is_action_just_pressed("move_down"):
-		index = (index + 1) % choices.size()
+		index = mini(index + 1, choices.size() - 1)
 	dock_sel = choices[index]
+	if Input.is_action_just_pressed("move_left") or Input.is_action_just_pressed("move_right"):
+		# changing ship from an upgrade row: the list underneath changes with it
+		dock_ship_step(-1 if Input.is_action_just_pressed("move_left") else 1)
+		dock_sel = clampi(dock_sel, DOCK_FIXED_ROWS, dock_rows() - 2)
+		dock_upgrade_scroll = 0
 	if Input.is_action_just_pressed("confirm"):
 		var entry := dock_upgrade_at(dock_sel)
 		var burst_at := Vector2(1050, 285 + (dock_sel - DOCK_FIXED_ROWS - dock_upgrade_scroll) * 48)
@@ -4014,20 +4027,20 @@ func draw_dock_panel() -> void:
 		elif dock_sel == 2:
 			value = sh.name
 			action = "LAUNCH" if Ships.owned(sh.id) else "UNLOCK"
-			VectorFont.draw(lines, "%s / %s" % [g.name, sector], Vector2(800, 175), 12, Palette.DIM, 0.0, 0.0, 1)
-		VectorFont.draw(lines, "< %s >" % value, Vector2(800, 756), 20, Palette.CYAN, 0.0, 0.0, 1)
-		if dock_sel == 2:
+		if dock_sel < 2:
+			VectorFont.draw(lines, "< %s >" % value, Vector2(800, 756), 20, Palette.CYAN, 0.0, 0.0, 1)
+		else:
 			draw_dock_desc(635, 205, 420)
 		lines.rect(Rect2(580, 804, 440, 44), Palette.CYAN)
 		if dock_sel == 2 and not Ships.owned(sh.id):
 			draw_currency_caption("UNLOCK", str(int(sh.cost)), true, Vector2(800, 826), " [ENTER]", Ships.can_buy(sh.id))
 		else:
 			VectorFont.draw(lines, action + " [ENTER]", Vector2(800, 819), 16, Palette.CYAN, 0.0, 0.0, 1)
-	var hint := "UP/DOWN SELECT   ENTER BUY   TAB SHIP   ESC BACK" if dock_tab == 1 else "LEFT/RIGHT CHOOSE   ENTER CONTINUE   ESC BACK"
-	if dock_tab == 0 and dock_sel == 2:
-		hint += "   TAB UPGRADES"
-	if dock_tab == 0 and dock_sel == 2 and Ships.owned(sh.id):
-		hint = "LEFT/RIGHT CHOOSE   ENTER/SPACE LAUNCH   ESC BACK   TAB UPGRADES"
+	var hint := "LEFT/RIGHT CHOOSE   ENTER CONTINUE   ESC BACK"
+	if dock_tab == 1:
+		hint = "UP/DOWN ROW   LEFT/RIGHT SHIP   ENTER BUY   ESC BACK"
+	elif dock_sel == 2:
+		hint = "LEFT/RIGHT SHIP   DOWN UPGRADES   %s   ESC BACK" % ("ENTER/SPACE LAUNCH" if Ships.owned(sh.id) else "ENTER UNLOCK")
 	VectorFont.draw(lines, hint, Vector2(800, 873), 11, Palette.DIM, 0.0, 0.0, 1)
 
 
@@ -4039,9 +4052,18 @@ func draw_dock_upgrades() -> void:
 	if dock_sel >= DOCK_FIXED_ROWS and dock_sel < dock_rows() - 1:
 		var selected := dock_sel - DOCK_FIXED_ROWS
 		dock_upgrade_scroll = clampi(dock_upgrade_scroll, maxi(0, selected - VISIBLE + 1), selected)
-	VectorFont.draw(lines, "UPGRADES", Vector2(770, 235), 12, Palette.DIM)
+	# the ship selector is the first row of the list, so Down from it lands on the upgrades
+	var g := Galaxies.get_galaxy(Save.data.galaxy)
+	var ss := clampi(int(Save.data.start_sector), 1, max_start(g.id))
+	VectorFont.draw(lines, "%s / %s" % [g.name, "ENDLESS" if ss > Galaxies.LENGTH else "SECTOR %02d" % ss], Vector2(770, 175), 12, Palette.DIM)
+	var on_ship := dock_tab == 0 and dock_sel == 2
+	draw_dock_cursor(222.0, on_ship)
+	VectorFont.draw(lines, "< %s >" % sh.name, Vector2(770, 222), 18, Palette.CYAN if on_ship else Palette.WHITE)
+	if not Ships.owned(sh.id):
+		VectorFont.draw(lines, "LOCKED", Vector2(1100, 224), 12, Palette.DIM)
 	VectorFont.draw(lines, "%d-%d / %d" % [dock_upgrade_scroll + 1, mini(dock_upgrade_scroll + VISIBLE, total), total],
 		Vector2(1380, 235), 11, Palette.DIM, 0.0, 0.0, 2)
+	VectorFont.draw(lines, "UPGRADES", Vector2(770, 255), 10, Palette.DIM)
 	for i in range(dock_upgrade_scroll, mini(dock_upgrade_scroll + VISIBLE, total)):
 		var row := DOCK_FIXED_ROWS + i
 		var entry := dock_upgrade_at(row)

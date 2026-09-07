@@ -79,11 +79,23 @@ func check_dock() -> void:
 	assert(game.dock_sel == 0)
 	await press_dock(game, "tab")
 	assert(game.dock_tab == 0 and game.dock_sel == 0)
-	# Tabs preserve each selection and exclude upgrades from the launch flow.
+	# The ship row sits on top of the upgrade list: Down enters it, Up from the first row leaves it.
 	game.dock_tab = 0
 	game.dock_sel = 2
 	await press_dock(game, "move_down")
-	assert(game.dock_sel == 2)
+	assert(game.dock_tab == 1 and game.dock_sel == Game.DOCK_FIXED_ROWS)
+	await press_dock(game, "move_up")
+	assert(game.dock_tab == 0 and game.dock_sel == 2)
+	await press_dock(game, "move_down")
+	await press_dock(game, "move_down")
+	assert(game.dock_tab == 1 and game.dock_sel == Game.DOCK_FIXED_ROWS + 1)
+	var ship_before: String = save.data.ship
+	await press_dock(game, "move_right")
+	assert(save.data.ship != ship_before and game.dock_tab == 1, "Ship changes from an upgrade row too")
+	save.data.ship = ship_before
+	game.dock_tab = 0
+	game.dock_sel = 2
+	# Tabs still preserve each selection and exclude upgrades from the launch flow.
 	await press_dock(game, "tab")
 	assert(game.dock_tab == 1 and game.dock_sel >= Game.DOCK_FIXED_ROWS)
 	game.dock_sel = game.dock_rows() - 2

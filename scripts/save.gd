@@ -14,7 +14,7 @@ const UPGRADES := [
 	{"id": "prospect", "name": "PROSPECTOR", "desc": "EXTRA NODES SURFACE OVER TIME", "base": 6.0, "growth": 1.7, "max": 8},
 	{"id": "thrust", "name": "THRUSTERS", "desc": "+10% SPEED", "base": 3.0, "growth": 1.5, "max": 15},
 	{"id": "hull", "name": "HULL PLATING", "desc": "+1 LIFE", "base": 8.0, "growth": 2.0, "max": 6},
-	{"id": "bulk", "name": "BULKHEADS", "desc": "+1 CELL OF RIM PRE-CLAIMED", "base": 4.0, "growth": 1.7, "max": 12},
+	{"id": "bulk", "name": "BULKHEADS", "desc": "+1 CELL OF RIM PRE-CLAIMED", "base": 4.0, "growth": 1.7, "max": 4},
 	{"id": "fuse", "name": "FUSE DELAY", "desc": "+0.5S BEFORE THE FUSE LIGHTS", "base": 2.0, "growth": 1.5, "max": 8},
 	{"id": "beacon", "name": "BEACON", "desc": "+6 FLUX PER HOUR, EVEN OFFLINE", "base": 10.0, "growth": 2.0, "max": 0},
 ]
@@ -112,7 +112,7 @@ func extra_lives() -> int:
 
 
 func rim() -> int:
-	return level("bulk")
+	return mini(level("bulk"), int(def("bulk").max))
 
 
 func fuse_delay() -> float:
@@ -174,6 +174,12 @@ func refund_retired_upgrades() -> void:
 		for purchased_level in clampi(level(retired.id), 0, retired.max):
 			data.flux += round(retired.base * pow(1.6, purchased_level))
 		data.upgrades.erase(retired.id)
+	# Bulkheads used to go to 12; ranks above the new cap are refunded at their purchase price
+	var bulk_max := int(def("bulk").max)
+	if level("bulk") > bulk_max:
+		for purchased_level in range(bulk_max, level("bulk")):
+			data.flux += round(float(def("bulk").base) * pow(float(def("bulk").growth), purchased_level))
+		data.upgrades["bulk"] = bulk_max
 	# the Leaper lost its islands, so Landing Pad and Tide went with them
 	for retired in [{"id": "leaper:pad", "base": 6.0, "growth": 2.0, "max": 1}, {"id": "leaper:tide", "base": 6.0, "growth": 1.8, "max": 3}]:
 		for purchased_level in clampi(int(data.ship_upgrades.get(retired.id, 0)), 0, retired.max):
