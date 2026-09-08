@@ -48,3 +48,16 @@ godot --path . -- --autotest=field:belt:5 --nosave --shots=<dir>
 The smoke test checks every Belt sector: rock inside each pylon, a one-cell rail around it, nothing else claimed
 that is not walkable from the start, and a cut from the coast to the moat's core that claims only the trail and
 joins the core rail to the coast. The field autotest drops into any galaxy sector and takes two screenshots.
+
+## Roguelite shape progression and Fillit reference
+
+Roguelite now fits the existing Jump silhouettes to wide footprints through `SectorArena.contains_offset`. Its route is authored in `scripts/roguelite_sectors.gd`: small square, wider rectangle, larger square, oval, cross, notches, bridge, island. The first three footprints match Jump exactly; shape names and coaching text are omitted from the player HUD and clear screen. The island uses the same inner-rail builder as Turret Belt. Jump's masks, area accounting, and progression stay unchanged.
+
+The local Fillit reference was checked against `C:/Users/wiafe/Projects/Decompiled/fillit/analysis/gameData_single.json`, `analysis/FINDINGS.md`, and the hole construction in `src/BoardCubeVisualHelper.cs`:
+
+- `Already Taken` (index 1) combines holes and occupied land with a 50% target and no timer.
+- `Moat` (12) uses holes with a 50% target and no timer; `Narrow Bridge` (20) uses holes and walls with a lower 35% target and 60 seconds.
+- `Lock And Key` (41) introduces room/gate ordering through blocks and keys. `Use The Portals` (74) uses flags and portals with no percentage goal.
+- These suggest teaching spatial mechanics before layering time pressure or objectives, and treating shape, target, and hazard budget as separate tuning knobs.
+
+This pass uses that lesson for walkable island rails, inset coasts, and a narrower bridge. It retains the established 75% territory/card contract and limited enemies. Pre-claimed footholds, gate/key rooms, moving walls, portals, objective sectors, and variable targets are future candidates, not implemented features. No Fillit code or map assets were imported.

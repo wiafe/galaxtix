@@ -5,6 +5,9 @@ extends Node
 ## Everything is drawn through ScopeLines each frame (no sprites, only beams).
 
 const N := 104
+# Instance dimensions let modes reuse the grid simulation without a square limit.
+var grid_width := N
+var grid_height := N
 const CELL := 8.0
 var FX := 40.0                # field left edge: FX_DOCK for the title and dock, FX_RUN centred for a run
 const FX_DOCK := 40.0
@@ -26,21 +29,23 @@ const OFFS8 := [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)
 const QIX_COLORS := [Palette.MAGENTA, Palette.PURPLE, Palette.BLUE, Palette.CYAN,
 	Palette.GREEN, Palette.YELLOW, Palette.ORANGE, Palette.RED]
 
-enum State { DOCK, PLAYING, DYING, LEVEL_CLEAR, RUN_OVER, INTRO, REPORT, OUTRO, TITLE, TRANSIT, BATTLE_ROYALE }
+enum State { DOCK, PLAYING, DYING, LEVEL_CLEAR, RUN_OVER, INTRO, REPORT, OUTRO, TITLE, TRANSIT, BATTLE_ROYALE, ROGUELITE }
 
 const TRANSIT_LEN := 3.2        # from the dock
 const TRANSIT_SHORT := 2.2      # between sectors
 
 ## Title menu. TUBE (the FX lab) is a development tool: it only exists when running from the
 ## editor and the lab files are excluded from exports.
-var TITLE_ITEMS: Array[String] = ["JUMP", "BATTLE ROYALE", "LOG", "RESPEC", "RESET", "QUIT"]
-var TITLE_DESCS: Array[String] = ["TO THE DOCK", "8 CUTTERS. THREE ROUNDS. ONE WINNER.", "JUMP LOG", "REFUND EVERY UPGRADE. ENTER TWICE.", "WIPE THE SAVE. ENTER TWICE.", "POWER DOWN"]
+var TITLE_ITEMS: Array[String] = ["JUMP", "ROGUELITE", "BATTLE ROYALE", "LOG", "RESPEC", "RESET", "QUIT"]
+var TITLE_DESCS: Array[String] = ["TO THE DOCK", "DRAFT A BUILD. UPGRADE. LAUNCH AGAIN.", "8 CUTTERS. THREE ROUNDS. ONE WINNER.", "JUMP LOG", "REFUND EVERY UPGRADE. ENTER TWICE.", "WIPE THE SAVE. ENTER TWICE.", "POWER DOWN"]
 ## Destructive title items arm on the first Enter and fire on the second; anything else disarms.
 const ARMED_DESCS := {
 	"RESPEC": "SURE? ENTER AGAIN REFUNDS ALL UPGRADES. ARROWS CANCEL.",
 	"RESET": "SURE? ENTER AGAIN WIPES EVERYTHING. ARROWS CANCEL.",
 }
 var armed_item := ""
+var roguelite: Game
+var roguelite_fill: Sprite2D
 
 const INTRO_LEN := 2.6
 const INTRO_QIX_T := 1.4
@@ -87,7 +92,7 @@ var field_shape: Array = []    # Rect2i cutouts (cells) pre-claimed for this sec
 var free_count := 0
 
 # surveyor
-var p := Vector2i(N / 2, 0)
+var p := Vector2i(grid_width / 2, 0)
 var vis := Vector2.ZERO
 var move_acc := 0.0
 var drawing := false
@@ -301,7 +306,7 @@ func setup(p_lines: ScopeLines, p_sparks: Sparks, p_fill: Sprite2D) -> void:
 	lines = p_lines
 	sparks = p_sparks
 	fill = p_fill
-	fill_img = Image.create(N, N, false, Image.FORMAT_RGBA8)
+	fill_img = Image.create(grid_width, grid_height, false, Image.FORMAT_RGBA8)
 	fill_tex = ImageTexture.create_from_image(fill_img)
 	fill.texture = fill_tex
 	fill.centered = false
@@ -318,10 +323,10 @@ func setup(p_lines: ScopeLines, p_sparks: Sparks, p_fill: Sprite2D) -> void:
 	battle_fill.visible = false
 	fill.get_parent().add_child(battle_fill)
 	fill.modulate = Color(Palette.CYAN.r, Palette.CYAN.g, Palette.CYAN.b, 0.16)
-	cells.resize(N * N)
-	border.resize(N * N)
-	reach.resize(N * N)
-	stack.resize(N * N)
+	cells.resize(grid_width * grid_height)
+	border.resize(grid_width * grid_height)
+	reach.resize(grid_width * grid_height)
+	stack.resize(grid_width * grid_height)
 	if Save.offline_gain > 1.0:
 		beacon_note_t = 6.0
 	go_title()
@@ -329,7 +334,7 @@ func setup(p_lines: ScopeLines, p_sparks: Sparks, p_fill: Sprite2D) -> void:
 
 # ------------------------------------------------------------------ grid
 func idx(x: int, y: int) -> int:
-	return y * N + x
+	return y * grid_width + x
 
 
 func center(c: Vector2i) -> Vector2:
@@ -337,7 +342,7 @@ func center(c: Vector2i) -> Vector2:
 
 
 func in_bounds(c: Vector2i) -> bool:
-	return c.x >= 0 and c.y >= 0 and c.x < N and c.y < N
+	return c.x >= 0 and c.y >= 0 and c.x < grid_width and c.y < grid_height
 
 
 func to_cell(v: Vector2) -> Vector2i:
@@ -362,32 +367,32 @@ func reset_field(rim: int) -> void:
 	buoy_flights.clear()
 	if not field_arena.is_empty():
 		var mask: PackedByteArray = field_arena.mask
-		for i in N * N:
+		for i in grid_width * grid_height:
 			cells[i] = ROCK if mask[i] == 0 else (CLAIMED if mask[i] == 1 else FREE)
 		base_free = field_arena.base_free
 		free_count = field_arena.free_cells.size()
 		grid_changed()
 		return
 	var r := 1 + rim
-	for y in N:
-		for x in N:
-			var edge := x < r or y < r or x >= N - r or y >= N - r
+	for y in grid_height:
+		for x in grid_width:
+			var edge := x < r or y < r or x >= grid_width - r or y >= grid_height - r
 			cells[idx(x, y)] = CLAIMED if edge else FREE
 	# the sector's shape: cutouts are rock, not anyone's land; the rim path stays clear around them
 	for rc in field_shape:
 		var rr: Rect2i = rc
-		for y in range(maxi(0, rr.position.y), mini(N, rr.end.y)):
-			for x in range(maxi(0, rr.position.x), mini(N, rr.end.x)):
+		for y in range(maxi(0, rr.position.y), mini(grid_height, rr.end.y)):
+			for x in range(maxi(0, rr.position.x), mini(grid_width, rr.end.x)):
 				if cells[idx(x, y)] == FREE:
 					cells[idx(x, y)] = ROCK
 	# the claim target is measured against the void this shape actually has (rim excluded)
 	base_free = 0
 	free_count = 0
-	for y in N:
-		for x in N:
+	for y in grid_height:
+		for x in grid_width:
 			if cells[idx(x, y)] == FREE:
 				free_count += 1
-			if x >= 1 and y >= 1 and x < N - 1 and y < N - 1 and not in_shape(Vector2i(x, y), 0):
+			if x >= 1 and y >= 1 and x < grid_width - 1 and y < grid_height - 1 and not in_shape(Vector2i(x, y), 0):
 				base_free += 1
 	grid_changed()
 
@@ -443,15 +448,15 @@ func grid_changed() -> void:
 
 func recompute_border() -> void:
 	border_cells.clear()
-	for y in N:
-		for x in N:
+	for y in grid_height:
+		for x in grid_width:
 			var i := idx(x, y)
 			var b := 0
 			if cells[i] == CLAIMED:
 				for o in OFFS8:
 					var nx: int = x + o.x
 					var ny: int = y + o.y
-					if nx >= 0 and ny >= 0 and nx < N and ny < N and cells[idx(nx, ny)] != CLAIMED and cells[idx(nx, ny)] != ROCK:
+					if nx >= 0 and ny >= 0 and nx < grid_width and ny < grid_height and cells[idx(nx, ny)] != CLAIMED and cells[idx(nx, ny)] != ROCK:
 						b = 1
 						break
 			border[i] = b
@@ -460,7 +465,7 @@ func recompute_border() -> void:
 
 
 func _open(x: int, y: int) -> bool:
-	if x < 0 or y < 0 or x >= N or y >= N:
+	if x < 0 or y < 0 or x >= grid_width or y >= grid_height:
 		return false
 	var v := cells[idx(x, y)]
 	return v != CLAIMED and v != HARD and v != ROCK
@@ -469,11 +474,11 @@ func _open(x: int, y: int) -> bool:
 func rebuild_coast() -> void:
 	# coast = every grid edge between claimed and unclaimed cells, merged into runs
 	coast = PackedVector2Array()
-	for y in range(N + 1):
+	for y in range(grid_height + 1):
 		var run_start := -1
-		for x in range(N + 1):
+		for x in range(grid_width + 1):
 			var b := false
-			if x < N:
+			if x < grid_width:
 				b = _open(x, y - 1) != _open(x, y)
 			if b and run_start < 0:
 				run_start = x
@@ -481,11 +486,11 @@ func rebuild_coast() -> void:
 				coast.append(Vector2(FX + run_start * CELL, FY + y * CELL))
 				coast.append(Vector2(FX + x * CELL, FY + y * CELL))
 				run_start = -1
-	for x in range(N + 1):
+	for x in range(grid_width + 1):
 		var run_start := -1
-		for y in range(N + 1):
+		for y in range(grid_height + 1):
 			var b := false
-			if y < N:
+			if y < grid_height:
 				b = _open(x - 1, y) != _open(x, y)
 			if b and run_start < 0:
 				run_start = y
@@ -497,8 +502,8 @@ func rebuild_coast() -> void:
 
 func update_fill() -> void:
 	var dither := int(cur_gal().dither)
-	for y in N:
-		for x in N:
+	for y in grid_height:
+		for x in grid_width:
 			if cells[idx(x, y)] == CLAIMED:
 				var on := false
 				match dither:
@@ -543,7 +548,7 @@ func start_run(retry_sector := 0) -> void:
 	run_flux = 0.0
 	run_nodes = 0
 	run_hazards = 0
-	lives = 2 + Save.extra_lives()
+	lives = 2 + run_extra_lives()
 	run_cells = 0
 	run_best_claim = 0.0
 	run_deaths = 0
@@ -553,10 +558,10 @@ func start_run(retry_sector := 0) -> void:
 
 
 func start_level() -> void:
-	var lay := sector_layout(gal, level, Save.rim())
+	var lay := sector_layout(gal, level, run_rim())
 	field_shape = lay.shape
 	field_arena = lay.arena
-	reset_field(Save.rim())
+	reset_field(run_rim())
 	p = lay.start
 	vis = center(p)
 	drawing = false
@@ -581,7 +586,7 @@ func start_level() -> void:
 		fn.rare = nd.rare
 		fn.phase = randf() * TAU
 		nodes.append(fn)
-	node_spawn_t = Save.prospect_interval()
+	node_spawn_t = prospect_interval()
 	spawn_hazards(lay)
 	boss_bond = false
 	if level == Galaxies.LENGTH:
@@ -623,6 +628,10 @@ func set_msg(s: String, dur: float) -> void:
 
 # ------------------------------------------------------------------ update
 func update(dt: float) -> void:
+	if state == State.ROGUELITE:
+		roguelite.update(dt)
+		shake_off = roguelite.shake_off
+		return
 	time += dt
 	frame += 1
 	shake = maxf(0.0, shake - dt * 1.6)
@@ -632,12 +641,12 @@ func update(dt: float) -> void:
 	beacon_note_t -= dt
 	pane_t += dt
 	if state == State.DOCK:
-		var key := "%s|%d|%s|%d" % [Save.data.galaxy, int(Save.data.start_sector), Save.data.ship, Save.rim()]
+		var key := "%s|%d|%s|%d" % [Save.data.galaxy, int(Save.data.start_sector), Save.data.ship, run_rim()]
 		if key != pane_key:
 			pane_key = key
 			pane_t = 0.0
 			var g := Galaxies.get_galaxy(Save.data.galaxy)
-			scan_layout = sector_layout(g, clampi(int(Save.data.start_sector), 1, max_start(g.id)), Save.rim())
+			scan_layout = sector_layout(g, clampi(int(Save.data.start_sector), 1, max_start(g.id)), run_rim())
 	sparks.update(dt)
 	match state:
 		State.BATTLE_ROYALE:
@@ -658,12 +667,12 @@ func update(dt: float) -> void:
 				else:
 					p = respawn_cell
 					vis = center(p)
-					invuln = 2.5 + (0.5 * up("shield") if ship.id == "surveyor" else 0.0)
+					invuln = respawn_shield_duration()
 					state = State.PLAYING
 		State.LEVEL_CLEAR:
 			state_t += dt
 			if randf() < dt * 6.0:
-				var pos := Vector2(FX + randf() * N * CELL, FY + randf() * N * CELL)
+				var pos := Vector2(FX + randf() * grid_width * CELL, FY + randf() * grid_height * CELL)
 				sparks.burst(pos, 60, 260.0, 1.5, 0.9, QIX_COLORS[randi() % 8], 0.05)
 				sparks.ripple(pos, 4.0, 240.0, 0.5, Palette.WHITE)
 			if state_t > 2.0:
@@ -736,7 +745,7 @@ func update_play(dt: float) -> void:
 		inp.dir = Vector2i.ZERO   # a charge or a line is growing from where you stand; hold your ground
 	if not inp.draw:
 		draw_armed = true   # releasing Space arms the next trail
-	var speed := 11.0 * Save.speed_mult()
+	var speed := 11.0 * movement_mult()
 	if not drawing and border[idx(p.x, p.y)] == 0:
 		speed *= 0.6   # interior of claimed land: walkable, but the coast is the fast lane
 	if drawing and inp.slow:
@@ -856,11 +865,7 @@ func update_play(dt: float) -> void:
 			draw_armed = false
 		elif inp.draw:
 			if not sap_live:
-				sap_live = true
-				sap_guard_used = false
-				sap_cell = p
-				sap_charge = 2.0 * up("primer")
-				sparks.ripple(vis, 3.0, 160.0, 0.4, Palette.YELLOW)
+				start_sapper_charge()
 			sap_charge = minf(sap_charge + sap_rate() * dt, float(sap_radius()))
 			if randf() < 0.5:
 				sparks.emit(vis, Vector2(randf_range(-50, 50), randf_range(-50, 50)), 0.3, Palette.YELLOW, 2.0)
@@ -876,7 +881,7 @@ func update_play(dt: float) -> void:
 	# fuse: standing still while drawing lights it; it then chases you along the trail.
 	# The Sapper has no fuse: its wire is dead until it charges.
 	if drawing and not sealing and not (ship.id in ["sapper", "leaper"]):
-		if idle_t > Save.fuse_delay():
+		if idle_t > fuse_delay():
 			fuse_on = true
 		if fuse_on:
 			fuse_pos += speed * 0.8 * dt
@@ -903,7 +908,7 @@ func update_play(dt: float) -> void:
 			if fn.telegraph == 0.0:
 				sparks.ripple(center(fn.cell), 3.0, 200.0, 0.5, Palette.YELLOW)
 				sparks.burst(center(fn.cell), 24, 120.0, 1.5, 0.5, Palette.YELLOW)
-	var interval := Save.prospect_interval()
+	var interval := prospect_interval()
 	if interval > 0.0 and uncaptured_nodes() < 6:
 		node_spawn_t -= dt
 		if node_spawn_t <= 0.0:
@@ -1041,26 +1046,26 @@ func complete_claim() -> void:
 	while sp > 0:
 		sp -= 1
 		var i := stack[sp]
-		var x := i % N
-		var y := i / N
+		var x := i % grid_width
+		var y := i / grid_width
 		if x > 0 and cells[i - 1] == FREE and reach[i - 1] == 0:
 			reach[i - 1] = 1
 			stack[sp] = i - 1
 			sp += 1
-		if x < N - 1 and cells[i + 1] == FREE and reach[i + 1] == 0:
+		if x < grid_width - 1 and cells[i + 1] == FREE and reach[i + 1] == 0:
 			reach[i + 1] = 1
 			stack[sp] = i + 1
 			sp += 1
-		if y > 0 and cells[i - N] == FREE and reach[i - N] == 0:
-			reach[i - N] = 1
-			stack[sp] = i - N
+		if y > 0 and cells[i - grid_width] == FREE and reach[i - grid_width] == 0:
+			reach[i - grid_width] = 1
+			stack[sp] = i - grid_width
 			sp += 1
-		if y < N - 1 and cells[i + N] == FREE and reach[i + N] == 0:
-			reach[i + N] = 1
-			stack[sp] = i + N
+		if y < grid_height - 1 and cells[i + grid_width] == FREE and reach[i + grid_width] == 0:
+			reach[i + grid_width] = 1
+			stack[sp] = i + grid_width
 			sp += 1
 	var gained := 0
-	for i in N * N:
+	for i in grid_width * grid_height:
 		if cells[i] == FREE and reach[i] == 0:
 			cells[i] = CLAIMED
 			gained += 1
@@ -1081,7 +1086,7 @@ func complete_claim() -> void:
 			fn.captured = true
 			got += 1
 			if fn.rare:
-				Save.data.isotope = int(Save.data.isotope) + 1
+				award_isotope()
 				sector_isotope += 1
 				run_isotope += 1
 				iso_got += 1
@@ -1137,7 +1142,7 @@ func complete_claim() -> void:
 		if boss_done:
 			set_msg("%s CAPTURED" % gal.boss_name, 2.0)
 			award += 5.0
-			Save.add_flux(award)
+			award_flux(award)
 			run_flux += award
 			sector_capture += award
 			trail.clear()
@@ -1148,7 +1153,7 @@ func complete_claim() -> void:
 		run_hazards += caught
 	sector_nodes_captured += got
 	run_nodes += got
-	Save.add_flux(award)
+	award_flux(award)
 	run_flux += award
 	sector_capture += award
 	run_cells += gained
@@ -1170,6 +1175,7 @@ func complete_claim() -> void:
 		set_msg("NO NODES", 0.8)
 	trail.clear()
 	grid_changed()
+	on_claim(gained, caught)
 	if claimed_frac() >= TARGET:
 		level_clear()
 
@@ -1178,7 +1184,7 @@ func level_clear() -> void:
 	state = State.LEVEL_CLEAR
 	state_t = 0.0
 	var bonus := 1.0   # securing a sector is worth one node
-	Save.add_flux(bonus)
+	award_flux(bonus)
 	run_flux += bonus
 	sector_bonus = bonus
 	run_sectors += 1
@@ -1249,20 +1255,20 @@ func explode(pos: Vector2) -> void:
 func spawn_qix() -> void:
 	var q := QixBody.new()
 	q.len = 80.0 * SectorArena.anomaly_size_mult(gal.id, level)
-	q.c = Vector2(FX + N * CELL * randf_range(0.35, 0.65), FY + N * CELL * randf_range(0.35, 0.65))
+	q.c = Vector2(FX + grid_width * CELL * randf_range(0.35, 0.65), FY + grid_height * CELL * randf_range(0.35, 0.65))
 	for tries in 40:
 		# keep it out of the sector's cutouts
 		var qc := to_cell(q.c)
 		if in_bounds(qc) and cells[idx(qc.x, qc.y)] == FREE:
 			break
-		q.c = Vector2(FX + N * CELL * randf_range(0.2, 0.8), FY + N * CELL * randf_range(0.2, 0.8))
+		q.c = Vector2(FX + grid_width * CELL * randf_range(0.2, 0.8), FY + grid_height * CELL * randf_range(0.2, 0.8))
 	q.v = Vector2.RIGHT.rotated(randf() * TAU) * 70.0
 	q.theta = randf() * TAU
 	q.omega = randf_range(1.5, 3.0) * (1.0 if randf() < 0.5 else -1.0)
 	q.col_off = randi() % 8
 	if not field_arena.is_empty():
 		# Validate the whole beam, especially with a thick purchased rim in a small arena.
-		q.c = center(Vector2i(N / 2, N / 2))
+		q.c = center(Vector2i(grid_width / 2, grid_height / 2))
 		for attempt in 64:
 			var candidate: Vector2i = field_arena.free_cells[randi() % field_arena.free_cells.size()]
 			var point := center(candidate)
@@ -1473,6 +1479,13 @@ func fmt(v: float) -> String:
 
 
 func draw() -> void:
+	if roguelite_fill != null:
+		roguelite_fill.visible = state == State.ROGUELITE
+	if state == State.ROGUELITE:
+		fill.visible = false
+		battle_fill.visible = false
+		roguelite.draw()
+		return
 	battle_fill.visible = false
 	if state == State.BATTLE_ROYALE:
 		fill.visible = false
@@ -1503,8 +1516,8 @@ func draw() -> void:
 	if state == State.INTRO:
 		draw_intro()
 	else:
-		var field_rect := Rect2(FX, FY, N * CELL, N * CELL)
-		lines.rect(field_rect, Palette.DIM, 0.4, 0.1, 0.8)
+		var field_rect := Rect2(FX, FY, grid_width * CELL, grid_height * CELL)
+		draw_field_frame(field_rect)
 		# coast
 		var cc := coast_color()
 		for i in range(0, coast.size(), 2):
@@ -1543,7 +1556,7 @@ func draw() -> void:
 		c.a = a
 		var flick := 0.0 if fmod(time, 0.09) < 0.02 else 1.0
 		if flick > 0.0:
-			VectorFont.draw(lines, msg, Vector2(FX + N * CELL * 0.5, FY + N * CELL * 0.47), 22, c, 1.5, 0.5, 1, 1.2)
+			VectorFont.draw(lines, msg, Vector2(FX + grid_width * CELL * 0.5, FY + grid_height * CELL * 0.47), 22, c, 1.5, 0.5, 1, 1.2)
 
 
 func draw_play() -> void:
@@ -1674,6 +1687,17 @@ func wrap_text(text: String, max_chars: int) -> Array:
 
 ## The run HUD: the field sits in the middle of the tube, so the readouts split into a column
 ## on either side. Left: where you are and how you're doing. Right: what you're earning.
+func draw_field_frame(rect: Rect2) -> void:
+	lines.rect(rect, Palette.DIM, 0.4, 0.1, 0.8)
+
+func draw_hull_icons(origin: Vector2, count: int) -> void:
+	for i in count:
+		var c := origin + Vector2(i * 22, 0)
+		var r := 6.0
+		lines.polyline(PackedVector2Array([c + Vector2(0, -r), c + Vector2(r, 0), c + Vector2(0, r), c + Vector2(-r, 0)]),
+			true, Palette.FULLBRIGHT, 1.0, 0.5, 1.0)
+
+
 func draw_hud() -> void:
 	var lx := RUN_LX
 	var rx := RUN_RX
@@ -1684,11 +1708,7 @@ func draw_hud() -> void:
 	VectorFont.draw(lines, String(gal.name), Vector2(lx, y + 26), 10, Palette.DIM, 0.3, 0.1)
 	y += 56
 	VectorFont.draw(lines, "HULL", Vector2(lx, y), 14, Palette.DIM, 0.4, 0.1)
-	for i in range(maxi(0, lives)):
-		var c := Vector2(lx + 70 + i * 22, y + 7)
-		var r := 6.0
-		lines.polyline(PackedVector2Array([c + Vector2(0, -r), c + Vector2(r, 0), c + Vector2(0, r), c + Vector2(-r, 0)]),
-			true, Palette.FULLBRIGHT, 1.0, 0.5, 1.0)
+	draw_hull_icons(Vector2(lx + 70, y + 7), maxi(0, lives))
 	y += 44
 	var frac := claimed_frac()
 	VectorFont.draw(lines, "CLAIMED %3d%%" % int(frac * 100.0), Vector2(lx, y), 15, Palette.WHITE, 0.5, 0.2)
@@ -1827,12 +1847,12 @@ func uncaptured_nodes() -> int:
 
 ## Place a node in the open void, away from the rim, other nodes, and the surveyor's start.
 func spawn_node(telegraph: float) -> void:
-	var r := 1 + Save.rim()
+	var r := 1 + run_rim()
 	var margin := r + 10
 	var best := Vector2i(-1, -1)
 	var best_d := -1.0
 	for tries in 40:
-		var c := Vector2i(randi_range(margin, N - 1 - margin), randi_range(margin, N - 1 - margin))
+		var c := Vector2i(randi_range(margin, grid_width - 1 - margin), randi_range(margin, grid_height - 1 - margin))
 		if cells[idx(c.x, c.y)] != FREE:
 			continue
 		var d := 1e9
@@ -1901,7 +1921,7 @@ func draw_nodes() -> void:
 
 # ------------------------------------------------------------------ hazards
 func node_value() -> int:
-	return Save.node_value() + int(gal.node_bonus)
+	return base_node_value() + int(gal.node_bonus)
 
 
 ## A free cell in the void, at least `margin` cells from the rim and as far as practical from `avoid`.
@@ -1909,7 +1929,7 @@ func find_void_cell(margin: int, avoid: Array, want_d: float) -> Vector2i:
 	var best := Vector2i(-1, -1)
 	var best_d := -1.0
 	for tries in 40:
-		var c := Vector2i(randi_range(margin, N - 1 - margin), randi_range(margin, N - 1 - margin))
+		var c := Vector2i(randi_range(margin, grid_width - 1 - margin), randi_range(margin, grid_height - 1 - margin))
 		if cells[idx(c.x, c.y)] != FREE:
 			continue
 		var d := 1e9
@@ -2188,6 +2208,14 @@ func step_off(dir: Vector2i, slow: bool) -> bool:
 
 
 # ------------------------------------------------------------------ sapper
+func start_sapper_charge() -> void:
+	sap_live = true
+	sap_guard_used = false
+	sap_cell = p
+	sap_charge = 2.0 * up("primer")
+	sparks.ripple(vis, 3.0, 160.0, 0.4, Palette.YELLOW)
+
+
 ## The charge goes off: every free cell within sap_radius() becomes land, the Anomaly is shoved out
 ## if it was inside, then the trail closes like a normal claim (which also flood-claims anything
 ## the disc and trail now enclose).
@@ -2223,7 +2251,7 @@ func detonate(rad_cells: int) -> void:
 				var far := Vector2i(-1, -1)
 				var far_d := -1
 				for tries in 40:
-					var c := Vector2i(randi() % N, randi() % N)
+					var c := Vector2i(randi() % grid_width, randi() % grid_height)
 					if border[idx(c.x, c.y)] == 0:
 						continue
 					var d := maxi(absi(c.x - p.x), absi(c.y - p.y))
@@ -2250,7 +2278,7 @@ func detonate(rad_cells: int) -> void:
 		if in_bounds(qc) and cells[idx(qc.x, qc.y)] == CLAIMED:
 			var ci := qix_cell_index(q)
 			if ci >= 0:
-				q.c = center(Vector2i(ci % N, ci / N))
+				q.c = center(Vector2i(ci % grid_width, ci / grid_width))
 				q.v = (q.c - center(sap_cell)).normalized() * q.v.length()
 	var sc := center(sap_cell)
 	sparks.ripple(sc, 6.0, 900.0, 0.6, Palette.FULLBRIGHT)
@@ -2372,8 +2400,8 @@ func sector_layout(g: Dictionary, lvl: int, rim: int) -> Dictionary:
 	var shape := sector_shape(g, lvl, rng)
 	# Carved galaxies go through the arena builder: the silhouette is the outline and every pillar
 	# in `shape` becomes a hole with its own one-cell rail (an inner coast you can cut to and from).
-	var arena := SectorArena.build(lvl, rim, g.id, shape) if SectorArena.carved(g.id, lvl) else {}
-	var start: Vector2i = arena.start if not arena.is_empty() else Vector2i(N / 2, r - 1)
+	var arena := SectorArena.build(lvl, rim, g.id, shape, Vector2i(grid_width, grid_height)) if SectorArena.carved(g.id, lvl) else {}
+	var start: Vector2i = arena.start if not arena.is_empty() else Vector2i(grid_width / 2, r - 1)
 	var occupied: Array = [start]
 	var out := {"nodes": [], "turrets": [], "spawners": [], "shape": shape, "arena": arena, "start": start}
 	for i in mini(6, 3 + (lvl - 1) / 3):
@@ -2401,10 +2429,10 @@ func sector_shape(g: Dictionary, lvl: int, rng: RandomNumberGenerator) -> Array:
 		return rects
 	if lvl == Galaxies.LENGTH:
 		for off in [Vector2i(-30, -30), Vector2i(22, -30), Vector2i(-30, 22), Vector2i(22, 22)]:
-			rects.append(Rect2i(Vector2i(N / 2, N / 2) + off, Vector2i(8, 8)))
+			rects.append(Rect2i(Vector2i(grid_width / 2, grid_height / 2) + off, Vector2i(8, 8)))
 		return rects
 	if g.id == "belt" and lvl == 5:
-		rects.append(Rect2i(Vector2i(N / 2 - 12, N / 2 - 12), Vector2i(24, 24)))   # the moat's core
+		rects.append(Rect2i(Vector2i(grid_width / 2 - 12, grid_height / 2 - 12), Vector2i(24, 24)))   # the moat's core
 		return rects
 	var grade := mini(lvl, Galaxies.LENGTH)
 	var n := mini(4, 1 + (grade + 1) / 2)
@@ -2412,14 +2440,14 @@ func sector_shape(g: Dictionary, lvl: int, rng: RandomNumberGenerator) -> Array:
 		for tries in 30:
 			var w := rng.randi_range(5, 6 + grade)
 			var h := rng.randi_range(5, 6 + grade)
-			var pos := Vector2i(rng.randi_range(18, N - 18 - w), rng.randi_range(18, N - 18 - h))
+			var pos := Vector2i(rng.randi_range(18, grid_width - 18 - w), rng.randi_range(18, grid_height - 18 - h))
 			var rr := Rect2i(pos, Vector2i(w, h))
 			var ok := true
 			for o in rects:
 				if (o as Rect2i).grow(12).intersects(rr):
 					ok = false
 					break
-			if ok and SectorArena.carved(g.id, lvl) and not SectorArena.rect_inside(g.id, lvl, rr, 7):
+			if ok and SectorArena.carved(g.id, lvl) and not SectorArena.rect_inside(g.id, lvl, rr, 7, Vector2i(grid_width, grid_height)):
 				ok = false   # keep a pylon and its rail clear of the carve so the rail is a real island
 			if ok:
 				rects.append(rr)
@@ -2428,10 +2456,10 @@ func sector_shape(g: Dictionary, lvl: int, rng: RandomNumberGenerator) -> Array:
 
 
 func layout_pick(rng: RandomNumberGenerator, margin: int, avoid: Array, want_d: float, shape: Array = [], arena: Dictionary = {}) -> Vector2i:
-	var best := Vector2i(N / 2, N / 2)
+	var best := Vector2i(grid_width / 2, grid_height / 2)
 	var best_d := -1.0
 	for tries in 60:
-		var c := Vector2i(rng.randi_range(margin, N - 1 - margin), rng.randi_range(margin, N - 1 - margin))
+		var c := Vector2i(rng.randi_range(margin, grid_width - 1 - margin), rng.randi_range(margin, grid_height - 1 - margin))
 		if not arena.is_empty():
 			c = arena.free_cells[rng.randi_range(0, arena.free_cells.size() - 1)]
 		var inside := false
@@ -2559,7 +2587,7 @@ func go_title() -> void:
 
 
 func title_paths() -> Array[PackedVector2Array]:
-	return VectorFont.paths("GALAXTIX", Vector2(FX + N * CELL * 0.5, FY + N * CELL * 0.34), 96, 1, VectorFont.display)
+	return VectorFont.paths("GALAXTIX", Vector2(FX + grid_width * CELL * 0.5, FY + grid_height * CELL * 0.34), 96, 1, VectorFont.display)
 
 
 func update_title(dt: float) -> void:
@@ -2584,6 +2612,8 @@ func update_title(dt: float) -> void:
 				"JUMP":
 					go_dock()
 					pane_t = 0.0
+				"ROGUELITE":
+					start_roguelite()
 				"BATTLE ROYALE":
 					start_battle_royale()
 				"TUBE":
@@ -2644,10 +2674,10 @@ func disarm_title() -> void:
 
 
 func draw_title_field() -> void:
-	var cx := FX + N * CELL * 0.5
+	var cx := FX + grid_width * CELL * 0.5
 	# a slow Lissajous figure: the classic scope idle
 	var lp := PackedVector2Array()
-	var cy := FY + N * CELL * 0.62
+	var cy := FY + grid_height * CELL * 0.62
 	for i in 241:
 		var u := float(i) / 240.0 * TAU
 		lp.append(Vector2(cx + sin(3.0 * u + liss_phase) * 300.0, cy + sin(2.0 * u) * 150.0))
@@ -2661,19 +2691,19 @@ func draw_title_field() -> void:
 		if tf >= 1.0:
 			var sub := "CLAIM THE VOID"
 			var n := int(clampf((title_t - 1.8) * 30.0, 0.0, float(sub.length())))
-			VectorFont.draw(lines, sub.substr(0, n), Vector2(cx, FY + N * CELL * 0.34 + 120), 18, Palette.WHITE, 1.0, 0.4, 1)
+			VectorFont.draw(lines, sub.substr(0, n), Vector2(cx, FY + grid_height * CELL * 0.34 + 120), 18, Palette.WHITE, 1.0, 0.4, 1)
 	# scope readouts in the corner, for the vibe
 	var rc := Palette.DIM
 	rc.a = 0.7
-	VectorFont.draw(lines, "CH1 2V/DIV   TRIG AUTO   XY", Vector2(FX + 14, FY + N * CELL - 22), 9, rc, 0.3, 0.1)
-	VectorFont.draw(lines, "1600X900", Vector2(FX + N * CELL - 14, FY + N * CELL - 22), 9, rc, 0.3, 0.1, 2)
+	VectorFont.draw(lines, "CH1 2V/DIV   TRIG AUTO   XY", Vector2(FX + 14, FY + grid_height * CELL - 22), 9, rc, 0.3, 0.1)
+	VectorFont.draw(lines, "1600X900", Vector2(FX + grid_width * CELL - 14, FY + grid_height * CELL - 22), 9, rc, 0.3, 0.1, 2)
 	if show_log:
 		draw_log()
 
 
 func draw_log() -> void:
-	var cx := FX + N * CELL * 0.5
-	var y := FY + N * CELL * 0.5
+	var cx := FX + grid_width * CELL * 0.5
+	var y := FY + grid_height * CELL * 0.5
 	lines.rect(Rect2(cx - 260, y - 30, 520, 250), Palette.DIM, 0.4, 0.1, 0.8)
 	VectorFont.draw(lines, "JUMP LOG", Vector2(cx, y), 20, Palette.YELLOW, 0.8, 0.3, 1, 1.0, VectorFont.display)
 	var rows := [
@@ -2696,14 +2726,13 @@ func draw_title_panel() -> void:
 	var a := clampf((title_t - 1.2) / 0.6, 0.0, 1.0)
 	if a <= 0.0:
 		return
-	var y := 200.0
 	for i in TITLE_ITEMS.size():
 		var sel := i == title_sel
 		var col := Palette.FULLBRIGHT if sel else Palette.DIM
 		col.a = a
 		if title_exit >= 0 and i != title_exit:
 			col.a *= 0.3
-		var ry := y + i * 84
+		var ry := title_row_y(i)
 		if sel:
 			var pulse := 0.6 + 0.4 * sin(time * 8.0)
 			var mc := Palette.YELLOW
@@ -2843,7 +2872,7 @@ func update_tide(dt: float) -> void:
 			if in_bounds(qc) and cells[idx(qc.x, qc.y)] == CLAIMED:
 				var ci := qix_cell_index(q)
 				if ci >= 0:
-					q.c = center(Vector2i(ci % N, ci / N))
+					q.c = center(Vector2i(ci % grid_width, ci / grid_width))
 					q.v = (q.c - center(c)).normalized() * q.v.length()
 		var cp := center(c)
 		sparks.ripple(cp, (r + 0.5) * CELL, 120.0, 0.5, Palette.CYAN)
@@ -3009,7 +3038,7 @@ func spawn_boss() -> void:
 			boss_bond = true
 		"bastion":
 			# four core turrets around the centre, rotating and firing fast
-			var mid := Vector2i(N / 2, N / 2)
+			var mid := Vector2i(grid_width / 2, grid_height / 2)
 			var offs := [Vector2i(-9, -9), Vector2i(9, -9), Vector2i(9, 9), Vector2i(-9, 9)]
 			for i in 4:
 				var t := Turret.new()
@@ -3023,7 +3052,7 @@ func spawn_boss() -> void:
 				turrets.append(t)
 		"brood":
 			var s := Spawner.new()
-			s.cell = Vector2i(N / 2, N / 2)
+			s.cell = Vector2i(grid_width / 2, grid_height / 2)
 			s.pos = center(s.cell)
 			s.vel = Vector2.RIGHT.rotated(randf() * TAU) * 40.0
 			s.mobile = true
@@ -3116,7 +3145,7 @@ func begin_report() -> void:
 	sector_perfect = 0.0
 	if sector_deaths == 0:
 		sector_perfect = 1.0   # a flawless sector is worth one node
-		Save.add_flux(sector_perfect)
+		award_flux(sector_perfect)
 		run_flux += sector_perfect
 
 
@@ -3180,10 +3209,12 @@ func activate_result(index: int) -> void:
 
 
 func _input(event: InputEvent) -> void:
+	if state == State.ROGUELITE:
+		return
 	if state == State.TITLE and title_t >= 1.0 and title_exit < 0 and not show_log:
 		if event is InputEventMouseMotion or event is InputEventMouseButton:
 			for i in TITLE_ITEMS.size():
-				if Rect2(PANEL_X, 194 + i * 84, PANEL_W, 72).has_point(event.position):
+				if Rect2(PANEL_X, title_row_y(i) - 6, PANEL_W, 72).has_point(event.position):
 					title_sel = i
 					if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 						activate_title_item()
@@ -3213,19 +3244,22 @@ func countup(v: float, t0: float, dur := 0.6) -> float:
 	return v * clampf((seq_t - t0) / dur, 0.0, 1.0)
 
 
-func draw_intro() -> void:
-	var fr := clampf((seq_t - 0.2) / 0.6, 0.0, 1.0)
-	var field_rect := Rect2(FX, FY, N * CELL, N * CELL)
+func draw_intro_frame(field_rect: Rect2, fr: float) -> void:
 	var frame_path := PackedVector2Array([field_rect.position, Vector2(field_rect.end.x, field_rect.position.y),
 		field_rect.end, Vector2(field_rect.position.x, field_rect.end.y), field_rect.position])
 	lines.trace([frame_path], fr, Palette.DIM, 0.4, 0.1, 0.8)
+
+
+func draw_intro() -> void:
+	var fr := clampf((seq_t - 0.2) / 0.6, 0.0, 1.0)
+	draw_intro_frame(Rect2(FX, FY, grid_width * CELL, grid_height * CELL), fr)
 	var coast_paths: Array = []
 	for i in range(0, coast.size(), 2):
 		coast_paths.append(PackedVector2Array([coast[i], coast[i + 1]]))
 	lines.trace(coast_paths, fr, coast_color(), 0.7, 0.15, 1.0)
 
-	var cx := FX + N * CELL * 0.5
-	var cy := FY + N * CELL * 0.45
+	var cx := FX + grid_width * CELL * 0.5
+	var cy := FY + grid_height * CELL * 0.45
 	var fade := 1.0 - clampf((seq_t - 2.3) / 0.3, 0.0, 1.0)
 	if fade > 0.0:
 		var tc := Palette.CYAN
@@ -3235,7 +3269,7 @@ func draw_intro() -> void:
 		var gc := Palette.WHITE
 		gc.a = fade * 0.8
 		var gline := String(gal.name)
-		if level == Galaxies.LENGTH:
+		if level == Galaxies.LENGTH and String(gal.boss) != "none":
 			gline += "   BOSS: " + String(gal.boss_name)
 			gc = Palette.RED
 			gc.a = fade
@@ -3255,8 +3289,8 @@ func draw_intro() -> void:
 
 
 func draw_report_card() -> void:
-	var cx := FX + N * CELL * 0.5
-	var y := FY + N * CELL * 0.30
+	var cx := FX + grid_width * CELL * 0.5
+	var y := FY + grid_height * CELL * 0.30
 	lines.rect(Rect2(cx - 300, y - 30, 600, 310), Palette.DIM, 0.4, 0.1, 0.8)
 	var tf := clampf(seq_t / 0.5, 0.0, 1.0)
 	lines.trace(VectorFont.paths("SECTOR %02d SECURED" % level, Vector2(cx, y), 28, 1, VectorFont.display), tf, Palette.GREEN, 1.0, 0.3, 1.2)
@@ -3457,7 +3491,7 @@ func ray_len(from: Vector2i, dir: Vector2i) -> int:
 func leap_start(dir: Vector2i) -> Vector2i:
 	var cur := p
 	var guard := 0
-	while guard < N and in_bounds(cur + dir) and cells[idx(cur.x + dir.x, cur.y + dir.y)] == CLAIMED:
+	while guard < maxi(grid_width, grid_height) and in_bounds(cur + dir) and cells[idx(cur.x + dir.x, cur.y + dir.y)] == CLAIMED:
 		cur += dir
 		guard += 1
 	return cur
@@ -3878,13 +3912,13 @@ func draw_scan(rect: Rect2 = SCAN, compact := false) -> void:
 	if scan_layout.is_empty():
 		return
 	var dimf := 1.0 if focus else 0.6
-	var s := (rect.size.x - 12.0 if compact else rect.size.x - 28.0) / N
+	var s := (rect.size.x - 12.0 if compact else rect.size.x - 28.0) / grid_width
 	var o := rect.position + (Vector2(6, 6) if compact else Vector2(14, 34))
-	var r := 1 + Save.rim()
+	var r := 1 + run_rim()
 	var frac := clampf(pane_t / 0.6, 0.0, 1.0)
 	var paths: Array = []
 	# rim and field edge
-	var rim := Rect2(o + Vector2(r, r) * s, Vector2(N - 2 * r, N - 2 * r) * s)
+	var rim := Rect2(o + Vector2(r, r) * s, Vector2(grid_width - 2 * r, grid_height - 2 * r) * s)
 	paths.append(PackedVector2Array([rim.position, Vector2(rim.end.x, rim.position.y), rim.end, Vector2(rim.position.x, rim.end.y), rim.position]))
 	for sh in scan_layout.shape:
 		var sr: Rect2i = sh
@@ -3899,7 +3933,7 @@ func draw_scan(rect: Rect2 = SCAN, compact := false) -> void:
 			lines.seg(o + outline[i] * s, o + outline[i + 1] * s, rc, 0.4, 0.1, 0.8)
 	var oc := Palette.DIM
 	oc.a = 0.5 * dimf
-	lines.rect(Rect2(o, Vector2(N, N) * s), oc, 0.3, 0.1, 0.6)
+	lines.rect(Rect2(o, Vector2(grid_width, grid_height) * s), oc, 0.3, 0.1, 0.6)
 	# markers appear once the rim has traced
 	if frac >= 1.0:
 		var k := clampf((pane_t - 0.6) / 0.4, 0.0, 1.0)
@@ -3964,23 +3998,24 @@ func draw_bay(rect: Rect2 = BAY) -> void:
 		var cc := Palette.GREEN if Ships.can_buy(sh.id) else Palette.RED
 		VectorFont.draw(lines, "LOCKED", Vector2(center.x, rect.position.y + 80), 10, cc, 0.4, 0.15, 1)
 	# Keep the preview visual; selection details live in one fixed area.
-	VectorFont.draw(lines, "LIVES %d   SPEED %d%%" % [3 + Save.extra_lives(), int(Save.speed_mult() * 100)],
+	VectorFont.draw(lines, "LIVES %d   SPEED %d%%" % [3 + run_extra_lives(), int(movement_mult() * 100)],
 		Vector2(center.x, rect.end.y - 56), 12, Palette.DIM, 0.4, 0.1, 1)
 
 
 ## Match the pickups: yellow hexagon for Flux, cyan four-point star for Isotope.
-func draw_dock_currency(pos: Vector2, amount: String, isotope: bool, affordable := true) -> void:
+func draw_dock_currency(pos: Vector2, amount: String, isotope: bool, affordable := true, text_size := 14.0) -> void:
 	var col := Palette.CYAN if isotope else Palette.YELLOW
+	var icon_scale := text_size / 14.0
 	if isotope:
 		var pts := PackedVector2Array()
 		for k in 8:
 			var angle := -PI * 0.5 + k * TAU / 8.0
-			pts.append(pos + Vector2(cos(angle), sin(angle)) * (12.0 if k % 2 == 0 else 4.0))
+			pts.append(pos + Vector2(cos(angle), sin(angle)) * (12.0 if k % 2 == 0 else 4.0) * icon_scale)
 		lines.polyline(pts, true, col, 0.0, 0.0, 1.1)
 	else:
-		lines.circle(pos, 10, col, 6, 0.0, 0.0, 1.1)
-	lines.circle(pos, 2.5, Palette.FULLBRIGHT, 6, 0.0, 0.0, 0.8)
-	VectorFont.draw(lines, amount, pos + Vector2(22, -7), 14, Palette.RED if not affordable else col)
+		lines.circle(pos, 10 * icon_scale, col, 6, 0.0, 0.0, 1.1)
+	lines.circle(pos, 2.5 * icon_scale, Palette.FULLBRIGHT, 6, 0.0, 0.0, 0.8)
+	VectorFont.draw(lines, amount, pos + Vector2(22, -7) * icon_scale, text_size, Palette.RED if not affordable else col)
 
 
 func set_currency_ask(amount: float, isotope: bool) -> void:
@@ -3990,14 +4025,14 @@ func set_currency_ask(amount: float, isotope: bool) -> void:
 
 
 ## Center a currency ask without embedding currency names into the text.
-func draw_currency_caption(label: String, amount: String, isotope: bool, pos: Vector2, suffix := "", affordable := true) -> void:
+func draw_currency_caption(label: String, amount: String, isotope: bool, pos: Vector2, suffix := "", affordable := true, label_color := Palette.CYAN) -> void:
 	var label_width := VectorFont.width(label + " ", 14)
 	var amount_width := VectorFont.width(amount, 14)
 	var suffix_width := VectorFont.width(suffix, 14)
 	var left := pos.x - (label_width + 34 + amount_width + suffix_width) * 0.5
-	VectorFont.draw(lines, label, Vector2(left, pos.y - 7), 14, Palette.CYAN)
+	VectorFont.draw(lines, label, Vector2(left, pos.y - 7), 14, label_color)
 	draw_dock_currency(Vector2(left + label_width + 12, pos.y), amount, isotope, affordable)
-	VectorFont.draw(lines, suffix, Vector2(left + label_width + 34 + amount_width, pos.y - 7), 14, Palette.CYAN)
+	VectorFont.draw(lines, suffix, Vector2(left + label_width + 34 + amount_width, pos.y - 7), 14, label_color)
 
 
 func draw_dock_panel() -> void:
@@ -4359,3 +4394,54 @@ func _br_ability(peer: int, hard: bool) -> void:
 func _br_board_requested(peer: int) -> void:
 	if state == State.BATTLE_ROYALE and Net.is_host():
 		Net.send_board(peer, battle.encode_state(true))
+
+
+# Run extension points: Jump keeps its existing economy and stats. Other expeditions
+# can share controls, collision, flood fill and enemies without swapping Save.data.
+func run_rim() -> int:
+	return Save.rim()
+
+func movement_mult() -> float:
+	return Save.speed_mult()
+
+func respawn_shield_duration() -> float:
+	return 2.5 + (0.5 * up("shield") if ship.id == "surveyor" else 0.0)
+
+func prospect_interval() -> float:
+	return Save.prospect_interval()
+
+func fuse_delay() -> float:
+	return Save.fuse_delay()
+
+func base_node_value() -> int:
+	return Save.node_value()
+
+func run_extra_lives() -> int:
+	return Save.extra_lives()
+
+func award_flux(amount: float) -> void:
+	Save.add_flux(amount)
+
+func award_isotope() -> void:
+	Save.data.isotope = int(Save.data.isotope) + 1
+
+func on_claim(_gained: int, _caught: int) -> void:
+	pass
+
+func title_row_y(index: int) -> float:
+	return 180.0 + index * 76.0
+
+func start_roguelite() -> void:
+	if roguelite == null:
+		roguelite_fill = Sprite2D.new()
+		fill.get_parent().add_child(roguelite_fill)
+		roguelite = load("res://scripts/roguelite_game.gd").new()
+		add_child(roguelite)
+		roguelite.setup(lines, sparks, roguelite_fill)
+		roguelite.connect("exited", _leave_roguelite)
+	roguelite.go_dock()
+	state = State.ROGUELITE
+
+func _leave_roguelite() -> void:
+	roguelite_fill.visible = false
+	go_title()
