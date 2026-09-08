@@ -1,0 +1,1649 @@
+extends "res://scripts/game.gd"
+## Shape expedition built on Jump's simulation. Only run flow, progression,
+## card effects and corruption live here; controls and flood-fill remain in Game.
+signal exited
+const Progress = preload("res://scripts/roguelite_progress.gd")
+const Cards = preload("res://scripts/roguelite_cards.gd")
+const DRAFT_CAPTURE := [20, 40, 60]
+const SPREAD_SECONDS := 3.0
+const FIELD_X := 160.0
+const FIELD_COLUMNS := 160
+const CAPTURE_BAR := Rect2(FIELD_X, 130, 1280, 18)
+const REWARD_HOLD := 0.45
+const DRAFT_REVEAL := 0.85
+const VICTORY_REVEAL := 2.2
+const Sectors = preload("res://scripts/roguelite_sectors.gd")
+const EXPEDITION_SECTORS := Sectors.LENGTH
+const MAX_CARD_RANK := 3
+var sector_limit := EXPEDITION_SECTORS # Also supports isolated one-sector test fixtures.
+const Fanfare = preload("res://scripts/roguelite_fanfare.gd")
+var reward_audio: AudioStreamPlayer
+var reveal_cue: AudioStreamWAV
+var install_cue: AudioStreamWAV
+var victory_cue: AudioStreamWAV
+var progress = Progress.new()
+var phase := "hangar"
+var ui_time := 0.0
+var selection := 0
+var viewed_track := 0
+var viewed_ranks: Array[int] = [1, 1, 1, 1, 1, 1]
+const TRACK_VIEW := Rect2(345, 160, 800, 520)
+const TRACK_ROW := 160.0
+var track_scroll := 0.0
+var scroll_dragging := false
+var scroll_grab := 0.0
+var owned_cards: Array[String] = []
+var card_ranks := {}
+var pending_card := {}
+var replace_id := ""
+var rerolls_left := 0
+var salvage_fraction := 0.0
+var sector_salvage_start := 0
+var offers: Array[Dictionary] = []
+var rng := RandomNumberGenerator.new()
+var capture_percent := 0.0
+var displayed_capture := 0.0
+var capture_flights: Array[Dictionary] = []
+var capture_flash := 0.0
+var reward_hold := 0.0
+var drafts_taken := 0
+var credited := PackedByteArray()
+var first_claims := 0
+var capture_count := 0
+var pending_clear := false
+var settled := false
+var earned_salvage := 0
+var bonus_salvage := 0
+var banked_salvage := 0
+var save_failed := false
+var corruption := PackedByteArray()
+var corruption_active := false # Introduced after the bridge, in the final island sector.
+var spread_clock := SPREAD_SECONDS
+var containment_time := 0.0
+var exposure := 0.0
+var cut_time := 0.0
+var safe_motion := 0.0
+var hot_entry := false
+var small_chain := 0
+var freeze_time := 0.0
+var boost_time := 0.0
+var hardlight_time := 0.0
+var cooldowns := {"afterburner": 0.0, "hardlight": 0.0, "anchor": 0.0, "ion": 0.0}
+var last_result := ""
+var hangar_page := "upgrades"
+var viewed_ship := 0
+
+func setup(p_lines: ScopeLines, p_sparks: Sparks, p_fill: Sprite2D) -> void:
+	grid_width = FIELD_COLUMNS
+	reward_audio = AudioStreamPlayer.new()
+	reward_audio.volume_db = -8.0
+	add_child(reward_audio)
+	reveal_cue = Fanfare.make_cue()
+	install_cue = Fanfare.make_cue(true)
+	victory_cue = Fanfare.make_victory()
+	progress.read_profile()
+	rng.randomize()
+	super.setup(p_lines, p_sparks, p_fill)
+
+func go_title() -> void:
+	go_dock()
+
+func go_dock() -> void:
+	phase = "hangar"
+	state = State.DOCK
+	selection = 1
+	hangar_page = "upgrades"
+	viewed_ship = Progress.SHIPS.find(progress.selected_ship)
+	viewed_track = 0
+	track_scroll = 0.0
+	scroll_dragging = false
+	for i in Progress.TRACKS.size():
+		viewed_ranks[i] = mini(Progress.MAX_RANK, progress.rank_of(Progress.TRACKS[i]) + 1)
+	ui_time = 0.0
+	msg_t = 0.0
+	lines.zoom = Vector2.ONE
+	fill.visible = false
+
+func start_run(_retry_sector := 0) -> void:
+	reward_audio.stop()
+	owned_cards.clear()
+	card_ranks.clear()
+	pending_card.clear()
+	replace_id = ""
+	salvage_fraction = progress.salvage_fraction
+	offers.clear()
+	capture_percent = 0
+	displayed_capture = 0.0
+	capture_flights.clear()
+	capture_flash = 0.0
+	reward_hold = 0.0
+	corruption_active = false
+	drafts_taken = 0
+	first_claims = 0
+	capture_count = 0
+	bonus_salvage = 0
+	earned_salvage = 0
+	banked_salvage = 0
+	settled = false
+	save_failed = false
+	pending_clear = false
+	for key in cooldowns:
+		cooldowns[key] = 0.0
+	small_chain = 0
+	freeze_time = 0.0
+	boost_time = 0.0
+	hardlight_time = 0.0
+	containment_time = 0.0
+	safe_motion = 0.0
+	hot_entry = false
+	phase = "run"
+	gal = Galaxies.LIST[0].duplicate(true)
+	gal.name = "HELIX REACH"
+	gal.spawners = 0
+	gal.boss = "none"
+	ship = Ships.get_ship(progress.selected_ship if progress.owns_ship(progress.selected_ship) else "surveyor")
+	level = 1
+	endless = false
+	run_victory = false
+	lives = 2 + run_extra_lives()
+	run_flux = 0.0
+	run_isotope = 0
+	run_cells = 0
+	run_best_claim = 0.0
+	run_deaths = 0
+	run_sectors = 0
+	run_hazards = 0
+	run_nodes = 0
+	set_field_x(FIELD_X)
+	begin_transit(false)
+
+func sector_layout(g: Dictionary, lvl: int, rim: int) -> Dictionary:
+	var layout_galaxy := g.duplicate(true)
+	layout_galaxy.id = "roguelite"
+	var layout := super.sector_layout(layout_galaxy, lvl, rim)
+	var placement := RandomNumberGenerator.new()
+	placement.seed = hash("roguelite-pickups:%d" % lvl)
+	var occupied: Array = [layout.start]
+	layout.nodes.clear()
+	for i in 3 + progress.rank_of("extractor") / 5:
+		var cell := layout_pick(placement, 10, occupied, 24.0, layout.shape, layout.arena)
+		layout.nodes.append({"cell": cell, "rare": false})
+		occupied.append(cell)
+	layout.turrets.clear()
+	layout.spawners.clear()
+	if lvl >= 2:
+		var cell := layout_pick(placement, 10, occupied, 28.0, layout.shape, layout.arena)
+		layout.turrets.append({"cell": cell, "axis": Vector2i.DOWN})
+	return layout
+
+func sector_shape(_g: Dictionary, lvl: int, _rng: RandomNumberGenerator) -> Array:
+	return Sectors.holes(lvl, Vector2i(grid_width, grid_height))
+
+func start_level() -> void:
+	corruption_active = level >= Sectors.CORRUPTION_SECTOR
+	if corruption_active: progress.containment_unlocked = true
+	progress.best_sector = maxi(progress.best_sector, mini(level, EXPEDITION_SECTORS))
+	capture_percent = 0.0
+	displayed_capture = 0.0
+	first_claims = 0
+	drafts_taken = 0
+	pending_clear = false
+	run_victory = false
+	capture_flights.clear()
+	rerolls_left = progress.rank_of("scanner") / 5
+	sector_salvage_start = earned_salvage
+	super.start_level()
+	sparx_to_spawn = mini(sparx_to_spawn, 2) # Geometry teaches the new challenge before enemy volume.
+	trail_slow = false # Only Surveyor explicitly starting a slow cut earns the slow bonus.
+	# Reuse Jump's node placement, icons, enclosure checks, and collection effects.
+	credited.resize(grid_width * grid_height)
+	credited.fill(0)
+	corruption.resize(grid_width * grid_height)
+	corruption.fill(0)
+	for i in grid_width * grid_height:
+		if cells[i] != FREE:
+			credited[i] = 1
+	seed_corruption()
+	exposure = 0.0
+	cut_time = 0.0
+	spread_clock = SPREAD_SECONDS
+	anchor = p
+
+func spawn_qix() -> void:
+	# Jump introduces a second Anomaly at sector five; the bridge/island lesson keeps one.
+	if qixes.is_empty(): super.spawn_qix()
+
+func spawn_boss() -> void:
+	pass # Sector eight is the expedition finale, not Jump's galaxy boss encounter.
+
+func seed_corruption() -> void:
+	if not corruption_active:
+		return
+	for source in [Vector2i(30, 33), Vector2i(72, 62)]:
+		for dy in range(-7, 8):
+			for dx in range(-7, 8):
+				var c: Vector2i = source + Vector2i(dx, dy)
+				if dx * dx + dy * dy <= 49 and cells[idx(c.x, c.y)] == FREE:
+					corruption[idx(c.x, c.y)] = 1
+
+# Explicit stat/economy overrides prevent campaign power or rewards leaking across modes.
+func run_rim() -> int:
+	return 0
+
+func run_extra_lives() -> int:
+	return progress.rank_of("hull") / 5
+
+func movement_mult() -> float:
+	var mult: float = 1.0 + progress.rank_of("engines") * 0.02
+	if drawing:
+		if boost_time > 0.0:
+			mult *= 1.0 + 0.8 * card_power("afterburner")
+		if hot_entry and cut_time < (3.0 if progress.rank_of("engines") >= 10 else 2.0):
+			mult *= 1.0 + 0.3 * (card_power("slipstream") if has_card("slipstream") else 1.0)
+		mult *= 1.0 + small_chain * 0.15 * card_power("compression")
+	return mult
+
+func respawn_shield_duration() -> float:
+	return 2.5 + progress.rank_of("hull") * 0.5
+
+func sap_rate() -> float:
+	var mult := 1.0 + 0.03 * progress.rank_of("reactor")
+	if boost_time > 0.0:
+		mult *= 1.0 + 0.8 * card_power("afterburner")
+	if hot_entry and cut_time < (3.0 if progress.rank_of("engines") >= 10 else 2.0):
+		mult *= 1.0 + 0.3 * (card_power("slipstream") if has_card("slipstream") else 1.0)
+	mult *= 1.0 + small_chain * 0.15 * card_power("compression")
+	return super.sap_rate() * mult
+
+func begin_attack() -> void:
+	cut_time = 0.0
+	hot_entry = safe_motion >= 2.0 and (has_card("slipstream") or progress.rank_of("engines") >= 5)
+	safe_motion = 0.0
+
+func fire_lance(extend := false) -> void:
+	var was_drawing := drawing
+	super.fire_lance(extend)
+	if drawing and not was_drawing:
+		begin_attack()
+
+func start_sapper_charge() -> void:
+	super.start_sapper_charge()
+	begin_attack()
+
+func wire_hit() -> bool:
+	if ship.id == "sapper" and sap_live and not tether_hit(sap_cell):
+		return false
+	return super.wire_hit()
+
+func prospect_interval() -> float:
+	return 0.0
+
+func fuse_delay() -> float:
+	return 1.5
+
+func base_node_value() -> int:
+	return 4
+
+func award_flux(amount: float) -> void:
+	# Shared enclosure rewards are banked only in the Roguelite profile.
+	salvage_fraction += amount * (1.0 + 0.02 * progress.rank_of("extractor"))
+	var whole := floori(salvage_fraction + 0.000001)
+	earned_salvage += whole
+	salvage_fraction = maxf(0.0, salvage_fraction - whole)
+
+func award_isotope() -> void:
+	pass
+
+func up(id: String) -> int:
+	return progress.rank_of("hull") if id == "shield" else 0
+
+func has_card(id: String) -> bool:
+	return owned_cards.has(id)
+
+func card_rank(id: String) -> int:
+	return clampi(int(card_ranks.get(id, 1)), 1, MAX_CARD_RANK)
+
+func card_power(id: String) -> float:
+	return 1.0 + 0.25 * (card_rank(id) - 1)
+
+func card_definition(id: String, rank := 0) -> Dictionary:
+	return Cards.definition(id, ship.id, card_rank(id) if rank == 0 else rank)
+
+func roll_offers(avoid: Array[String] = []) -> void:
+	var pool: Array[String] = []
+	var excluded := draft_exclusions()
+	for card in Cards.LIST:
+		if not excluded.has(card.id) and (not has_card(card.id) or (owned_cards.size() >= 3 and card_rank(card.id) < MAX_CARD_RANK)):
+			pool.append(card.id)
+	var fresh_pool: Array[String] = []
+	for id in pool:
+		if not avoid.has(id): fresh_pool.append(id)
+	if fresh_pool.size() >= 3: pool = fresh_pool
+	offers.clear()
+	while offers.size() < 3 and not pool.is_empty():
+		var index := rng.randi_range(0, pool.size() - 1)
+		var id := pool[index]
+		pool.remove_at(index)
+		var rank := card_rank(id) + 1 if has_card(id) else (2 if rng.randf() < progress.rank_of("scanner") * 0.02 else 1)
+		var card := card_definition(id, rank)
+		card.action = "UPGRADE" if has_card(id) else ("REPLACE" if owned_cards.size() >= 3 else "NEW")
+		offers.append(card)
+
+func reroll_draft() -> void:
+	if phase != "draft" or ui_time < DRAFT_REVEAL or rerolls_left <= 0:
+		return
+	rerolls_left -= 1
+	var previous: Array[String] = []
+	for card in offers: previous.append(card.id)
+	roll_offers(previous)
+	selection = 0
+	ui_time = 0.0
+	reward_audio.stream = reveal_cue
+	reward_audio.play()
+
+func update(dt: float) -> void:
+	ui_time += dt
+	if phase == "paused":
+		update_choices()
+		return
+	if phase == "run" and state == State.PLAYING and Input.is_action_just_pressed("abort"):
+		pause_run()
+		return
+	if phase == "install":
+		sparks.update(dt)
+		if ui_time >= 0.45:
+			phase = "draft"
+			choose_card(selection)
+		return
+	if phase in ["run", "reward"]:
+		update_capture_feedback(dt)
+	if phase == "reward":
+		time += dt
+		msg_t -= dt
+		shake_off = Vector2.ZERO
+		sparks.update(dt)
+		if capture_flights.is_empty():
+			reward_hold += dt
+			if reward_hold >= REWARD_HOLD:
+				if drafts_taken < DRAFT_CAPTURE.size() and capture_percent >= DRAFT_CAPTURE[drafts_taken]:
+					open_draft()
+				elif pending_clear:
+					finish_sector()
+		return
+	if phase != "run":
+		time += dt
+		msg_t -= dt
+		shake_off = Vector2.ZERO
+		sparks.update(dt)
+		update_choices()
+		return
+	super.update(dt)
+	if phase == "run" and state == State.PLAYING:
+		if drafts_taken < DRAFT_CAPTURE.size() and capture_percent >= DRAFT_CAPTURE[drafts_taken]:
+			begin_draft_reward()
+		elif pending_clear:
+			finish_sector()
+
+func update_play(dt: float) -> void:
+	# A capture may queue several drafts, including the final cut. No simulation
+	# advances between that capture, its choices and settlement.
+	if pending_clear or (drafts_taken < DRAFT_CAPTURE.size() and capture_percent >= DRAFT_CAPTURE[drafts_taken]):
+		return
+	for key in cooldowns:
+		cooldowns[key] = maxf(0.0, float(cooldowns[key]) - dt * (1.0 + 0.03 * progress.rank_of("reactor")))
+	boost_time = maxf(0.0, boost_time - dt)
+	hardlight_time = maxf(0.0, hardlight_time - dt)
+	freeze_time = maxf(0.0, freeze_time - dt)
+	containment_time = maxf(0.0, containment_time - dt)
+	if Input.is_action_just_pressed("br_harden"):
+		activate_ability("afterburner")
+	if Input.is_action_just_pressed("special"):
+		activate_ability("hardlight")
+	var old_p := p
+	if drawing or sap_live:
+		cut_time += dt
+	if ship.id == "lancer":
+		lance_cd = maxf(0.0, lance_cd - dt * 0.03 * progress.rank_of("reactor"))
+	super.update_play(dt)
+	if state != State.PLAYING or phase != "run" or pending_clear:
+		return
+	if not drawing and not sap_live and cells[idx(p.x, p.y)] == CLAIMED:
+		if p != old_p or move_acc > 0.0:
+			safe_motion += dt
+		elif not Input.is_action_pressed("move_left") and not Input.is_action_pressed("move_right") and not Input.is_action_pressed("move_up") and not Input.is_action_pressed("move_down"):
+			safe_motion = 0.0
+	update_corruption(dt)
+
+func try_step(dir: Vector2i, draw_line: bool, slow: bool) -> bool:
+	var was_drawing := drawing
+	if ship.id == "sapper" and cells[idx(p.x, p.y)] == CLAIMED:
+		anchor = p
+	var moved := super.try_step(dir, draw_line, slow)
+	if drawing and not was_drawing:
+		begin_attack()
+	return moved
+
+func activate_ability(id: String) -> void:
+	if phase != "run" or state != State.PLAYING or not has_card(id) or float(cooldowns.get(id, 1.0)) > 0.0:
+		return
+	if id == "afterburner":
+		boost_time = 3.0
+		cooldowns[id] = 14.0
+	elif id == "hardlight":
+		hardlight_time = 2.0 * card_power("hardlight")
+		cooldowns[id] = 18.0
+	sparks.ripple(vis, 5.0, 260.0, 0.6, Palette.CYAN)
+
+func tether_hit(c: Vector2i) -> bool:
+	if hardlight_time > 0.0 or (has_card("phase") and cut_time < 1.5 * card_power("phase")):
+		return false
+	if has_card("ion") and float(cooldowns.ion) <= 0.0:
+		cooldowns.ion = 10.0
+		freeze_time = 1.5 * card_power("ion")
+		# Repel the contact so the same overlapping enemy does not immediately
+		# invalidate the stun on the next frame.
+		for q in qixes:
+			q.v = -q.v
+		for m in mites:
+			m.vel = (m.pos - center(c)).normalized() * 150.0
+		hardlight_time = maxf(hardlight_time, 1.8)
+		sparks.ripple(center(c), 5.0, 350.0, 0.5, Palette.CYAN)
+		return false
+	return super.tether_hit(c)
+
+func update_qix(q: QixBody, dt: float, speed: float) -> void:
+	if freeze_time <= 0.0:
+		super.update_qix(q, dt, speed)
+
+func update_sparx(s: SparxBody, dt: float) -> void:
+	if freeze_time <= 0.0:
+		super.update_sparx(s, dt)
+
+func update_hazards(dt: float) -> void:
+	if freeze_time <= 0.0:
+		super.update_hazards(dt)
+
+func die(reason: String) -> void:
+	if invuln > 0.0:
+		return
+	if (drawing or (ship.id == "sapper" and (sap_live or cells[idx(p.x, p.y)] == FREE))) and has_card("anchor") and float(cooldowns.anchor) <= 0.0:
+		cooldowns.anchor = 24.0 / card_power("anchor")
+		for c in trail:
+			cells[idx(c.x, c.y)] = FREE
+		trail.clear()
+		tether_active = false
+		sap_live = false
+		sap_charge = 0.0
+		p = anchor
+		vis = center(p)
+		drawing = false
+		fuse_on = false
+		draw_armed = false
+		move_acc = 0.0
+		invuln = 1.0
+		exposure = 0.0
+		set_msg("ANCHOR RECOVERY", 1.0)
+		return
+	super.die(reason)
+	exposure = 0.0
+	safe_motion = 0.0
+
+func on_claim(gained: int, caught: int) -> void:
+	var previous_capture := capture_percent
+	var newly_claimed: Array[int] = []
+	var cleansed := 0
+	for i in grid_width * grid_height:
+		if cells[i] == CLAIMED and credited[i] == 0:
+			credited[i] = 1
+			first_claims += 1
+			newly_claimed.append(i)
+			if corruption[i] != 0:
+				cleansed += 1
+			corruption[i] = 0
+	# First-time territory drives both card milestones and the sector goal.
+	capture_percent = first_claims * 100.0 / maxi(1, base_free)
+	if newly_claimed.is_empty():
+		return
+	queue_capture_feedback(newly_claimed, previous_capture)
+	capture_count += 1
+	var fraction := float(newly_claimed.size()) / maxi(1, base_free)
+	var clean_radius := maxi(roundi(6 * card_power("clean")) if has_card("clean") else 0, (progress.rank_of("containment") / 5) * 2)
+	if clean_radius > 0:
+		clean_near_claim(newly_claimed, clean_radius)
+	if has_card("containment") and fraction >= 0.08:
+		containment_time = 8.0 * card_power("containment")
+	if has_card("compression"):
+		if fraction < 0.04:
+			small_chain = mini(3, small_chain + 1)
+		elif fraction >= 0.08:
+			small_chain = 0
+	if has_card("loop") and capture_count % 3 == 0:
+		refund_cooldowns(6.0 * card_power("loop"))
+	if progress.rank_of("reactor") >= 5:
+		refund_cooldowns(float(progress.rank_of("reactor") / 5))
+	if has_card("stasis"):
+		freeze_time = maxf(freeze_time, card_power("stasis"))
+	if has_card("harvest"):
+		bonus_salvage += caught * 5
+		award_flux(caught * 5 * card_power("harvest"))
+	exposure = 0.0
+	set_msg("+%d%% CAPTURE%s" % [int(fraction * 100), " / CORRUPTION CLEANSED" if cleansed > 0 else ""], 1.1)
+	if drafts_taken < DRAFT_CAPTURE.size() and capture_percent >= DRAFT_CAPTURE[drafts_taken]:
+		begin_draft_reward()
+	elif capture_percent >= TARGET * 100.0:
+		begin_draft_reward()
+
+func refund_cooldowns(seconds: float) -> void:
+	lance_cd = maxf(0.0, lance_cd - seconds)
+	for key in cooldowns:
+		cooldowns[key] = maxf(0.0, float(cooldowns[key]) - seconds)
+
+func clean_near_claim(claims: Array[int], radius := 6) -> void:
+	# Only boundary cells need a neighbourhood check; interior cells cannot
+	# have adjacent hostile corruption. This keeps a large capture inexpensive.
+	for i in claims:
+		if border[i] == 0:
+			continue
+		var origin := Vector2i(i % grid_width, i / grid_width)
+		for dy in range(-radius, radius + 1):
+			for dx in range(-radius, radius + 1):
+				var c := origin + Vector2i(dx, dy)
+				if in_bounds(c) and dx * dx + dy * dy <= radius * radius:
+					corruption[idx(c.x, c.y)] = 0
+
+func spread_corruption() -> void:
+	if not corruption_active:
+		return
+	var next := corruption.duplicate()
+	for i in grid_width * grid_height:
+		if corruption[i] == 0 or cells[i] != FREE:
+			continue
+		var origin := Vector2i(i % grid_width, i / grid_width)
+		for direction in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
+			var c: Vector2i = origin + direction
+			if in_bounds(c) and cells[idx(c.x, c.y)] == FREE:
+				next[idx(c.x, c.y)] = 1
+	corruption = next
+
+func update_corruption(dt: float) -> void:
+	if not corruption_active:
+		return
+	if containment_time <= 0.0:
+		spread_clock -= dt
+		if spread_clock <= 0.0:
+			spread_clock += SPREAD_SECONDS
+			spread_corruption()
+	var infected_trail := false
+	if ship.id == "sapper":
+		infected_trail = corruption[idx(p.x, p.y)] != 0
+	for c in trail:
+		if corruption[idx(c.x, c.y)] != 0:
+			infected_trail = true
+			break
+	if infected_trail:
+		exposure += dt * (1.0 - 0.03 * progress.rank_of("containment"))
+	else:
+		exposure = maxf(0.0, exposure - dt * 2.0)
+	if exposure >= 4.0:
+		die("CORRUPTION OVERLOAD")
+
+func draft_exclusions() -> Array[String]:
+	var excluded: Array[String] = []
+	if not corruption_active:
+		excluded.assign(["clean", "containment"])
+	var has_capture_target := false
+	for nest in spawners:
+		if not nest.captured:
+			has_capture_target = true
+	for turret in turrets:
+		if not turret.captured:
+			has_capture_target = true
+	if not has_capture_target:
+		excluded.append("harvest")
+	return excluded
+
+func begin_draft_reward() -> void:
+	phase = "reward"
+	state = State.LEVEL_CLEAR # Freeze immediately, keeping the arena visible for particle delivery.
+	reward_hold = 0.0
+	ui_time = 0.0
+	msg_t = 0.0
+
+func queue_capture_feedback(claims: Array[int], previous_capture: float) -> void:
+	var gain := capture_percent - previous_capture
+	if gain <= 0:
+		return
+	# Bound visual work for rapid micro-captures; territory was already credited.
+	if capture_flights.size() > 48:
+		capture_flights.clear()
+		displayed_capture = previous_capture
+	var count := clampi(ceili(gain), 6, 18)
+	for i in count:
+		var cell_index := claims[mini(claims.size() - 1, int((i + 0.5) * claims.size() / count))]
+		var origin := center(Vector2i(cell_index % grid_width, cell_index / grid_width))
+		var portion := float(gain) / count
+		var destination := capture_bar_point(previous_capture + portion * (i + 1))
+		capture_flights.append({"origin": origin, "target": destination,
+			"age": -i * 0.014, "duration": 0.60 + (i % 4) * 0.035,
+			"amount": portion, "bend": Vector2(sin(i * 2.4) * 75.0, -65.0)})
+
+func capture_flight_position(flight: Dictionary, age: float) -> Vector2:
+	var t := clampf(age / float(flight.duration), 0.0, 1.0)
+	t = t * t * (3.0 - 2.0 * t)
+	var start: Vector2 = flight.origin
+	var end: Vector2 = flight.target
+	var control: Vector2 = start.lerp(end, 0.5) + Vector2(flight.bend)
+	return start * pow(1.0 - t, 2.0) + control * 2.0 * (1.0 - t) * t + end * t * t
+
+func update_capture_feedback(dt: float) -> void:
+	capture_flash = maxf(0.0, capture_flash - dt)
+	for i in range(capture_flights.size() - 1, -1, -1):
+		var flight := capture_flights[i]
+		flight.age = float(flight.age) + dt
+		if float(flight.age) >= float(flight.duration):
+			displayed_capture = minf(capture_percent, displayed_capture + float(flight.amount))
+			capture_flash = 0.35
+			sparks.ripple(flight.target, 2.0, 32.0, 0.2, Palette.CYAN)
+			capture_flights.remove_at(i)
+	if capture_flights.is_empty():
+		displayed_capture = capture_percent
+
+func draw_capture_flights() -> void:
+	for flight in capture_flights:
+		var age: float = flight.age
+		if age < 0.0:
+			continue
+		var head := capture_flight_position(flight, age)
+		var tail := capture_flight_position(flight, maxf(0.0, age - 0.08))
+		lines.seg(tail, head, Palette.CYAN, 0.25, 0.05, 1.4)
+		lines.circle(head, 2.2, Palette.WHITE, 8, 0.1, 0.0, 1.1)
+
+func capture_bar_point(percent: float) -> Vector2:
+	return Vector2(CAPTURE_BAR.position.x + 3 + (CAPTURE_BAR.size.x - 6) * clampf(percent / (TARGET * 100.0), 0.0, 1.0), CAPTURE_BAR.get_center().y)
+
+func hud_label(text: String, pos: Vector2, size := 16.0, color := Palette.WHITE) -> void:
+	VectorFont.draw(lines, text, pos, size, color, 0.0, 0.0)
+
+func draw_draft_meter() -> void:
+	var color := Palette.GREEN if displayed_capture >= TARGET * 100.0 else Palette.CYAN
+	hud_label("CAPTURE 75%", Vector2(CAPTURE_BAR.position.x, 104), 13, Palette.DIM)
+	VectorFont.draw(lines, "%.1f%%" % displayed_capture, Vector2(CAPTURE_BAR.end.x, 102), 18, color, 0.0, 0.0, 2)
+	var left := capture_bar_point(0)
+	lines.rect(CAPTURE_BAR, Palette.WHITE if capture_flash > 0.0 else Palette.DIM, 0.0, 0.0, 1.0)
+	var fill_x := capture_bar_point(displayed_capture).x
+	var start_x := left.x
+	for i in DRAFT_CAPTURE.size():
+		var c := capture_bar_point(DRAFT_CAPTURE[i])
+		if fill_x > start_x:
+			lines.seg(Vector2(start_x, c.y), Vector2(minf(fill_x, c.x - 9), c.y), color, 0.0, 0.0, 4.0)
+		start_x = c.x + 9
+		var marker := Palette.GREEN if i < drafts_taken else (Palette.YELLOW if i == drafts_taken else Palette.DIM)
+		lines.polyline(PackedVector2Array([c + Vector2(0, -5), c + Vector2(5, 0), c + Vector2(0, 5), c + Vector2(-5, 0)]), true, marker, 0.0, 0.0, 1.2)
+		if i < drafts_taken:
+			lines.circle(c, 1.5, marker, 4)
+	if fill_x > start_x:
+		lines.seg(Vector2(start_x, left.y), Vector2(fill_x, left.y), color, 0.0, 0.0, 4.0)
+	if capture_flash > 0.0:
+		lines.circle(capture_bar_point(displayed_capture), 3.0, Palette.WHITE, 8)
+
+func open_draft() -> void:
+	phase = "draft"
+	state = State.REPORT # Park the shared simulation immediately, even mid-movement frame.
+	roll_offers()
+	selection = 0
+	ui_time = 0.0
+	msg_t = 0.0
+	reward_audio.stream = reveal_cue
+	reward_audio.play()
+	sparks.ripple(Vector2(800, 195), 12.0, 440.0, 0.7, Palette.CYAN)
+
+func begin_card_install(index: int) -> void:
+	if phase != "draft" or ui_time < DRAFT_REVEAL or index < 0 or index >= offers.size():
+		return
+	if not has_card(offers[index].id) and owned_cards.size() >= 3 and replace_id.is_empty():
+		pending_card = {"index": index}
+		phase = "replace"
+		selection = 0
+		ui_time = 0.0
+		return
+	selection = index
+	phase = "install"
+	ui_time = 0.0
+	reward_audio.stream = install_cue
+	reward_audio.play()
+	sparks.ripple(choice_rect(index).get_center(), 35.0, 500.0, 0.45, Palette.GREEN)
+	sparks.burst(choice_rect(index).get_center(), 36, 260.0, 1.5, 0.45, Palette.GREEN)
+
+func choose_card(index: int) -> void:
+	if phase != "draft" or index < 0 or index >= offers.size():
+		return
+	var id: String = offers[index].id
+	if not has_card(id) and owned_cards.size() >= 3 and replace_id.is_empty():
+		pending_card = {"index": index}
+		phase = "replace"
+		selection = 0
+		ui_time = 0.0
+		return
+	if not replace_id.is_empty():
+		var slot := owned_cards.find(replace_id)
+		if slot < 0: return
+		owned_cards[slot] = id
+		card_ranks.erase(replace_id)
+		if cooldowns.has(replace_id): cooldowns[replace_id] = 0.0
+		if replace_id == "compression": small_chain = 0
+		if replace_id == "afterburner": boost_time = 0.0
+		if replace_id == "hardlight": hardlight_time = 0.0
+		if replace_id == "slipstream" and progress.rank_of("engines") < 5: hot_entry = false
+		replace_id = ""
+	elif not has_card(id):
+		owned_cards.append(id)
+	card_ranks[id] = int(offers[index].get("rank", 1))
+	pending_card.clear()
+	finish_draft()
+
+func keep_build() -> void:
+	if phase != "draft" or ui_time < DRAFT_REVEAL or owned_cards.size() < 3: return
+	finish_draft()
+
+func finish_draft() -> void:
+	drafts_taken += 1
+	offers.clear()
+	if drafts_taken < DRAFT_CAPTURE.size() and capture_percent >= DRAFT_CAPTURE[drafts_taken]:
+		open_draft()
+	elif pending_clear:
+		finish_sector()
+	else:
+		phase = "run"
+		state = State.PLAYING
+		draw_armed = false
+		ui_time = 0.0
+
+func level_clear() -> void:
+	pending_clear = true
+	run_victory = level >= sector_limit
+	run_sectors = level
+	if phase not in ["draft", "reward", "install", "replace"]:
+		finish_sector()
+
+func finish_sector() -> void:
+	if settled or phase == "sector_clear": return
+	if level >= sector_limit:
+		end_run()
+		return
+	phase = "sector_clear"
+	state = State.REPORT
+	ui_time = 0.0
+	selection = 0
+	msg_t = 0.0
+	reward_audio.stream = victory_cue
+	reward_audio.play()
+	sparks.ripple(Vector2(800, 310), 20.0, 560.0, 1.2, Palette.GREEN)
+
+func continue_expedition() -> void:
+	if phase != "sector_clear" or ui_time < VICTORY_REVEAL: return
+	level += 1
+	phase = "run"
+	pending_clear = false
+	run_victory = false
+	capture_percent = 0.0
+	displayed_capture = 0.0
+	drafts_taken = 0
+	for key in cooldowns: cooldowns[key] = 0.0
+	boost_time = 0.0
+	hardlight_time = 0.0
+	freeze_time = 0.0
+	containment_time = 0.0
+	safe_motion = 0.0
+	hot_entry = false
+	begin_transit(false)
+
+func end_run() -> void:
+	if settled:
+		return
+	settled = true
+	capture_flights.clear()
+	banked_salvage = earned_salvage
+	progress.salvage += banked_salvage
+	progress.salvage_fraction = salvage_fraction
+	progress.runs += 1
+	if run_victory:
+		progress.wins += 1
+	save_failed = not progress.write_profile()
+	last_result = "SECTOR SECURED" if run_victory else ("HULL LOST" if lives < 0 else "EXPEDITION ENDED")
+	if run_victory:
+		reward_audio.stream = victory_cue
+		reward_audio.play()
+		sparks.ripple(Vector2(800, 310), 20.0, 560.0, 1.2, Palette.GREEN)
+		sparks.ripple(Vector2(800, 310), 5.0, 340.0, 1.5, Palette.YELLOW)
+		sparks.burst(Vector2(800, 310), 100, 420.0, 0.7, 1.4, Palette.GREEN)
+	phase = "result"
+	state = State.RUN_OVER
+	selection = 0
+	ui_time = 0.0
+	drawing = false
+	trail.clear()
+	lines.zoom = Vector2.ONE
+	msg_t = 0.0
+
+func pause_run() -> void:
+	if phase != "run" or state != State.PLAYING:
+		return
+	phase = "paused"
+	selection = 0
+	ui_time = 0.0
+
+func resume_run() -> void:
+	phase = "run"
+	ui_time = 0.0
+	if not drawing:
+		draw_armed = false
+
+func choice_delay() -> float:
+	if phase == "draft":
+		return DRAFT_REVEAL
+	if phase == "result" and run_victory:
+		return VICTORY_REVEAL
+	if phase == "sector_clear": return VICTORY_REVEAL
+	return 0.2
+
+func update_choices() -> void:
+	if ui_time < choice_delay():
+		return
+	if phase == "hangar":
+		update_track_input()
+		return
+	var count := 3 if phase in ["draft", "replace"] else (2 if phase == "paused" else 1)
+	if Input.is_action_just_pressed("move_up") or Input.is_action_just_pressed("move_left"):
+		selection = posmod(selection - 1, count)
+	if Input.is_action_just_pressed("move_down") or Input.is_action_just_pressed("move_right"):
+		selection = (selection + 1) % count
+	if Input.is_action_just_pressed("confirm"):
+		activate_choice(selection)
+	elif Input.is_action_just_pressed("abort"):
+		if phase == "draft":
+			keep_build()
+		elif phase == "replace":
+			cancel_replacement()
+		elif phase == "sector_clear":
+			end_run()
+		elif phase == "paused":
+			resume_run()
+		elif phase == "hangar":
+			leave_mode()
+		elif phase == "result":
+			activate_choice(0)
+
+func activate_choice(index: int) -> void:
+	if phase == "sector_clear":
+		continue_expedition()
+	elif phase == "replace":
+		if index < 0 or index >= owned_cards.size(): return
+		replace_id = owned_cards[index]
+		var reward_index := int(pending_card.index)
+		phase = "draft"
+		ui_time = DRAFT_REVEAL
+		begin_card_install(reward_index)
+	elif phase == "paused":
+		if index == 0:
+			resume_run()
+		elif index == 1:
+			end_run()
+	elif phase == "draft":
+		begin_card_install(index)
+	elif phase == "result":
+		if ui_time < choice_delay():
+			return
+		if save_failed:
+			save_failed = not progress.write_profile()
+			if save_failed:
+				return
+		go_dock()
+	elif phase == "hangar":
+		if index == 0:
+			start_run()
+		elif index == 4:
+			leave_mode()
+		elif index in [5, 6]:
+			hangar_page = "ships" if index == 5 else "upgrades"
+			selection = 10 + viewed_ship if index == 5 else track_selection(viewed_track)
+			scroll_dragging = false
+			if index == 6: reveal_track(viewed_track)
+		elif index >= 10 and index <= 12 and hangar_page == "ships":
+			purchase_or_select_ship(index - 10)
+		elif index in [1, 2, 3, 7, 8, 9]:
+			var track_index := index - 1 if index <= 3 else index - 4
+			var track: String = Progress.TRACKS[track_index]
+			if not progress.track_available(track):
+				set_msg("REACH SECTOR %d" % Sectors.CORRUPTION_SECTOR, 1.2)
+				return
+			if viewed_ranks[track_index] != progress.rank_of(track) + 1:
+				return
+			if progress.buy(track):
+				var purchased := viewed_ranks[track_index]
+				viewed_ranks[track_index] = mini(Progress.MAX_RANK, purchased + 1)
+				sparks.ripple(track_node_position(track_index, purchased), 5.0, 100.0, 0.45, Palette.GREEN)
+				set_msg("%s UPGRADED" % track.to_upper(), 1.0)
+			elif progress.rank_of(track) >= Progress.MAX_RANK:
+				set_msg("MAX LEVEL", 1.0)
+			elif progress.salvage < progress.cost(track):
+				set_currency_ask(progress.cost(track) - progress.salvage, false)
+			else:
+				set_msg("SAVE FAILED - UPGRADE REFUNDED", 2.0)
+
+func leave_mode() -> void:
+	fill.visible = false
+	exited.emit()
+
+func choice_rect(index: int) -> Rect2:
+	if phase == "paused":
+		return Rect2(240 + index * 600, 726, 520, 64)
+	if phase in ["draft", "install", "replace"]:
+		return Rect2(110 + index * 470, 260, 440, 430)
+	if phase in ["result", "sector_clear"]:
+		return Rect2(540, 700, 520, 66)
+	if index == 0:
+		return Rect2(1280, 55, 230, 56)
+	if index == 4:
+		return Rect2(80, 55, 160, 56)
+	if index == 5:
+		return Rect2(520, 55, 190, 56)
+	if index == 6:
+		return Rect2(270, 55, 220, 56)
+	return Rect2(355, 205 + (index - 1) * 160, 780, 145)
+
+func _input(event: InputEvent) -> void:
+	var host := get_parent() as Game
+	if host != null and host.state == State.ROGUELITE and phase == "draft":
+		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT and keep_build_rect().has_point(event.position):
+			keep_build()
+			get_viewport().set_input_as_handled()
+			return
+		if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_R:
+			reroll_draft()
+			get_viewport().set_input_as_handled()
+			return
+		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT and reroll_rect().has_point(event.position):
+			reroll_draft()
+			get_viewport().set_input_as_handled()
+			return
+	if host != null and host.state == State.ROGUELITE and phase == "run" and event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+		var inspect := Rect2(FIELD_X - 10, 780, 190, 44).has_point(event.position)
+		for i in owned_cards.size():
+			inspect = inspect or run_card_rect(i).has_point(event.position)
+		if inspect:
+			pause_run()
+			get_viewport().set_input_as_handled()
+			return
+	if host == null or host.state != State.ROGUELITE or phase in ["run", "reward", "install"] or ui_time < choice_delay():
+		return
+	if event is InputEventMouseMotion or event is InputEventMouseButton:
+		if phase == "hangar":
+			handle_track_mouse(event)
+			return
+		var count := 3 if phase in ["draft", "replace"] else (2 if phase == "paused" else 1)
+		for i in count:
+			if choice_rect(i).has_point(event.position):
+				selection = i
+				if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+					activate_choice(i)
+					get_viewport().set_input_as_handled()
+				return
+
+# Presentation uses the existing beam renderer and fonts.
+func label(text: String, pos: Vector2, size: float = 16, color: Color = Palette.WHITE, align: int = 0) -> void:
+	VectorFont.draw(lines, text, pos, size, color, 0.25, 0.05, align)
+
+func paragraph(text: String, pos: Vector2, chars: int = 42, size: float = 15, color: Color = Palette.WHITE) -> void:
+	var row := 0
+	for part in paragraph_lines(text, chars * size * 0.65, size):
+		label(part, pos + Vector2(0, row * (size + 10)), size, color)
+		row += 1
+
+func paragraph_lines(text: String, max_width: float, size: float) -> Array[String]:
+	var result: Array[String] = []
+	for section in text.to_upper().split("\n"):
+		var row := ""
+		for word in section.split(" ", false):
+			var candidate := word if row.is_empty() else row + " " + word
+			if not row.is_empty() and VectorFont.width(candidate, size) > max_width:
+				result.append(row)
+				row = word
+			else:
+				row = candidate
+		result.append(row)
+	return result
+
+func button(index: int, text: String) -> void:
+	var r := choice_rect(index)
+	lines.rect(r, Palette.CYAN if selection == index else Palette.DIM, 0.2, 0.05, 1.0)
+	label(("> " if selection == index else "") + text, r.position + Vector2(24, 24), 18, Palette.WHITE if selection == index else Palette.DIM)
+
+func draw() -> void:
+	battle_fill.visible = false
+	if phase == "paused":
+		fill.visible = false
+		lines.zoom = Vector2.ONE
+		draw_pause()
+		return
+	if phase in ["run", "reward"]:
+		super.draw()
+		draw_capture_flights()
+		return
+	fill.visible = false
+	lines.zoom = Vector2.ONE
+	if phase not in ["hangar", "draft", "install", "replace", "sector_clear"] and not (phase == "result" and run_victory):
+		label("ROGUELITE", Vector2(80, 70), 30, Palette.CYAN)
+	if phase not in ["draft", "install", "replace", "sector_clear"] and not (phase == "result" and run_victory):
+		lines.seg(Vector2(80, 125), Vector2(1510, 125), Palette.DIM)
+	match phase:
+		"hangar": draw_hangar()
+		"draft", "install": draw_draft()
+		"replace": draw_replacement()
+		"sector_clear": draw_victory()
+		"result": draw_result()
+	sparks.draw(lines)
+	if msg_t > 0.0:
+		if msg_currency >= 0:
+			draw_currency_caption(msg, msg_amount, false, Vector2(950, 774), "", false, Palette.RED)
+		else:
+			label(msg, Vector2(950, 766), 15, Palette.YELLOW, 1)
+
+## Reuse the board currency glyph, with aligned amounts at the hangar and reward sizes.
+func draw_salvage(amount: String, pos: Vector2, text_size := 14.0, align := 0, affordable := true) -> void:
+	var icon_scale := text_size / 14.0
+	var width := 32.0 * icon_scale + VectorFont.width(amount, text_size)
+	var left := pos.x - width * float(align) * 0.5
+	draw_dock_currency(Vector2(left + 10 * icon_scale, pos.y), amount, false, affordable, text_size)
+
+func draw_hangar() -> void:
+	for index in [4, 6, 5, 0]:
+		button(index, {4: "BACK", 0: "LAUNCH", 6: "UPGRADES", 5: "SHIPS"}[index])
+	var active_tab := choice_rect(5 if hangar_page == "ships" else 6)
+	lines.seg(Vector2(active_tab.position.x, 120), Vector2(active_tab.end.x, 120), Palette.CYAN, 0.0, 0.0, 2.0)
+	lines.seg(Vector2(80, 762), Vector2(1510, 762), Palette.DIM)
+	draw_salvage(str(progress.salvage), Vector2(80, 804), 24)
+	if hangar_page == "ships":
+		draw_ship_shop()
+		return
+	label(progress.selected_ship.to_upper(), Vector2(80, 210), 25)
+	for path in Hulls.paths(progress.selected_ship, Vector2(195, 408), 85.0, 0.0, 0.4):
+		lines.polyline(path, false, Palette.CYAN, 0.3, 0.05, 1.2)
+	paragraph(ship_controls(progress.selected_ship), Vector2(80, 555), 25, 13, Palette.DIM)
+	lines.clip_y = Vector2(TRACK_VIEW.position.y, TRACK_VIEW.end.y)
+	for i in visible_tracks():
+		draw_upgrade_track(i)
+	lines.clip_y = Vector2(-INF, INF)
+	lines.seg(scrollbar_rect().position + Vector2(4, 0), scrollbar_rect().end - Vector2(4, 0), Palette.DIM)
+	lines.rect(scrollbar_thumb(), Palette.CYAN if scroll_dragging else Palette.WHITE)
+	lines.seg(Vector2(1160, 200), Vector2(1160, 730), Palette.DIM)
+	draw_node_details()
+	label("OWNED", Vector2(397, 710), 12, Palette.GREEN)
+	label("NEXT", Vector2(583, 710), 12, Palette.YELLOW)
+	label("LOCKED", Vector2(744, 710), 12, Palette.DIM)
+	lines.circle(Vector2(376, 716), 7, Palette.GREEN)
+	lines.circle(Vector2(562, 716), 7, Palette.YELLOW)
+	lines.circle(Vector2(723, 716), 7, Palette.DIM)
+	var enter_action: String = {0: "LAUNCH", 4: "BACK", 5: "SHIPS", 6: "UPGRADES"}.get(selection, "BUY")
+	label("ARROWS: BROWSE    ENTER: %s    ESC: BACK" % enter_action, Vector2(950, 815), 13, Palette.DIM, 1)
+
+func ship_controls(id: String) -> String:
+	match id:
+		"lancer": return "ARROWS / WASD: AIM\nSPACE: LANCE + RIDE"
+		"sapper": return "ARROWS / WASD: MOVE\nHOLD SPACE: CHARGE\nRELEASE: DETONATE"
+	return "ARROWS / WASD: MOVE\nSPACE: DRAW\nSHIFT: SLOW DRAW"
+
+func ship_rect(index: int) -> Rect2:
+	return Rect2(80 + index * 490, 185, 450, 515)
+
+func ship_action_rect(index: int) -> Rect2:
+	return Rect2(110 + index * 490, 620, 390, 56)
+
+func purchase_or_select_ship(index: int) -> void:
+	if index < 0 or index >= Progress.SHIPS.size():
+		return
+	viewed_ship = index
+	selection = 10 + index
+	var id: String = Progress.SHIPS[index]
+	var owned: bool = progress.owns_ship(id)
+	if owned and progress.selected_ship == id:
+		return
+	if not owned and progress.salvage < Progress.SHIP_PRICE:
+		set_currency_ask(Progress.SHIP_PRICE - progress.salvage, false)
+		return
+	var success: bool = progress.select_ship(id) if owned else progress.buy_ship(id)
+	if not success:
+		set_msg("SAVE FAILED - TRY AGAIN" if owned else "SAVE FAILED - PURCHASE REFUNDED", 2.0)
+		return
+	set_msg("%s %s" % [id.to_upper(), "SELECTED" if owned else "UNLOCKED"], 1.4)
+	sparks.ripple(ship_rect(index).get_center(), 25.0, 340.0, 0.6, Palette.GREEN)
+	if not owned:
+		reward_audio.stream = install_cue
+		reward_audio.play()
+		sparks.burst(ship_rect(index).get_center(), 40, 220.0, 0.7, 0.6, Palette.GREEN)
+
+func draw_ship_shop() -> void:
+	for i in Progress.SHIPS.size():
+		var id: String = Progress.SHIPS[i]
+		var r := ship_rect(i)
+		var active: bool = progress.selected_ship == id
+		var owned: bool = progress.owns_ship(id)
+		var color := Palette.CYAN if owned else Palette.DIM
+		lines.rect(r, Palette.WHITE if selection == 10 + i else Palette.DIM, 0.0, 0.0, 0.7)
+		label(id.to_upper(), r.position + Vector2(30, 30), 25, Palette.WHITE if owned else Palette.DIM)
+		label("ACTIVE" if active else ("OWNED" if owned else "LOCKED"), r.position + Vector2(30, 75), 12, Palette.GREEN if active else color)
+		for path in Hulls.paths(id, r.position + Vector2(225, 225), 77.0, 0.0, 0.4):
+			lines.polyline(path, false, color, 0.3, 0.05, 1.2)
+		label(["DRAW AND ENCLOSE", "FIRE A LINE. RIDE IT.", "CHARGE. DETONATE."][i], r.position + Vector2(225, 357), 17, Palette.WHITE, 1)
+		var action := ship_action_rect(i)
+		var affordable: bool = progress.salvage >= Progress.SHIP_PRICE
+		lines.rect(action, Palette.GREEN if active else (Palette.CYAN if owned else (Palette.YELLOW if affordable else Palette.RED)))
+		if owned:
+			label("SELECTED" if active else "SELECT", action.position + Vector2(195, 19), 16, Palette.GREEN if active else Palette.CYAN, 1)
+		else:
+			draw_currency_caption("UNLOCK", str(Progress.SHIP_PRICE), false, action.get_center(), "", affordable, Palette.CYAN if affordable else Palette.RED)
+	label("UPGRADES APPLY TO EVERY SHIP", Vector2(800, 724), 13, Palette.DIM, 1)
+	label("ARROWS: BROWSE    ENTER: SELECT / UNLOCK    ESC: BACK", Vector2(950, 815), 13, Palette.DIM, 1)
+
+func track_node_position(track_index: int, rank: int) -> Vector2:
+	return Vector2(386 + (rank - 1) * 80, TRACK_VIEW.position.y + 75 + track_index * TRACK_ROW - track_scroll)
+
+func track_node_rect(track_index: int, rank: int) -> Rect2:
+	return Rect2(track_node_position(track_index, rank) - Vector2(32, 32), Vector2(64, 82))
+
+func upgrade_button_rect() -> Rect2:
+	return Rect2(1195, 635, 315, 64)
+
+func node_state(track_index: int, rank: int) -> String:
+	if not progress.track_available(Progress.TRACKS[track_index]): return "LOCKED"
+	var current: int = progress.rank_of(Progress.TRACKS[track_index])
+	return "OWNED" if rank <= current else ("NEXT" if rank == current + 1 else "LOCKED")
+
+func visible_tracks() -> Array[int]:
+	var tracks: Array[int] = []
+	for i in Progress.TRACKS.size():
+		var top := TRACK_VIEW.position.y + i * TRACK_ROW - track_scroll
+		if top < TRACK_VIEW.end.y and top + TRACK_ROW > TRACK_VIEW.position.y: tracks.append(i)
+	return tracks
+
+func max_track_scroll() -> float:
+	return maxf(0.0, Progress.TRACKS.size() * TRACK_ROW - TRACK_VIEW.size.y)
+
+func scrollbar_rect() -> Rect2:
+	return Rect2(1146, TRACK_VIEW.position.y, 8, TRACK_VIEW.size.y)
+
+func scrollbar_thumb() -> Rect2:
+	var bar := scrollbar_rect()
+	var height := bar.size.y * TRACK_VIEW.size.y / (Progress.TRACKS.size() * TRACK_ROW)
+	return Rect2(bar.position + Vector2(0, (bar.size.y - height) * track_scroll / maxf(1.0, max_track_scroll())), Vector2(8, height))
+
+func reveal_track(index: int) -> void:
+	track_scroll = clampf(track_scroll, (index + 1) * TRACK_ROW - TRACK_VIEW.size.y, index * TRACK_ROW)
+	track_scroll = clampf(track_scroll, 0.0, max_track_scroll())
+
+func track_selection(index: int) -> int:
+	return index + 1 if index < 3 else index + 4
+
+func focus_track(index: int) -> void:
+	selection = track_selection(index)
+	viewed_track = index
+	reveal_track(index)
+
+func browse_track(row_delta: int, rank_delta: int) -> void:
+	if row_delta != 0:
+		var order: Array[int] = []
+		for i in Progress.TRACKS.size(): order.append(track_selection(i))
+		order.append_array([4, 6, 5, 0])
+		selection = order[posmod(order.find(selection) + row_delta, order.size())]
+		if selection in [1, 2, 3, 7, 8, 9]:
+			viewed_track = selection - 1 if selection <= 3 else selection - 4
+			reveal_track(viewed_track)
+	if rank_delta != 0:
+		if selection in [1, 2, 3, 7, 8, 9]:
+			viewed_ranks[viewed_track] = clampi(viewed_ranks[viewed_track] + rank_delta, 1, Progress.MAX_RANK)
+			reveal_track(viewed_track)
+		elif selection in [4, 6, 5, 0]:
+			var nav := [4, 6, 5, 0]
+			selection = nav[posmod(nav.find(selection) + rank_delta, nav.size())]
+
+func update_track_input() -> void:
+	if hangar_page == "ships":
+		update_ship_input()
+		return
+	if Input.is_action_just_pressed("move_up"):
+		browse_track(-1, 0)
+	if Input.is_action_just_pressed("move_down"):
+		browse_track(1, 0)
+	if Input.is_action_just_pressed("move_left"):
+		browse_track(0, -1)
+	if Input.is_action_just_pressed("move_right"):
+		browse_track(0, 1)
+	if Input.is_action_just_pressed("confirm"):
+		activate_choice(selection)
+	elif Input.is_action_just_pressed("abort"):
+		leave_mode()
+
+func handle_track_mouse(event: InputEvent) -> void:
+	var click: bool = event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed
+	if hangar_page == "upgrades" and handle_track_scroll(event): return
+	for i in [4, 6, 5, 0]:
+		if choice_rect(i).has_point(event.position):
+			selection = i
+			if click:
+				activate_choice(i)
+				get_viewport().set_input_as_handled()
+			return
+	if hangar_page == "ships":
+		for i in Progress.SHIPS.size():
+			if ship_rect(i).has_point(event.position):
+				selection = 10 + i
+				viewed_ship = i
+				if click and ship_action_rect(i).has_point(event.position):
+					purchase_or_select_ship(i)
+					get_viewport().set_input_as_handled()
+				return
+		return
+	for i in visible_tracks():
+		for rank in range(1, Progress.MAX_RANK + 1):
+			if TRACK_VIEW.has_point(event.position) and track_node_rect(i, rank).has_point(event.position):
+				if click:
+					focus_track(i)
+					viewed_ranks[i] = rank
+					get_viewport().set_input_as_handled()
+				return
+	if upgrade_button_rect().has_point(event.position):
+		focus_track(viewed_track)
+		if click:
+			activate_choice(selection)
+			get_viewport().set_input_as_handled()
+		return
+
+func handle_track_scroll(event: InputEvent) -> bool:
+	if event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+			scroll_dragging = false
+		elif event.pressed and TRACK_VIEW.grow(12).has_point(event.position):
+			if event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
+				track_scroll = clampf(track_scroll + (48.0 if event.button_index == MOUSE_BUTTON_WHEEL_DOWN else -48.0) * maxf(1.0, event.factor), 0.0, max_track_scroll())
+				get_viewport().set_input_as_handled()
+				return true
+			if event.button_index == MOUSE_BUTTON_LEFT and scrollbar_rect().grow(8).has_point(event.position):
+				scroll_grab = event.position.y - scrollbar_thumb().position.y if scrollbar_thumb().has_point(event.position) else scrollbar_thumb().size.y * 0.5
+				scroll_dragging = true
+	if scroll_dragging and (event is InputEventMouseMotion or event is InputEventMouseButton):
+		var travel := scrollbar_rect().size.y - scrollbar_thumb().size.y
+		track_scroll = clampf((event.position.y - scrollbar_rect().position.y - scroll_grab) / maxf(1.0, travel), 0.0, 1.0) * max_track_scroll()
+		get_viewport().set_input_as_handled()
+		return true
+	return false
+
+func update_ship_input() -> void:
+	var dx := int(Input.is_action_just_pressed("move_right")) - int(Input.is_action_just_pressed("move_left"))
+	if selection >= 10:
+		viewed_ship = posmod(viewed_ship + dx, Progress.SHIPS.size())
+		selection = 10 + viewed_ship
+		if Input.is_action_just_pressed("move_up"):
+			selection = 5
+	else:
+		browse_track(0, dx)
+		if Input.is_action_just_pressed("move_down"):
+			selection = 10 + viewed_ship
+	if Input.is_action_just_pressed("confirm"):
+		activate_choice(selection)
+	elif Input.is_action_just_pressed("abort"):
+		activate_choice(6)
+
+func subsystem_icon(track_index: int, pos: Vector2, color: Color, scale: float = 1.0) -> void:
+	var points: PackedVector2Array
+	match track_index:
+		0:
+			points = PackedVector2Array([Vector2(-8, 7), Vector2(0, -8), Vector2(8, 7), Vector2(0, 3)])
+		1:
+			points = PackedVector2Array([Vector2(-8, -7), Vector2(8, -7), Vector2(7, 3), Vector2(0, 9), Vector2(-7, 3)])
+		3:
+			lines.circle(pos, 4 * scale, color, 16)
+			points = PackedVector2Array([Vector2(-11, 0), Vector2(0, -8), Vector2(11, 0), Vector2(0, 8)])
+		4:
+			points = PackedVector2Array([Vector2(-10, 0), Vector2(-5, -9), Vector2(5, -9), Vector2(10, 0), Vector2(5, 9), Vector2(-5, 9)])
+			lines.circle(pos, 2 * scale, Palette.FULLBRIGHT, 6)
+		5:
+			points = PackedVector2Array([Vector2(-10, -9), Vector2(10, -9), Vector2(10, 9), Vector2(-10, 9)])
+			lines.seg(pos + Vector2(-5, 0) * scale, pos + Vector2(5, 0) * scale, color)
+		_:
+			points = PackedVector2Array([Vector2(0, -9), Vector2(-7, 1), Vector2(0, 1), Vector2(-2, 9), Vector2(8, -3), Vector2(1, -3)])
+	for i in points.size():
+		points[i] = pos + points[i] * scale
+	lines.polyline(points, true, color, 0.1, 0.0, 1.0)
+
+func milestone_name(track_index: int, rank := 5) -> String:
+	return (["OVERDRIVE", "REINFORCED HULL", "RAPID REFUND", "DOUBLE SCAN", "SALVAGE FIELD", "PURIFY"] if rank == 10 else ["HOT ENTRY", "SPARE HULL", "CAPTURE REFUND", "RESCAN", "EXTRA PICKUP", "CLEAN BORDER"])[track_index]
+
+func milestone_detail(index: int, rank: int) -> String:
+	var verb := "CHARGE" if progress.selected_ship == "sapper" else ("LANCE" if progress.selected_ship == "lancer" else "CUT")
+	return ["MOVE SAFE 2S\nNEXT %s +30%% / %dS" % [verb, 3 if rank == 10 else 2], "+1 STARTING HULL", "CAPTURE: -%dS COOLDOWN" % (rank / 5), "%d REROLLS PER SECTOR" % (rank / 5), "+%d PICKUPS PER SECTOR" % (rank / 5), "CAPTURE CLEANSES\n%d CELLS BEYOND BORDER" % (rank / 5 * 2)][index]
+
+func draw_upgrade_track(track_index: int) -> void:
+	var track: String = Progress.TRACKS[track_index]
+	var current: int = progress.rank_of(track)
+	var selected := selection == track_selection(track_index)
+	var y := TRACK_VIEW.position.y + 10 + track_index * TRACK_ROW - track_scroll
+	label(track.to_upper(), Vector2(355, y), 22, Palette.WHITE if selected else Palette.CYAN)
+	label("%d / 10" % current, Vector2(1130, y + 4), 15, Palette.DIM, 2)
+	for rank in range(1, Progress.MAX_RANK + 1):
+		var pos := track_node_position(track_index, rank)
+		var status := node_state(track_index, rank)
+		var color := Palette.GREEN if status == "OWNED" else (Palette.YELLOW if status == "NEXT" else Palette.DIM)
+		var milestone := rank in [5, 10]
+		var radius := 26.0 if milestone else 19.0
+		if rank < Progress.MAX_RANK:
+			var end := track_node_position(track_index, rank + 1)
+			lines.seg(pos + Vector2(radius + 4, 0), end - Vector2(30 if rank == 4 else 23, 0), Palette.GREEN if rank < current else Palette.DIM, 0.1, 0.0, 0.8)
+		if milestone:
+			lines.polyline(PackedVector2Array([pos + Vector2(0, -radius), pos + Vector2(radius, 0), pos + Vector2(0, radius), pos + Vector2(-radius, 0)]), true, color)
+		else:
+			lines.circle(pos, radius, color, 20, 0.1, 0.0, 1.2)
+		if status == "OWNED":
+			lines.polyline(PackedVector2Array([pos + Vector2(-7, 0), pos + Vector2(-2, 5), pos + Vector2(8, -6)]), false, color, 0.1, 0.0, 1.3)
+		else:
+			subsystem_icon(track_index, pos, color)
+		if selected and viewed_ranks[track_index] == rank:
+			lines.rect(Rect2(pos - Vector2(32, 32), Vector2(64, 64)), Palette.WHITE, 0.1, 0.0, 1.1)
+		label(str(rank), pos + Vector2(0, 39), 12, color, 1)
+		if rank == 5:
+			label(milestone_name(track_index), pos + Vector2(0, 65), 11, Palette.GREEN if status == "OWNED" else Palette.CYAN, 1)
+
+func node_effect_lines(track_index: int, rank: int) -> Array[String]:
+	var effects: Array[String] = []
+	var before := rank - 1
+	match track_index:
+		0: effects.assign(["MOVEMENT SPEED", "%d%% > %d%%" % [100 + before * 2, 100 + rank * 2]])
+		1: effects.assign(["RESPAWN SHIELD", "%.1fS > %.1fS" % [2.5 + before * 0.5, 2.5 + rank * 0.5], "AFTER LOSING A HULL"])
+		2:
+			if progress.selected_ship == "sapper":
+				effects.assign(["BLAST CHARGE SPEED", "%d%% > %d%%" % [100 + before * 3, 100 + rank * 3], "ALSO: ABILITY RECHARGE"])
+			else:
+				var base := LANCE_CD_BASE if progress.selected_ship == "lancer" else 14.0
+				effects.assign(["LANCE RECHARGE" if progress.selected_ship == "lancer" else "ABILITY RECHARGE", "%.1fS > %.1fS" % [base / (1 + before * 0.03), base / (1 + rank * 0.03)]])
+				if progress.selected_ship == "surveyor": effects.append("EXAMPLE: AFTERBURNER")
+		3: effects.assign(["UPGRADED DRAFT CHANCE", "%d%% > %d%%" % [before * 2, rank * 2]])
+		4: effects.assign(["BONUS SALVAGE", "+%d%% > +%d%%" % [before * 2, rank * 2], "CARRIES BETWEEN RUNS"])
+		5: effects.assign(["CORRUPTION TOLERANCE", "%.1fS > %.1fS" % [4.0 / (1 - before * 0.03), 4.0 / (1 - rank * 0.03)], "TIME BEFORE OVERLOAD"])
+	return effects
+
+func draw_node_details() -> void:
+	var i := viewed_track
+	var rank := viewed_ranks[i]
+	var status := node_state(i, rank)
+	var color := Palette.GREEN if status == "OWNED" else (Palette.YELLOW if status == "NEXT" else Palette.DIM)
+	label("%s / %02d" % [Progress.TRACKS[i].to_upper(), rank], Vector2(1195, 210), 18)
+	label(status, Vector2(1195, 250), 13, color)
+	subsystem_icon(i, Vector2(1345, 322), color, 3.0)
+	var effects := node_effect_lines(i, rank)
+	for row in effects.size():
+		label(effects[row], Vector2(1195, 385 + row * 32), 15, Palette.WHITE if row == 0 else Palette.DIM)
+	if rank in [5, 10]:
+		label(milestone_name(i, rank), Vector2(1195, 500), 18, Palette.CYAN)
+		paragraph(milestone_detail(i, rank), Vector2(1195, 541), 31, 14, Palette.CYAN)
+	if status != "OWNED":
+		draw_salvage(str(progress.node_cost(rank)), Vector2(1195, 608), 16, 0, progress.salvage >= progress.node_cost(rank))
+	var action := "UPGRADE"
+	if status == "OWNED":
+		action = "OWNED"
+	elif status == "LOCKED":
+		action = "REQUIRES RANK %d" % (rank - 1) if progress.track_available(Progress.TRACKS[i]) else "REACH SECTOR %d" % Sectors.CORRUPTION_SECTOR
+	var rect := upgrade_button_rect()
+	var shortfall: bool = status == "NEXT" and progress.salvage < progress.node_cost(rank)
+	lines.rect(rect, Palette.RED if shortfall else (color if status == "NEXT" else Palette.DIM))
+	if shortfall:
+		draw_currency_caption("NEED", str(progress.node_cost(rank) - progress.salvage), false, rect.get_center(), "", false, Palette.RED)
+	else:
+		label(action, rect.position + Vector2(20, 24), 16, color)
+
+func card_color(id: String) -> Color:
+	if id in ["afterburner", "slipstream", "compression"]:
+		return Palette.ORANGE
+	if id in ["ion", "stasis", "loop"]:
+		return Palette.PURPLE
+	return Palette.CYAN
+
+func draw_card_icon(id: String, center_at: Vector2, color: Color, scale_at := 1.0) -> void:
+	var paths: Array = []
+	match id:
+		"afterburner":
+			paths = [[-28, 30, 0, -42, 28, 30, 0, 16, -28, 30], [-13, 30, 0, 54, 13, 30]]
+		"hardlight", "phase":
+			paths = [[0, -48, 38, -30, 30, 18, 0, 48, -30, 18, -38, -30, 0, -48], [-16, 0, -2, 15, 23, -16]]
+			if id == "phase":
+				paths.append([-55, 30, 55, -30])
+		"anchor":
+			paths = [[0, -32, 0, 44, -34, 16, -34, 0], [0, 44, 34, 16, 34, 0], [-22, -17, 22, -17]]
+			lines.circle(center_at + Vector2(0, -40) * scale_at, 10 * scale_at, color)
+		"ion":
+			paths = [[12, -48, -24, 4, 0, 4, -12, 48, 30, -10, 6, -10, 12, -48], [-58, 15, -38, 15], [38, -15, 58, -15]]
+		"slipstream":
+			paths = [[-48, -30, -12, 0, -48, 30], [-12, -30, 24, 0, -12, 30], [24, -30, 60, 0, 24, 30]]
+		"loop":
+			paths = [[-38, 8, -38, -24, 0, -44, 38, -24, 38, 8, 20, -8], [38, -8, 38, 24, 0, 44, -38, 24, -38, -8, -20, 8]]
+		"compression":
+			paths = [[-52, -30, -22, 0, -52, 30], [52, -30, 22, 0, 52, 30], [0, -26, 15, 0, 0, 26, -15, 0, 0, -26]]
+		"stasis":
+			for k in 6:
+				var v := Vector2.from_angle(k * TAU / 6.0)
+				lines.seg(center_at, center_at + v * 48 * scale_at, color, 0.1, 0.0, 1.6)
+				for sign_at in [-1, 1]:
+					lines.seg(center_at + v * 29 * scale_at, center_at + (v * 19 + v.orthogonal() * 12 * sign_at) * scale_at, color)
+		"clean":
+			paths = [[0, -48, 10, -10, 45, 0, 10, 10, 0, 48, -10, 10, -45, 0, -10, -10, 0, -48]]
+		"containment":
+			paths = [[-38, -38, 38, -38, 38, 38, -38, 38, -38, -38], [-10, -20, -10, 20], [10, -20, 10, 20]]
+		"harvest":
+			paths = [[0, -45, 38, -22, 38, 22, 0, 45, -38, 22, -38, -22, 0, -45], [-20, 0, 20, 0], [0, -20, 0, 20]]
+	for coords in paths:
+		var points := PackedVector2Array()
+		for j in range(0, coords.size(), 2):
+			points.append(center_at + Vector2(coords[j], coords[j + 1]) * scale_at)
+		lines.polyline(points, false, color, 0.1, 0.0, 1.8)
+
+func draw_draft() -> void:
+	var installing := phase == "install"
+	label("INSTALLED" if installing else "POWER UP", Vector2(800, 130), 38, Palette.GREEN if installing else Palette.WHITE, 1)
+	for j in 3:
+		var dot := Vector2(776 + j * 24, 188)
+		lines.circle(dot, 5, Palette.GREEN if j < drafts_taken else (Palette.YELLOW if j == drafts_taken else Palette.DIM), 4)
+	# One radial burst opens the reveal; the cards assemble from narrow beams.
+	var burst := clampf(ui_time / 0.7, 0.0, 1.0)
+	if not installing and burst < 1.0:
+		for j in 24:
+			var ray := Vector2.from_angle(j * TAU / 24.0)
+			lines.seg(Vector2(800, 440) + ray * (60 + burst * 360), Vector2(800, 440) + ray * (100 + burst * 400), Color(Palette.CYAN, (1.0 - burst) * 0.65), 0.0, 0.0, 1.5)
+	for i in offers.size():
+		var card := offers[i]
+		var r := choice_rect(i)
+		var reveal := 1.0 if installing else clampf((ui_time - i * 0.12) / 0.48, 0.0, 1.0)
+		if reveal <= 0.0:
+			continue
+		var color := card_color(card.id)
+		var selected := selection == i
+		var opacity := 0.25 if installing and not selected else 1.0
+		var ease := 1.0 - pow(1.0 - reveal, 3)
+		var width := r.size.x * ease
+		var panel := Rect2(r.get_center().x - width / 2, r.position.y, width, r.size.y)
+		lines.rect(panel, Color(color if selected else Palette.DIM, opacity), 0.1, 0.0, 1.6 if selected else 0.8)
+		if reveal < 0.65:
+			continue
+		var center_at := Vector2(r.get_center().x, r.position.y + 135)
+		lines.circle(center_at, 79, Color(color, 0.25 * opacity), 48)
+		draw_card_icon(card.id, center_at, Color(color, opacity), 1.15 + (0.15 * sin(ui_time * PI / 0.45) if installing and selected else 0.0))
+		label(card.kind, r.position + Vector2(24, 25), 12, Color(color, opacity))
+		label("%s / %s" % [card.get("action", "NEW"), ["I", "II", "III"][int(card.get("rank", 1)) - 1]], Vector2(r.end.x - 24, r.position.y + 25), 12, Color(Palette.GREEN if int(card.get("rank", 1)) > 1 else color, opacity), 2)
+		label(card.name, Vector2(center_at.x, r.position.y + 243), 23, Color(Palette.WHITE, opacity), 1)
+		var rows := paragraph_lines(card.desc, 390, 14)
+		for row in rows.size():
+			label(rows[row], Vector2(center_at.x, r.position.y + 289 + row * 21), 14, Color(Palette.WHITE, opacity), 1)
+		label(card.stats, Vector2(center_at.x, r.position.y + 354), 13, Color(color, opacity), 1)
+		if not card.detail.is_empty():
+			label(card.detail, Vector2(center_at.x, r.position.y + 383), 12, Color(Palette.DIM, opacity), 1)
+		if selected:
+			lines.seg(r.position + Vector2(22, 414), r.position + Vector2(r.size.x - 22, 414), Palette.GREEN if installing else color, 0.0, 0.0, 2.0)
+	if not installing and ui_time >= DRAFT_REVEAL:
+		label("CHOOSE ONE", Vector2(800, 751), 18, Palette.WHITE, 1)
+		label("ARROWS + ENTER / CLICK", Vector2(800, 803), 12, Palette.DIM, 1)
+		if owned_cards.size() == 3:
+			lines.rect(keep_build_rect(), Palette.DIM)
+			label("ESC: KEEP BUILD", keep_build_rect().position + Vector2(16, 14), 13, Palette.DIM)
+		if rerolls_left > 0:
+			lines.rect(reroll_rect(), Palette.CYAN)
+			label("R: RESCAN %d" % rerolls_left, reroll_rect().position + Vector2(16, 14), 13, Palette.CYAN)
+
+func reroll_rect() -> Rect2:
+	return Rect2(1260, 760, 240, 48)
+
+func keep_build_rect() -> Rect2:
+	return Rect2(110, 760, 240, 48)
+
+func cancel_replacement() -> void:
+	pending_card.clear()
+	replace_id = ""
+	phase = "draft"
+	selection = 0
+	ui_time = DRAFT_REVEAL
+
+func draw_replacement() -> void:
+	var reward: Dictionary = offers[int(pending_card.index)]
+	label("MAKE ROOM FOR " + reward.name, Vector2(800, 130), 28, Palette.WHITE, 1)
+	label("CHOOSE A SYSTEM TO REPLACE", Vector2(800, 200), 16, Palette.DIM, 1)
+	for i in owned_cards.size():
+		var card := card_definition(owned_cards[i])
+		var r := choice_rect(i)
+		var color := Palette.YELLOW if selection == i else Palette.DIM
+		lines.rect(r, color)
+		draw_card_icon(card.id, r.position + Vector2(220, 135), card_color(card.id))
+		label(card.name, r.position + Vector2(220, 260), 23, Palette.WHITE, 1)
+		label("RANK " + ["I", "II", "III"][card_rank(card.id) - 1], r.position + Vector2(220, 315), 14, Palette.DIM, 1)
+		label("REPLACE", r.position + Vector2(220, 380), 16, color, 1)
+	label("ENTER: REPLACE    ESC: KEEP CURRENT BUILD", Vector2(800, 795), 14, Palette.DIM, 1)
+
+func draw_result() -> void:
+	if run_victory:
+		draw_victory()
+		return
+	label(last_result, Vector2(800, 200), 40, Palette.GREEN if run_victory else Palette.YELLOW, 1)
+	label("%d%% CLAIMED / %d CAPTURES / %d SYSTEMS" % [int(claimed_frac() * 100), capture_count, owned_cards.size()], Vector2(800, 285), 19, Palette.WHITE, 1)
+	draw_salvage("+%d" % banked_salvage, Vector2(800, 405), 38, 1)
+	label("%d PICKUPS" % run_nodes, Vector2(800, 452), 16, Palette.DIM, 1)
+	draw_currency_caption("BALANCE", str(progress.salvage), false, Vector2(800, 551))
+	button(0, "RETRY SAVE" if save_failed else "RETURN TO HANGAR")
+	if save_failed:
+		label("SAVE FAILED - PROGRESS IS HELD IN MEMORY", Vector2(800, 818), 16, Palette.YELLOW, 1)
+
+func victory_salvage_shown() -> int:
+	var t := clampf((ui_time - 0.7) / 1.1, 0.0, 1.0)
+	var amount := earned_salvage - sector_salvage_start if phase == "sector_clear" else banked_salvage
+	return roundi(amount * (1.0 - pow(1.0 - t, 3)))
+
+func draw_victory() -> void:
+	var crest := Vector2(800, 310)
+	var arrive := clampf(ui_time / 0.5, 0.0, 1.0)
+	var scale_at := 0.6 + 0.4 * (1.0 - pow(1.0 - arrive, 3))
+	var color := Color(Palette.GREEN, arrive)
+	# The Surveyor becomes the medal; paired laurels assemble around it.
+	for path in Hulls.paths(ship.id, crest, 67.0 * scale_at, 0.0, 0.0):
+		lines.polyline(path, false, Color(Palette.WHITE, arrive), 0.1, 0.0, 1.5)
+	for side in [-1, 1]:
+		for j in 7:
+			var leaf := clampf((ui_time - j * 0.055) / 0.18, 0.0, 1.0)
+			var angle := deg_to_rad(25.0 + j * 20.0)
+			var tip := crest + Vector2(side * sin(angle) * 133, cos(angle) * 122)
+			var stem := crest + Vector2(side * sin(angle) * 108, cos(angle) * 105)
+			lines.seg(stem, stem.lerp(tip, leaf), Color(Palette.YELLOW, leaf), 0.0, 0.0, 2.0)
+	lines.circle(crest, 89 * scale_at, Color(Palette.GREEN, arrive * 0.35), 64)
+	if ui_time < 1.15:
+		var pulse := ui_time / 1.15
+		for j in 32:
+			var direction := Vector2.from_angle(j * TAU / 32.0)
+			lines.seg(crest + direction * (145 + pulse * 270), crest + direction * (175 + pulse * 350), Color(Palette.YELLOW, (1.0 - pulse) * 0.7), 0.0, 0.0, 1.4)
+	label("SECTOR CLEAR" if phase == "sector_clear" else "EXPEDITION COMPLETE", Vector2(800, 116), 42, color, 1)
+	if ui_time >= 0.5:
+		draw_salvage("+%d" % victory_salvage_shown(), Vector2(800, 533), 58, 1)
+	if ui_time >= 1.8 and phase != "sector_clear":
+		label("%d SECTORS SECURED" % run_sectors, Vector2(800, 630), 16, Palette.DIM, 1)
+	if ui_time >= VICTORY_REVEAL:
+		button(0, "CONTINUE" if phase == "sector_clear" else ("RETRY SAVE" if save_failed else "HANGAR"))
+		if phase == "sector_clear": label("ESC: BANK AND EXIT", Vector2(800, 810), 13, Palette.DIM, 1)
+		if save_failed:
+			label("SAVE FAILED - PROGRESS IS HELD IN MEMORY", Vector2(800, 818), 16, Palette.YELLOW, 1)
+
+func draw_intro_frame(_rect: Rect2, _progress: float) -> void:
+	pass # Trace only the playable coast during entry, just as during the run.
+
+func draw_field_frame(_rect: Rect2) -> void:
+	pass # The actual coast supplies the arena outline; the fixed field needs no extra frame.
+
+func draw_panel_header() -> void:
+	pass # Readouts stay in the top and bottom bands, outside the rectangular arenas.
+
+func run_card_rect(index: int) -> Rect2:
+	return Rect2(800 - (maxi(1, owned_cards.size()) * 100 - 32) * 0.5 + index * 100, 758, 68, 68)
+
+func draw_hud() -> void:
+	hud_label("%s / %02d-%02d" % [ship.name, level, sector_limit], Vector2(FIELD_X, 61), 18)
+	draw_hull_icons(Vector2(1254, 70), maxi(0, lives + 1))
+	draw_dock_currency(Vector2(1374, 70), str(earned_salvage), false)
+	draw_draft_meter()
+	hud_label("ESC  PAUSE", Vector2(FIELD_X, 794), 12, Palette.DIM)
+	for i in owned_cards.size():
+		var id: String = owned_cards[i]
+		var r := run_card_rect(i)
+		var color := card_color(id)
+		var cooldown := float(cooldowns.get(id, 0.0))
+		var active := boost_time if id == "afterburner" else (hardlight_time if id == "hardlight" else 0.0)
+		if cooldown > 0.0 and active <= 0.0:
+			color = Palette.DIM
+		draw_card_icon(id, r.get_center(), color, 0.48)
+		if card_rank(id) > 1:
+			hud_label(["I", "II", "III"][card_rank(id) - 1], r.position + Vector2(50, -10), 11, Palette.GREEN)
+		if id in ["afterburner", "hardlight"]:
+			lines.rect(r, Color(color, 0.5), 0.0, 0.0, 0.7)
+			hud_label("Q" if id == "afterburner" else "E", r.position + Vector2(0, 80), 13)
+		if active > 0.0 or cooldown > 0.0:
+			hud_label("%.1fS" % (active if active > 0.0 else cooldown), r.position + Vector2(24, 80), 12, Palette.GREEN if active > 0.0 else Palette.DIM)
+	if corruption_active:
+		# Reserved for later sectors in the bottom HUD band.
+			hud_label("EXPOSURE %.1f/4S" % exposure, Vector2(1080, 794), 13, Palette.MAGENTA)
+
+func draw_pause() -> void:
+	label("PAUSED", Vector2(240, 100), 34)
+	hud_label("CONTROLS", Vector2(240, 191), 16, Palette.CYAN)
+	paragraph(ship_controls(ship.id), Vector2(240, 235), 36, 15)
+	hud_label("PERMANENT UPGRADES", Vector2(240, 404), 16, Palette.CYAN)
+	for i in Progress.TRACKS.size():
+		var track: String = Progress.TRACKS[i]
+		hud_label("%s  %d" % [track.to_upper(), progress.rank_of(track)], Vector2(240, 450 + i * 30), 15)
+	for i in owned_cards.size():
+		var card := card_definition(owned_cards[i])
+		var y := 190.0 + i * 160
+		draw_card_icon(card.id, Vector2(880, y + 36), card_color(card.id), 0.5)
+		hud_label(card.name, Vector2(940, y), 18)
+		paragraph(card.desc, Vector2(940, y + 36), 39, 14)
+		hud_label(card.stats, Vector2(940, y + 91), 12, card_color(card.id))
+		if not card.detail.is_empty():
+			hud_label(card.detail, Vector2(940, y + 119), 12, Palette.DIM)
+	button(0, "RESUME")
+	button(1, "END EXPEDITION")
+
+func draw_play() -> void:
+	if corruption_active:
+		# Compact horizontal strokes show infected cells without thousands of glyphs.
+		var pulse := 0.65 + 0.2 * sin(time * 3.0)
+		for y in range(1, grid_height - 1):
+			var start := -1
+			for x in range(1, grid_width):
+				var active := x < grid_width - 1 and corruption[idx(x, y)] != 0 and cells[idx(x, y)] in [FREE, TRAIL]
+				if active and start < 0:
+					start = x
+				elif not active and start >= 0:
+					var color := Color(Palette.MAGENTA, pulse * 0.55)
+					lines.seg(center(Vector2i(start, y)) - Vector2(3, 0), center(Vector2i(x - 1, y)) + Vector2(3, 0), color, 0.4, 0.1, 1.3)
+					start = -1
+	super.draw_play()
+	if drawing and (hardlight_time > 0.0 or (has_card("phase") and cut_time < 1.5 * card_power("phase"))):
+		lines.polyline(trail_points(), false, Palette.CYAN, 0.3, 0.1, 2.0)

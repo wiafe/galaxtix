@@ -151,9 +151,10 @@ func check() -> void:
 	var saved: String = JSON.stringify(save.data)
 	game.go_title()
 	game.title_t = 3.0
-	assert(game.TITLE_ITEMS[1] == "BATTLE ROYALE")
+	var royale_row := game.TITLE_ITEMS.find("BATTLE ROYALE")
+	assert(royale_row >= 0)
 	var click := InputEventMouseButton.new()
-	click.position = Vector2(Game.PANEL_X + 100, 300)
+	click.position = Vector2(Game.PANEL_X + 100, game.title_row_y(royale_row) + 20)
 	click.button_index = MOUSE_BUTTON_LEFT
 	click.pressed = true
 	game._input(click)

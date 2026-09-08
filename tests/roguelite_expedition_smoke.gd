@@ -1,0 +1,332 @@
+extends Node
+const Progress = preload("res://scripts/roguelite_progress.gd")
+const Cards = preload("res://scripts/roguelite_cards.gd")
+var main
+var rogue
+var shot_dir := ""
+
+func _ready() -> void:
+	call_deferred("check")
+
+func shot(name: String) -> void:
+	if shot_dir.is_empty(): return
+	main.display.lines.fx_wobble = 0
+	main.display.lines.fx_slop = 0
+	for frame in 12:
+		main.display.tick(0.016)
+		main.display.begin_draw()
+		main.game.draw()
+		main.display.end_draw()
+		await RenderingServer.frame_post_draw
+	get_viewport().get_texture().get_image().save_png(shot_dir.path_join(name + ".png"))
+
+func play_until_ready() -> void:
+	for step in 220:
+		if rogue.state == Game.State.PLAYING: return
+		rogue.update(0.05)
+	assert(false, "Transit must reach the next arena")
+
+func capture_sector() -> void:
+	rogue.sparxes.clear()
+	rogue.sparx_to_spawn = 0
+	rogue.mites.clear()
+	rogue.freeze_time = 1000
+	var free_cells: Array = rogue.field_arena.free_cells
+	var lo := Vector2i(999, 999)
+	var hi := Vector2i.ZERO
+	for cell in free_cells:
+		lo = lo.min(cell)
+		hi = hi.max(cell)
+	# Slice off the far right tip of each silhouette, keeping the Anomaly in that
+	# small region. Unlike the old horizontal fixture this works around notches/core holes.
+	var cut_x := lo.x + int((hi.x - lo.x) * 0.88)
+	var top := 999
+	var bottom := 0
+	for cell in free_cells:
+		if cell.x == cut_x:
+			top = mini(top, cell.y)
+			bottom = maxi(bottom, cell.y)
+	for q in rogue.qixes:
+		q.c = rogue.center(Vector2i(cut_x + 3, (top + bottom) / 2))
+		q.len = 8
+		assert(not rogue.qix_blocked(q.c, q.theta, q.len))
+	rogue.p = Vector2i(cut_x, top - 1)
+	rogue.vis = rogue.center(rogue.p)
+	for i in rogue.nodes.size():
+		rogue.nodes[i].cell = free_cells[i * 5]
+	rogue.draw_armed = true
+	for step in bottom - top + 2:
+		assert(rogue.try_step(Vector2i.DOWN, true, false))
+	assert(rogue.pending_clear and rogue.phase == "reward" and rogue.capture_percent >= 75)
+
+func resolve_rewards() -> void:
+	for step in 200:
+		if rogue.phase == "reward" or rogue.phase == "install":
+			rogue.update(0.1)
+		elif rogue.phase == "draft":
+			assert(rogue.offers.size() == 3)
+			var pick := 0
+			for i in rogue.offers.size():
+				if rogue.has_card(rogue.offers[i].id): pick = i
+			rogue.choose_card(pick)
+		elif rogue.phase == "replace":
+			rogue.activate_choice(0)
+		else: return
+	assert(false, "Queued rewards must always finish")
+
+func check() -> void:
+	assert(not Save.enabled)
+	Save.set_process(false)
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--rogue-shots="):
+			shot_dir = arg.substr(14)
+			DirAccess.make_dir_recursive_absolute(shot_dir)
+	main = load("res://scenes/main.tscn").instantiate()
+	get_tree().root.add_child(main)
+	main.set_process(false)
+	var campaign: Dictionary = Save.data.duplicate(true)
+	main.game.start_roguelite()
+	rogue = main.game.roguelite
+	var profile = rogue.progress
+	profile.apply_profile({"version": 2, "salvage": 160, "ranks": {"engines": 3, "hull": 2, "reactor": 1}})
+	assert(profile.rank_of("engines") == 3 and profile.rank_of("scanner") == 0)
+	assert(not profile.buy("containment") and profile.salvage == 160)
+	assert(profile.buy("scanner") and profile.buy("extractor"))
+	var legacy := Progress.new()
+	legacy.apply_profile({"version": 3, "best_sector": 3})
+	assert(legacy.track_available("containment"), "Earlier prototype unlocks remain owned")
+	legacy.apply_profile({"version": 4, "best_sector": 3})
+	assert(not legacy.track_available("containment"), "New profiles unlock at the corruption sector")
+	rogue.go_dock()
+	rogue.focus_track(1)
+	await shot("hull-before-after")
+	rogue.focus_track(3)
+	assert(rogue.track_scroll > 0 and rogue.viewed_track == 3)
+	await shot("expedition-upgrades")
+	rogue.focus_track(5)
+	await shot("containment-locked")
+	for id in ["surveyor", "lancer", "sapper"]:
+		profile.selected_ship = id
+		for i in 6:
+			for rank in range(1, 11):
+				for line in rogue.node_effect_lines(i, rank):
+					assert(VectorFont.width(line, 15) <= 315, "Before/after effects fit the inspector")
+	profile.selected_ship = "surveyor"
+	profile.ranks.scanner = 5
+	profile.ranks.extractor = 5
+	rogue.transit_skip = true
+	rogue.start_run()
+	play_until_ready()
+	assert(rogue.sector_limit == 8 and rogue.nodes.size() == 4)
+	rogue.lives = 1
+	var starting_salvage: int = profile.salvage
+	var area := 0
+	for sector in range(1, 9):
+		assert(rogue.level == sector and rogue.phase == "run")
+		if sector <= 3: assert(rogue.base_free > area)
+		if sector <= 3:
+			assert(rogue.base_free == SectorArena.build(sector, 0, "helix").base_free, "First three arenas match Jump's opening sizes")
+		assert(rogue.lives == 1)
+		check_arena_geometry()
+		area = rogue.base_free
+		assert(rogue.drafts_taken == 0 and rogue.first_claims == 0 and rogue.rerolls_left == 1)
+		assert(rogue.spawners.is_empty())
+		assert(rogue.turrets.size() == (0 if sector == 1 else 1))
+		assert(rogue.corruption_active == (sector == 8))
+		if sector == 8: assert(rogue.corruption.count(1) > 0)
+		await shot("sector-%d" % sector)
+		capture_sector()
+		resolve_rewards()
+		assert(rogue.drafts_taken == 3 and rogue.owned_cards.size() == 3)
+		for id in rogue.owned_cards: assert(rogue.card_rank(id) <= 3)
+		assert(rogue.run_sectors == sector)
+		rogue.ui_time = rogue.VICTORY_REVEAL
+		await shot("sector-%d-clear" % sector)
+		if sector < 8:
+			assert(rogue.phase == "sector_clear" and not rogue.settled and not rogue.run_victory)
+			assert(profile.salvage == starting_salvage and profile.runs == 0)
+			var build: Dictionary = rogue.card_ranks.duplicate()
+			rogue.transit_skip = false
+			rogue.continue_expedition()
+			assert(rogue.state == Game.State.TRANSIT and rogue.phase == "run")
+			rogue.update(0.05)
+			assert(rogue.phase == "run", "Previous sector's clear flag cannot interrupt transit")
+			play_until_ready()
+			assert(rogue.card_ranks == build)
+	assert(rogue.phase == "result" and rogue.run_victory and rogue.settled)
+	assert(profile.runs == 1 and profile.wins == 1 and profile.best_sector == 8)
+	assert(profile.salvage == starting_salvage + rogue.earned_salvage)
+	assert(profile.track_available("containment"))
+	var banked: int = profile.salvage
+	rogue.end_run()
+	assert(profile.salvage == banked)
+	rogue.go_dock()
+	rogue.focus_track(5)
+	assert(rogue.node_state(5, 1) == "NEXT")
+	await shot("containment-available")
+	check_island_bridge()
+	check_system_effects()
+	await check_draft_choices()
+	assert(Save.data == campaign, "The expedition never writes Jump's campaign")
+	print("ROGUELITE EXPEDITION OK: eight sectors with Jump opening, inner rails, transit, persistent builds, bounded drafts, settlement, replacement and Scanner")
+	get_tree().quit()
+
+func coast_reachable() -> Dictionary:
+	var reached := {rogue.p: true}
+	var pending := [rogue.p]
+	while not pending.is_empty():
+		var cell: Vector2i = pending.pop_back()
+		for direction in [Vector2i.UP, Vector2i.DOWN, Vector2i.LEFT, Vector2i.RIGHT]:
+			var next: Vector2i = cell + direction
+			if rogue.in_bounds(next) and rogue.cells[rogue.idx(next.x, next.y)] == Game.CLAIMED and not reached.has(next):
+				reached[next] = true
+				pending.append(next)
+	return reached
+
+func check_arena_geometry() -> void:
+	assert(rogue.capture_percent == 0 and is_zero_approx(rogue.claimed_frac()))
+	assert(rogue.base_free == rogue.cells.count(Game.FREE), "Initial rails award no territory")
+	assert(rogue.cells[rogue.idx(rogue.p.x, rogue.p.y)] == Game.CLAIMED)
+	assert(rogue.qixes.size() == 1 and rogue.sparx_to_spawn <= 2)
+	assert(not rogue.boss_bond, "The expedition finale does not inherit Jump's sector-eight boss")
+	for q in rogue.qixes: assert(not rogue.qix_blocked(q.c, q.theta, q.len))
+	for pickup in rogue.nodes: assert(rogue.cells[rogue.idx(pickup.cell.x, pickup.cell.y)] == Game.FREE)
+	for turret in rogue.turrets: assert(rogue.cells[rogue.idx(turret.cell.x, turret.cell.y)] == Game.FREE)
+	var reached := coast_reachable()
+	for i in rogue.cells.size():
+		if rogue.cells[i] != Game.CLAIMED: continue
+		var cell := Vector2i(i % rogue.grid_width, i / rogue.grid_width)
+		var rail := false
+		for hole in rogue.field_shape:
+			if hole.grow(1).has_point(cell): rail = true
+		assert(reached.has(cell) or rail, "Every initial safe cell is walkable coast or an island rail")
+	if rogue.level == 8:
+		assert(rogue.field_shape.size() == 1)
+		var hole: Rect2i = rogue.field_shape[0]
+		for y in range(hole.position.y - 1, hole.end.y + 1):
+			for x in range(hole.position.x - 1, hole.end.x + 1):
+				assert(rogue.cells[rogue.idx(x, y)] == (Game.ROCK if hole.has_point(Vector2i(x, y)) else Game.CLAIMED))
+		assert(not reached.has(hole.position - Vector2i.ONE), "An island starts separate from the outer coast")
+	print("shape %d: %s, %d capturable cells" % [rogue.level, rogue.Sectors.stage(rogue.level).name, rogue.base_free])
+
+func check_island_bridge() -> void:
+	rogue.start_run()
+	rogue.level = 8
+	rogue.start_level()
+	rogue.state = Game.State.PLAYING
+	rogue.freeze_time = 100
+	rogue.qixes[0].c = rogue.center(Vector2i(20, 52))
+	rogue.qixes[0].len = 8
+	rogue.draw_armed = true
+	var walked := 0
+	for step in 50:
+		assert(rogue.try_step(Vector2i.DOWN, true, false))
+		if not rogue.drawing: break
+		walked += 1
+	assert(walked > 10 and not rogue.drawing)
+	assert(rogue.first_claims == walked, "Bridging an island claims only the new trail")
+	assert(is_equal_approx(rogue.capture_percent, rogue.claimed_frac() * 100.0))
+	var hole: Rect2i = rogue.field_shape[0]
+	assert(coast_reachable().has(hole.position - Vector2i.ONE), "New bridge makes the inner rail reachable")
+	for step in 10: assert(rogue.try_step(Vector2i.RIGHT, false, false))
+	rogue.draw_armed = true
+	assert(rogue.try_step(Vector2i.UP, true, false) and rogue.drawing, "A player can walk the island rail and launch a cut from it")
+
+func check_system_effects() -> void:
+	var profile = rogue.progress
+	profile.ranks.extractor = 1
+	rogue.transit_skip = true
+	rogue.start_run()
+	rogue.earned_salvage = 0
+	rogue.salvage_fraction = 0
+	for i in 10: rogue.award_flux(4)
+	assert(rogue.earned_salvage == 40 and is_equal_approx(rogue.salvage_fraction, 0.8))
+	rogue.end_run()
+	rogue.start_run()
+	for i in 3: rogue.award_flux(4)
+	assert(rogue.earned_salvage == 13, "Small Extractor bonuses carry across runs instead of rounding away")
+	profile.ranks.hull = 10
+	assert(rogue.run_extra_lives() == 2 and rogue.respawn_shield_duration() == 7.5)
+	rogue.level = 8
+	rogue.start_level()
+	rogue.state = Game.State.PLAYING
+	profile.ranks.containment = 10
+	rogue.p = Vector2i(0, 30)
+	rogue.draw_armed = true
+	rogue.try_step(Vector2i.RIGHT, true, false)
+	rogue.corruption[rogue.idx(1, 30)] = 1
+	rogue.update_corruption(4.0)
+	assert(is_equal_approx(rogue.exposure, 2.8), "Containment extends time before corruption overload")
+	rogue.owned_cards.assign(["afterburner", "hardlight", "phase"])
+	rogue.card_ranks = {"afterburner": 3, "hardlight": 3, "phase": 3}
+	rogue.activate_ability("afterburner")
+	rogue.activate_ability("hardlight")
+	assert(rogue.hardlight_time == 3.0 and rogue.movement_mult() > 2.2)
+	rogue.hardlight_time = 0
+	rogue.cut_time = 2.0
+	assert(not rogue.tether_hit(rogue.p), "Upgraded Phase remains protective beyond rank one's duration")
+	for card in Cards.LIST:
+		for rank in range(1, 4):
+			for ship in ["surveyor", "lancer", "sapper"]:
+				var definition := Cards.definition(card.id, ship, rank)
+				assert(VectorFont.width(definition.stats, 13) <= 392)
+
+func check_draft_choices() -> void:
+	rogue.start_run()
+	rogue.state = Game.State.PLAYING
+	rogue.owned_cards.assign(["afterburner", "hardlight", "stasis"])
+	rogue.card_ranks = {"afterburner": 1, "hardlight": 1, "stasis": 1}
+	rogue.open_draft()
+	rogue.offers.assign([rogue.card_definition("afterburner", 2), rogue.card_definition("ion", 2), rogue.card_definition("hardlight", 2)])
+	for card in rogue.offers:
+		card.action = "UPGRADE" if rogue.has_card(card.id) else "REPLACE"
+	rogue.ui_time = rogue.DRAFT_REVEAL
+	await shot("upgrade-draft")
+	rogue.begin_card_install(1)
+	assert(rogue.phase == "replace" and rogue.drafts_taken == 0)
+	var before: Array = rogue.owned_cards.duplicate()
+	await shot("replace-system")
+	rogue.cancel_replacement()
+	assert(rogue.owned_cards == before and rogue.drafts_taken == 0)
+	rogue.begin_card_install(1)
+	rogue.cooldowns.afterburner = 10.0
+	rogue.activate_choice(0)
+	assert(rogue.phase == "install" and rogue.owned_cards == before)
+	rogue.update(0.5)
+	assert(rogue.owned_cards.size() == 3 and not rogue.has_card("afterburner") and rogue.card_rank("ion") == 2)
+	assert(rogue.cooldowns.afterburner == 0.0, "Replacing a system clears its old cooldown")
+	assert(rogue.drafts_taken == 1)
+	rogue.open_draft()
+	rogue.offers.assign([rogue.card_definition("ion", 3)])
+	rogue.choose_card(0)
+	assert(rogue.card_rank("ion") == 3 and rogue.owned_cards.size() == 3 and rogue.drafts_taken == 2)
+	rogue.progress.ranks.scanner = 10
+	rogue.rerolls_left = 2
+	rogue.open_draft()
+	var prior: Array[String] = []
+	for card in rogue.offers: prior.append(card.id)
+	rogue.ui_time = rogue.DRAFT_REVEAL
+	rogue.reroll_draft()
+	assert(rogue.rerolls_left == 1 and rogue.drafts_taken == 2)
+	for card in rogue.offers:
+		assert(not prior.has(card.id))
+		assert(card.id != "ion", "Max-rank cards cannot appear as useless upgrades")
+	rogue.ui_time = rogue.DRAFT_REVEAL
+	rogue.reroll_draft()
+	rogue.ui_time = rogue.DRAFT_REVEAL
+	var last: Array = rogue.offers.duplicate(true)
+	rogue.reroll_draft()
+	assert(rogue.rerolls_left == 0 and rogue.offers == last)
+	var kept: Dictionary = rogue.card_ranks.duplicate()
+	rogue.level = 8
+	rogue.level_clear()
+	rogue.keep_build()
+	assert(rogue.drafts_taken == 3 and rogue.card_ranks == kept and rogue.run_victory, "Passing the last offer preserves the build and completes a winning capture")
+	rogue.owned_cards.clear()
+	rogue.rng.seed = 12345
+	var upgraded := 0
+	for i in 30:
+		rogue.roll_offers()
+		for card in rogue.offers:
+			if card.rank == 2: upgraded += 1
+	assert(upgraded > 0, "Scanner produces upgraded versions in the normal offer pool")

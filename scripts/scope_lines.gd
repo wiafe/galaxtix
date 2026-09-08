@@ -15,6 +15,7 @@ var mod_cursor := 0
 var offset := Vector2.ZERO   # screen shake, applied on the CPU
 var zoom := Vector2.ONE      # whole-picture squash about zoom_center (CRT switch-off outro)
 var zoom_center := Vector2(800, 450)
+var clip_y := Vector2(-INF, INF) # Optional vertical viewport for scrolling beam UI.
 
 var lfo_speed := 1.0
 var lfo_time := 0.0
@@ -72,11 +73,21 @@ func spike(w: float, s: float) -> void:
 func begin() -> void:
 	count = 0
 	mod_cursor = 0
+	clip_y = Vector2(-INF, INF)
 
 
 func seg(a: Vector2, b: Vector2, c: Color, wob := 0.0, sl := 0.0, thick := 1.0) -> void:
 	if count >= MAX_SEGS:
 		return
+	if maxf(a.y, b.y) < clip_y.x or minf(a.y, b.y) > clip_y.y:
+		return
+	if a.y != b.y and (a.y < clip_y.x or a.y > clip_y.y or b.y < clip_y.x or b.y > clip_y.y):
+		var start := a
+		var end := b
+		if a.y < clip_y.x or a.y > clip_y.y:
+			a = start.lerp(end, (clampf(a.y, clip_y.x, clip_y.y) - start.y) / (end.y - start.y))
+		if b.y < clip_y.x or b.y > clip_y.y:
+			b = start.lerp(end, (clampf(b.y, clip_y.x, clip_y.y) - start.y) / (end.y - start.y))
 	var o := count * STRIDE
 	var m1 := mod_cursor & 63
 	var m2 := (mod_cursor + 2) & 63
