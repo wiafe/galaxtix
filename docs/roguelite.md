@@ -19,7 +19,28 @@ The survey route retains the original progression below. Alternate destinations 
 | 7 | Bridge, 80 × 68 cells | Two lobes, one pylon each, connected through a narrow crossing. |
 | 8 | Island, 80 × 68 cells | A 24 × 24 rock core with a walkable rail; corruption begins. |
 
-The chart has shared opening, fourth, and final encounters, with two destinations at every other depth. Routes stay in their lane between forks and merges, without diagonal cross-links. Routes are generated once per expedition and stay fixed while selecting. Survey encounters retain normal rewards; salvage encounters add two pickups and a second turret; repair encounters restore one hull on clear, capped at the ship’s starting maximum. The selected destination previews its actual arena coast, threats, and reward. Hull, carried salvage, installed systems, and the traveled route remain visible. Nodes use symbols for survey, salvage, repair, and the finale; only the focused destination gets a label. The expanded map has a compact status row above and an arena/threat/bonus strip below. Empty system slots and baseline reward copy are omitted. The focused reachable incoming route lights up, while completed nodes show checkmarks. Click any node to inspect its arena, threats, and reward, including locked or past destinations. Left/Right browses columns and Up/Down switches nodes. Only a connected destination in the next column can launch with Jump or Enter; other previews show Locked or Cleared. Escape banks and exits from the chart.
+The chart has shared opening, fourth, and final encounters, with two destinations at every other depth. Routes stay in their lane between forks and merges, without diagonal cross-links. Routes are generated once per expedition and stay fixed while selecting. The alternate destination at each fork is one of the encounter kinds below, never repeating the previous fork's kind. The selected destination previews its actual arena coast, threats, and reward. Hull, carried salvage, installed systems, and the traveled route remain visible. Nodes use symbols for each kind and the finale; only the focused destination gets a label. The expanded map has a compact status row above and an arena/threat/bonus strip below. Empty system slots and baseline reward copy are omitted. The focused reachable incoming route lights up, while completed nodes show checkmarks. Click any node to inspect its arena, threats, and reward, including locked or past destinations. Left/Right browses columns and Up/Down switches nodes. Only a connected destination in the next column can launch with Jump or Enter; other previews show Locked or Cleared. Escape banks and exits from the chart.
+
+### Encounter kinds
+
+The kind table lives in `scripts/roguelite_sectors.gd` and drives the chart symbol, the threat strip, the reward line, arena placement, and the clear rule. Enemy difficulty always follows encounter depth.
+
+| Kind | Offered from depth | Arena additions | Clear rule | Reward |
+| --- | --- | --- | --- | --- |
+| Survey | 1 (fixed lane) | None | Depth territory goal | Normal |
+| Salvage | 2 | Two extra pickups, a second turret | Depth territory goal | Two extra pickups |
+| Repair | 2 | None | Depth territory goal | One hull restored on clear, capped at the ship's starting maximum |
+| Beacon | 2 | Two beacon discs (three from depth 5), radius 5 cells | Every beacon fully enclosed; no territory goal | +1 salvage per beacon |
+| Cargo | 3 | One cargo pod at a time, two runs (three from depth 5) | Every pod delivered; no territory goal | +2 salvage per delivery |
+| Breach | 5 | One breach disc, radius 4 cells, seeding corruption | Breach sealed **and** the depth territory goal | +3 salvage on seal |
+
+Beacon and cargo sectors keep their area milestones, so cards still come from territory while the clear comes from the objective; territory alone never clears them and the bar scales to 100%. The goal label reads Beacons n/N or Cargo n/N. Objective discs are placed after pickups and turrets, entirely in the void and clear of rails, so survey, salvage, and repair keep their existing placements.
+
+**Beacon.** A beacon is captured when every cell of its disc is claimed land; a trail crossing it does not count. Each Anomaly guards one open beacon: beyond three radii it is pulled back toward the disc, inside that range it wanders, so windows open and close. A disc holding an Anomaly cannot be enclosed because the claim flood reaches it. Rings spin faster while an Anomaly sits inside; an inner arc shows how much of the disc is claimed.
+
+**Cargo.** The pod is picked up by contact: the trail head steps onto it, a ridden lance reaches it (casting the tether over it is not contact), or an exposed Sapper walks onto it. While carrying, every Anomaly hunts the ship. The pod is delivered when the ship is safe again: a completed cut, or a Sapper stepping back onto land. Losing a hull or an Anchor recovery drops the pod back at its cell; if that cell has become land, or the pod is enclosed without contact, it relocates to open void far from the ship. Each delivery moves the next pod.
+
+**Breach.** Corruption is active at any depth in a breach sector, seeded only from the breach disc, and the open disc re-infects itself every spread tick so it cannot be cleansed, only sealed by enclosure. The label shows the infected share of the arena in magenta once it passes 15%; at 25% the ship takes a hit and the infection collapses back to the disc, then grows again. Sealing pays, stops the spread for good, and restores the depth goal; remaining infection still cleanses under captures. Corruption cards join that sector's draft pool. Reaching the breach does not unlock the Containment upgrade track; that still needs sector 8. The guard range, hunt rate, and breach limit are playtest values.
 
 The act uses angular, mostly square Jump silhouettes instead of an oval or stretched cross. On the survey route, the first three fields grow in capturable area; later fields vary topology. Interior pylons and the island use Jump's rock cutouts with one-cell walkable rails. Anomaly counts rise from one at depths 1–2, to two at 3–5, to three at 6–8. Notched, sliced, and bridge destinations always have at least two, including when offered early. The first two spawn on opposite sides with legal, non-overlapping full beams; the third starts toward the upper region. Enemies remain free to move after spawning. The chart reports the selected destination's actual count.
 
@@ -63,7 +84,7 @@ Containment becomes purchasable after reaching sector 8. Hull no longer mixes it
 
 The first earned draft always presents Hardening, Leap, and Dash at rank I. It cannot be rescanned and does not spend a Scanner charge. Subsequent drafts offer passive systems or one E-bound active system; the installed movement module can appear as a rank upgrade once the three slots are full. Unselected movement modules stay out of later drafts. Space retains the selected ship's native action; a successful Lancer activation no longer displays a redundant center-screen announcement.
 
-Scanner rescans replace later offers without consuming a capture reward. Installed rank-III systems cannot be offered as upgrades. Corruption cards enter the pool in sector 8; Void Harvest becomes eligible when turrets are present.
+Scanner rescans replace later offers without consuming a capture reward. Installed rank-III systems cannot be offered as upgrades. Corruption cards enter the pool in sector 8 and in breach encounters; Void Harvest becomes eligible when turrets are present.
 
 Salvage comes from enclosing board pickups using the shared Flux hexagon, collection effects, and enclosure logic. A normal pickup pays 1, or 1.25 on a Surveyor slow cut, before Extractor. Three baseline pickups give 3 salvage per sector. Captured turrets/nests grant 0.25; Void Harvest adds 1.25 at rank I. Territory and victory alone award no currency. Extractor's fractional rewards accumulate and persist between runs so early +2% purchases are not lost to rounding. Hazard enclosure rewards and Void Harvest feed the same award path.
 
@@ -110,6 +131,7 @@ godot --headless --path . --quit-after 1200 tests/roguelite_expedition_smoke.tsc
 godot --headless --path . --quit-after 4000 tests/roguelite_movement_smoke.tscn -- --nosave --no-steam
 godot --headless --path . --quit-after 4000 tests/roguelite_timing_smoke.tscn -- --nosave --no-steam
 godot --headless --path . --quit-after 4000 tests/roguelite_targets_smoke.tscn -- --nosave --no-steam
+godot --headless --path . --quit-after 4000 tests/roguelite_objectives_smoke.tscn -- --nosave --no-steam
 godot --headless --path . --quit-after 4000 tests/roguelite_optimization_smoke.tscn -- --nosave --no-steam
 ```
 
@@ -122,6 +144,8 @@ The movement suite exercises all three opening modules on all three ships throug
 The timing suite compares coast and interior travel for every roguelite ship, with base and upgraded engines at 30, 60, and 120 FPS. It measures visual speed consistency and verifies that releasing input and hitting rock stop the ship without drift.
 
 The targets suite uses real captures just below and exactly at every sector goal, checks progress-bar scaling and the 90% cap, and verifies Jump retains its existing 75% goal.
+
+The objectives suite covers the kind table and two hundred generated routes, disc placement on every stage, beacon capture, guarding, drift, milestone-plus-clear ordering, cargo pickup and delivery for all three ships, drops on death, Anchor recovery, hardened land and enclosure, Anomaly hunting, breach seeding, re-seeding, pressure hits, shields, sealing, and goal-before-seal ordering. The expedition suite's route check now launches every alternate kind.
 
 The optimization suite compares geometry and texture output with frozen reference algorithms across arenas, random cell states, empty/full fields, and all galaxy patterns. It checks corruption growth and visual cache invalidation after captures, cleansing, hardening, Anchor recovery, and restart.
 
