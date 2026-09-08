@@ -36,14 +36,10 @@ const TRANSIT_SHORT := 2.2      # between sectors
 
 ## Title menu. TUBE (the FX lab) is a development tool: it only exists when running from the
 ## editor and the lab files are excluded from exports.
-var TITLE_ITEMS: Array[String] = ["JUMP", "ROGUELITE", "BATTLE ROYALE", "LOG", "RESPEC", "RESET", "QUIT"]
-var TITLE_DESCS: Array[String] = ["TO THE DOCK", "DRAFT A BUILD. UPGRADE. LAUNCH AGAIN.", "8 CUTTERS. THREE ROUNDS. ONE WINNER.", "JUMP LOG", "REFUND EVERY UPGRADE. ENTER TWICE.", "WIPE THE SAVE. ENTER TWICE.", "POWER DOWN"]
-## Destructive title items arm on the first Enter and fire on the second; anything else disarms.
-const ARMED_DESCS := {
-	"RESPEC": "SURE? ENTER AGAIN REFUNDS ALL UPGRADES. ARROWS CANCEL.",
-	"RESET": "SURE? ENTER AGAIN WIPES EVERYTHING. ARROWS CANCEL.",
-}
-var armed_item := ""
+signal options_requested
+
+var TITLE_ITEMS: Array[String] = ["JUMP", "ROGUELITE", "BATTLE ROYALE", "LOG", "OPTIONS", "QUIT"]
+var TITLE_DESCS: Array[String] = ["TO THE DOCK", "DRAFT A BUILD. UPGRADE. LAUNCH AGAIN.", "8 CUTTERS. THREE ROUNDS. ONE WINNER.", "JUMP LOG", "DISPLAY, EFFECTS, AUDIO AND SAVE DATA", "POWER DOWN"]
 var roguelite: Game
 var roguelite_fill: Sprite2D
 
@@ -361,6 +357,10 @@ func claimed_frac() -> float:
 	return 1.0 - float(free_count) / float(maxi(1, base_free))
 
 
+func capture_target() -> float:
+	return TARGET
+
+
 func reset_field(rim: int) -> void:
 	seals.clear()
 	islands.clear()
@@ -447,20 +447,37 @@ func grid_changed() -> void:
 
 
 func recompute_border() -> void:
-	border_cells.clear()
+	# A padded exposure mask removes per-neighbour coordinate checks and function
+	# calls. HARD remains exposed here, matching the original eight-neighbour rule.
+	var stride := grid_width + 2
+	var exposed := PackedByteArray()
+	exposed.resize(stride * (grid_height + 2))
+	var lo := Vector2i(grid_width, grid_height)
+	var hi := Vector2i(-1, -1)
 	for y in grid_height:
+		var row := y * grid_width
+		var padded := (y + 1) * stride + 1
 		for x in grid_width:
-			var i := idx(x, y)
-			var b := 0
-			if cells[i] == CLAIMED:
-				for o in OFFS8:
-					var nx: int = x + o.x
-					var ny: int = y + o.y
-					if nx >= 0 and ny >= 0 and nx < grid_width and ny < grid_height and cells[idx(nx, ny)] != CLAIMED and cells[idx(nx, ny)] != ROCK:
-						b = 1
-						break
-			border[i] = b
-			if b == 1:
+			var v := cells[row + x]
+			if v != CLAIMED and v != ROCK:
+				exposed[padded + x] = 1
+				lo.x = mini(lo.x, x)
+				lo.y = mini(lo.y, y)
+				hi.x = maxi(hi.x, x)
+				hi.y = maxi(hi.y, y)
+	border_cells.clear()
+	border.fill(0)
+	# Only cells beside an exposed region can be border. Large captures leave a
+	# small search area even though the backing grid stays the same size.
+	for y in range(maxi(0, lo.y - 1), mini(grid_height, hi.y + 2)):
+		var row := y * grid_width
+		var padded := (y + 1) * stride + 1
+		for x in range(maxi(0, lo.x - 1), mini(grid_width, hi.x + 2)):
+			var i := row + x
+			if cells[i] != CLAIMED: continue
+			var j := padded + x
+			if exposed[j - stride - 1] or exposed[j - stride] or exposed[j - stride + 1] or exposed[j - 1] or exposed[j + 1] or exposed[j + stride - 1] or exposed[j + stride] or exposed[j + stride + 1]:
+				border[i] = 1
 				border_cells.append(Vector2i(x, y))
 
 
@@ -472,29 +489,45 @@ func _open(x: int, y: int) -> bool:
 
 
 func rebuild_coast() -> void:
-	# coast = every grid edge between claimed and unclaimed cells, merged into runs
+	# Sample occupancy once, then compare adjacent bytes. The zero padding closes
+	# the outer rim without repeated _open()/idx() calls for every edge.
+	var stride := grid_width + 2
+	var open := PackedByteArray()
+	open.resize(stride * (grid_height + 2))
+	var lo := Vector2i(grid_width, grid_height)
+	var hi := Vector2i(-1, -1)
+	for y in grid_height:
+		var row := y * grid_width
+		var padded := (y + 1) * stride + 1
+		for x in grid_width:
+			var v := cells[row + x]
+			if v != CLAIMED and v != HARD and v != ROCK:
+				open[padded + x] = 1
+				lo.x = mini(lo.x, x)
+				lo.y = mini(lo.y, y)
+				hi.x = maxi(hi.x, x)
+				hi.y = maxi(hi.y, y)
 	coast = PackedVector2Array()
-	for y in range(grid_height + 1):
+	for y in range(lo.y, hi.y + 2):
 		var run_start := -1
-		for x in range(grid_width + 1):
-			var b := false
-			if x < grid_width:
-				b = _open(x, y - 1) != _open(x, y)
-			if b and run_start < 0:
+		var above := y * stride + 1
+		var below := above + stride
+		for x in range(lo.x, hi.x + 2):
+			var edge := x <= hi.x and open[above + x] != open[below + x]
+			if edge and run_start < 0:
 				run_start = x
-			elif not b and run_start >= 0:
+			elif not edge and run_start >= 0:
 				coast.append(Vector2(FX + run_start * CELL, FY + y * CELL))
 				coast.append(Vector2(FX + x * CELL, FY + y * CELL))
 				run_start = -1
-	for x in range(grid_width + 1):
+	for x in range(lo.x, hi.x + 2):
 		var run_start := -1
-		for y in range(grid_height + 1):
-			var b := false
-			if y < grid_height:
-				b = _open(x - 1, y) != _open(x, y)
-			if b and run_start < 0:
+		for y in range(lo.y, hi.y + 2):
+			var left := (y + 1) * stride + x
+			var edge := y <= hi.y and open[left] != open[left + 1]
+			if edge and run_start < 0:
 				run_start = y
-			elif not b and run_start >= 0:
+			elif not edge and run_start >= 0:
 				coast.append(Vector2(FX + x * CELL, FY + run_start * CELL))
 				coast.append(Vector2(FX + x * CELL, FY + y * CELL))
 				run_start = -1
@@ -502,18 +535,22 @@ func rebuild_coast() -> void:
 
 func update_fill() -> void:
 	var dither := int(cur_gal().dither)
+	# Transparent bytes are initialized in native code. Write only claimed pixels,
+	# avoiding a Color allocation and Image.set_pixel call for every grid cell.
+	var pixels := PackedByteArray()
+	pixels.resize(grid_width * grid_height * 4)
 	for y in grid_height:
+		var row := y * grid_width
 		for x in grid_width:
-			if cells[idx(x, y)] == CLAIMED:
-				var on := false
-				match dither:
-					0: on = ((x + y) & 1) == 0          # checker
-					1: on = (y & 1) == 0                # scanline stripes
-					_: on = (x & 1) == 0 and (y & 1) == 0   # dots
-				var v := 1.0 if on else 0.5
-				fill_img.set_pixel(x, y, Color(v, v, v, 1.0))
-			else:
-				fill_img.set_pixel(x, y, Color(0, 0, 0, 0))
+			var i := row + x
+			if cells[i] != CLAIMED: continue
+			var on := false
+			match dither:
+				0: on = ((x + y) & 1) == 0
+				1: on = (y & 1) == 0
+				_: on = (x & 1) == 0 and (y & 1) == 0
+			pixels.encode_u32(i * 4, 0xffffffff if on else 0xff7f7f7f)
+	fill_img.set_data(grid_width, grid_height, false, Image.FORMAT_RGBA8, pixels)
 	fill_tex.update(fill_img)
 	fill.modulate = fill_color()
 
@@ -746,8 +783,6 @@ func update_play(dt: float) -> void:
 	if not inp.draw:
 		draw_armed = true   # releasing Space arms the next trail
 	var speed := 11.0 * movement_mult()
-	if not drawing and border[idx(p.x, p.y)] == 0:
-		speed *= 0.6   # interior of claimed land: walkable, but the coast is the fast lane
 	if drawing and inp.slow:
 		speed *= 0.5
 	if ship.id == "sapper" and sap_live:
@@ -755,6 +790,8 @@ func update_play(dt: float) -> void:
 	if drawing and ship.id == "surveyor":
 		speed *= 1.0 + 0.1 * up("slip")
 	var moved := false
+	# Match the displayed ship to its actual travel rate, including a lance ride.
+	var visual_speed := speed * (lance_speed_mult() if tether_active else 1.0)
 	if tether_active:
 		# Lancer ride: automatic along the tether at triple speed; a sideways input steps off
 		var idir: Vector2i = inp.dir
@@ -820,7 +857,7 @@ func update_play(dt: float) -> void:
 		update_seals(dt)
 		if state != State.PLAYING:
 			return
-	if ship.id == "leaper":
+	if uses_leap_controls():
 		# Space builds a line out ahead across the void, JezzBall style: it grows while held and
 		# can be cut the whole time. Release, or reach land, and the ship leaps to the tip.
 		if wall_building:
@@ -844,7 +881,7 @@ func update_play(dt: float) -> void:
 		lance_flash = 0.5
 		sparks.ripple(vis, 4.0, 220.0, 0.4, Palette.CYAN)
 	lance_flash = maxf(0.0, lance_flash - dt)
-	if ship.id == "lancer" and inp.draw and draw_armed and not drawing:
+	if ship.id == "lancer" and not uses_leap_controls() and inp.draw and draw_armed and not drawing:
 		# Space is the lance: fire a tether in the facing direction and ride it to land
 		draw_armed = false
 		if lance_cd <= 0.0:
@@ -852,7 +889,7 @@ func update_play(dt: float) -> void:
 		else:
 			set_msg("LANCE RECHARGING", 0.6)
 			lines.spike(1.0, 0.2)
-	if ship.id == "sapper":
+	if ship.id == "sapper" and not uses_leap_controls():
 		# Space is the charge, not the pen. The Sapper never leaves claimed land: hold Space and a
 		# disc grows out from where it stands. The disc is the exposed part: the Anomaly, a mite or
 		# a bolt crossing it kills. Release to blow. The longer you hold, the more you risk.
@@ -880,7 +917,7 @@ func update_play(dt: float) -> void:
 
 	# fuse: standing still while drawing lights it; it then chases you along the trail.
 	# The Sapper has no fuse: its wire is dead until it charges.
-	if drawing and not sealing and not (ship.id in ["sapper", "leaper"]):
+	if drawing and not sealing and ship.id != "sapper" and not uses_leap_controls():
 		if idle_t > fuse_delay():
 			fuse_on = true
 		if fuse_on:
@@ -891,7 +928,13 @@ func update_play(dt: float) -> void:
 			if randf() < 0.6:
 				sparks.emit(fuse_point(), Vector2(randf_range(-60, 60), randf_range(-60, 60)),
 					0.3, Palette.FULLBRIGHT, 2.0)
-	vis = vis.lerp(center(p), 1.0 - exp(-dt * 22.0))
+	if wall_building or leap_building:
+		# A leap travels many cells at once; retain its quick landing animation.
+		vis = vis.lerp(center(p), 1.0 - exp(-dt * 22.0))
+	else:
+		# Exponential easing restarted at every grid step makes a steady held key
+		# repeatedly accelerate and brake. Follow at the ship's actual speed instead.
+		vis = vis.move_toward(center(p), visual_speed * CELL * dt)
 
 	# exhaust
 	if moved and randf() < 0.7:
@@ -989,7 +1032,7 @@ func try_step(dir: Vector2i, draw: bool, slow: bool) -> bool:
 			return true
 	else:
 		if tc == CLAIMED:
-			# claimed land is walkable everywhere; the coast is just the fast lane (see update_play)
+			# Claimed land is walkable at the same speed as its coast.
 			p = t
 			return true
 		elif tc == FREE and ship.id == "sapper":
@@ -1091,7 +1134,7 @@ func complete_claim() -> void:
 				run_isotope += 1
 				iso_got += 1
 			else:
-				award += node_value() + ((1 + (up("slowb") if ship.id == "surveyor" else 0)) if trail_slow else 0)
+				award += node_value() + (slow_node_bonus() if trail_slow else 0)
 			var np := center(fn.cell)
 			sparks.zap_polyline(PackedVector2Array([np, vis]), Palette.YELLOW, 1800.0, 6.0)
 			sparks.burst(np, 40, 200.0, 1.5, 0.7, Palette.YELLOW)
@@ -1123,7 +1166,7 @@ func complete_claim() -> void:
 			mites.remove_at(j)
 		j -= 1
 	if caught > 0:
-		award += caught
+		award += caught * hazard_capture_value()
 	# boss objectives: the Brood captured, or every Bastion core turret enclosed
 	if level == Galaxies.LENGTH and state == State.PLAYING:
 		var boss_done := false
@@ -1176,7 +1219,7 @@ func complete_claim() -> void:
 	trail.clear()
 	grid_changed()
 	on_claim(gained, caught)
-	if claimed_frac() >= TARGET:
+	if claimed_frac() >= capture_target():
 		level_clear()
 
 
@@ -1565,7 +1608,7 @@ func draw_play() -> void:
 	if drawing:
 		var pts := trail_points()
 		var tc := Palette.MAGENTA if slow_held else Palette.ORANGE
-		if ship.id == "bulwark" and harden_len >= 1.0:
+		if harden_len >= 1.0:
 			# hardened part in coast cyan, soft part in trail orange, a bright front between them
 			var hn := int(floor(harden_len))
 			var hard_pts := PackedVector2Array([center(anchor)])
@@ -1575,9 +1618,15 @@ func draw_play() -> void:
 			var front := center(trail[hn - 1])
 			lines.circle(front, 4.0 + 1.5 * sin(time * 12.0), Palette.FULLBRIGHT, 6, 1.5, 0.6, 1.0)
 			var soft_pts := PackedVector2Array([front])
-			for i in range(hn, trail.size()):
+			var soft_end := tether_i + 1 if tether_active else trail.size()
+			for i in range(hn, soft_end):
 				soft_pts.append(center(trail[i]))
-			soft_pts[soft_pts.size() - 1] = vis
+			if tether_active:
+				soft_pts.append(vis)
+				var tail := center(trail.back()) + Vector2(tether_dir) * CELL * 0.5
+				lines.seg(vis, tail, Palette.CYAN, 0.4, 0.3, 0.9)
+			else:
+				soft_pts[soft_pts.size() - 1] = vis
 			lines.polyline(soft_pts, false, tc, 2.2, 0.45, 1.3)
 		elif tether_active:
 			# ridden part as a normal trail, the tether ahead as a taut bright line with pulses
@@ -1712,12 +1761,12 @@ func draw_hud() -> void:
 	y += 44
 	var frac := claimed_frac()
 	VectorFont.draw(lines, "CLAIMED %3d%%" % int(frac * 100.0), Vector2(lx, y), 15, Palette.WHITE, 0.5, 0.2)
-	VectorFont.draw(lines, "TARGET %d%%" % int(TARGET * 100.0), Vector2(lx + w, y + 3), 11, Palette.DIM, 0.4, 0.1, 2)
+	VectorFont.draw(lines, "TARGET %d%%" % roundi(capture_target() * 100.0), Vector2(lx + w, y + 3), 11, Palette.DIM, 0.4, 0.1, 2)
 	y += 26
 	lines.rect(Rect2(lx, y, w, 14), Palette.DIM, 0.4, 0.1, 0.8)
 	if frac > 0.0:
-		var bw := w * minf(frac / TARGET, 1.0)
-		var bc := Palette.GREEN if frac >= TARGET else Palette.CYAN
+		var bw := w * minf(frac / capture_target(), 1.0)
+		var bc := Palette.GREEN if frac >= capture_target() else Palette.CYAN
 		lines.seg(Vector2(lx + 2, y + 7), Vector2(lx + 2 + bw, y + 7), bc, 0.8, 0.3, 4.5)
 	lines.seg(Vector2(lx + w, y - 4), Vector2(lx + w, y + 18), Palette.YELLOW, 1.0, 0.4, 1.0)
 	y += 46
@@ -2173,7 +2222,7 @@ func fire_lance(extend := false) -> void:
 	sparks.zap_polyline(pts, Palette.CYAN, 2600.0, 6.0)
 	lines.spike(2.5, 0.4)
 	shake = maxf(shake, 0.3)
-	set_msg("LANCE", 0.5)
+	announce_lance()
 
 
 func ride_step() -> void:
@@ -2629,8 +2678,6 @@ func update_title(dt: float) -> void:
 	if Input.is_action_just_pressed("move_down"):
 		title_sel = (title_sel + 1) % TITLE_ITEMS.size()
 		lines.spike(0.8, 0.2)
-	if armed_item != "" and (TITLE_ITEMS[title_sel] != armed_item or Input.is_action_just_pressed("abort")):
-		disarm_title()
 	if Input.is_action_just_pressed("abort") and show_log:
 		show_log = false
 	if Input.is_action_just_pressed("confirm") or Input.is_action_just_pressed("launch"):
@@ -2643,21 +2690,8 @@ func activate_title_item() -> void:
 		show_log = not show_log
 		lines.spike(1.5, 0.3)
 		return
-	if ARMED_DESCS.has(item):
-		if armed_item != item:
-			armed_item = item
-			TITLE_DESCS[title_sel] = ARMED_DESCS[item]
-			lines.spike(1.5, 0.3)
-			return
-		if item == "RESET":
-			Save.reset_data()
-			set_msg("SAVE WIPED", 1.5)
-		else:
-			set_msg("+%s FLUX REFUNDED" % fmt(Save.respec()), 1.5)
-		disarm_title()
-		sparks.burst(Vector2(PANEL_X + 100, 300), 60, 260.0, 1.5, 0.8, Palette.RED if item == "RESET" else Palette.GREEN)
-		lines.spike(4.0, 0.5)
-		shake = maxf(shake, 0.6)
+	if item == "OPTIONS":
+		options_requested.emit()
 		return
 	title_exit = title_sel
 	title_exit_t = 0.0
@@ -2665,12 +2699,6 @@ func activate_title_item() -> void:
 		sparks.zap_polyline(pth, Palette.CYAN, 2600.0, 5.0)
 	lines.spike(4.0, 0.5)
 	shake = maxf(shake, 0.4)
-
-
-func disarm_title() -> void:
-	armed_item = ""
-	TITLE_DESCS[TITLE_ITEMS.find("RESPEC")] = "REFUND EVERY UPGRADE. ENTER TWICE."
-	TITLE_DESCS[TITLE_ITEMS.find("RESET")] = "WIPE THE SAVE. ENTER TWICE."
 
 
 func draw_title_field() -> void:
@@ -3276,7 +3304,7 @@ func draw_intro() -> void:
 		elif level > Galaxies.LENGTH:
 			gline += "   ENDLESS"
 		VectorFont.draw(lines, typed(gline, 0.5, 30.0), Vector2(cx, cy - 82), 14, gc, 0.5, 0.2, 1)
-		var sub := "%s   TARGET %d%%   HULL %d   %d FLUX NODES" % [ship.name, int(TARGET * 100), lives + 1, nodes.size()]
+		var sub := "%s   TARGET %d%%   HULL %d   %d FLUX NODES" % [ship.name, roundi(capture_target() * 100), lives + 1, nodes.size()]
 		if turrets.size() + spawners.size() > 0:
 			sub += "   %d HAZARDS" % (turrets.size() + spawners.size())
 		var sc := Palette.WHITE
@@ -3970,7 +3998,7 @@ func draw_scan(rect: Rect2 = SCAN, compact := false) -> void:
 	var dc := Palette.DIM
 	dc.a = dimf
 	var qs := int(70.0 * pow(1.10, ss - 1) * float(g.qix_mult) * SectorArena.enemy_mult(g.id, ss))
-	VectorFont.draw(lines, "ANOMALY %d   %d SPARX   TARGET %d%%" % [qs, 1 + ss / 2, int(TARGET * 100)], Vector2(o.x, ly + 20), 10, dc, 0.4, 0.1)
+	VectorFont.draw(lines, "ANOMALY %d   %d SPARX   TARGET %d%%" % [qs, 1 + ss / 2, roundi(capture_target() * 100)], Vector2(o.x, ly + 20), 10, dc, 0.4, 0.1)
 
 
 func draw_bay(rect: Rect2 = BAY) -> void:
@@ -4160,7 +4188,7 @@ func draw_dock_desc(y: float, x := 360.0, max_width := 880.0) -> void:
 		elif ss == Galaxies.LENGTH:
 			text = String(g.boss_desc)
 		elif not scan_layout.is_empty():
-			text = "%d NODES / %d HAZARDS / CLAIM 75%%" % [scan_layout.nodes.size(), scan_layout.turrets.size() + scan_layout.spawners.size()]
+			text = "%d NODES / %d HAZARDS / CLAIM %d%%" % [scan_layout.nodes.size(), scan_layout.turrets.size() + scan_layout.spawners.size(), roundi(capture_target() * 100)]
 	elif dock_sel == 2:
 		text = String(sh.desc)
 		if not Ships.owned(sh.id):
@@ -4416,6 +4444,12 @@ func fuse_delay() -> float:
 func base_node_value() -> int:
 	return Save.node_value()
 
+func slow_node_bonus() -> float:
+	return 1 + (up("slowb") if ship.id == "surveyor" else 0)
+
+func hazard_capture_value() -> float:
+	return 1.0
+
 func run_extra_lives() -> int:
 	return Save.extra_lives()
 
@@ -4445,3 +4479,9 @@ func start_roguelite() -> void:
 func _leave_roguelite() -> void:
 	roguelite_fill.visible = false
 	go_title()
+
+func uses_leap_controls() -> bool:
+	return ship.id == "leaper"
+
+func announce_lance() -> void:
+	set_msg("LANCE", 0.5)

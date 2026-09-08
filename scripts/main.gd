@@ -6,6 +6,8 @@ extends Node2D
 var display: ScopeDisplay
 var fill: Sprite2D
 var game: Game
+var options: Node
+var options_closed_frame := -1
 
 var autotest := false
 var auto_mode := "play"
@@ -109,6 +111,24 @@ func _ready() -> void:
 	game = Game.new()
 	add_child(game)
 	game.setup(display.lines, display.sparks, fill)
+
+	options = preload("res://scripts/options_page.gd").new()
+	add_child(options)
+	options.setup(display)
+	game.options_requested.connect(func():
+		game.set_process_input(false)
+		if game.roguelite != null:
+			game.roguelite.set_process_input(false)
+		options.open())
+	options.closed.connect(func():
+		game.set_process_input(true)
+		if game.roguelite != null:
+			game.roguelite.set_process_input(true)
+		options_closed_frame = Engine.get_process_frames())
+
+	options.roguelite_reset.connect(func():
+		if game.roguelite != null:
+			game.roguelite.set("progress", preload("res://scripts/roguelite_progress.gd").new()))
 
 	if autotest:
 		seed(1337)   # repeatable Anomaly / Sparx behaviour for screenshots
@@ -307,9 +327,14 @@ func _process(dt: float) -> void:
 		if t > 1.6:
 			get_tree().quit()
 		return
-	game.update(dt)
-	display.begin_draw(game.shake_off)
-	game.draw()
+	if not options.is_open and options_closed_frame != Engine.get_process_frames():
+		game.update(dt)
+	display.begin_draw(Vector2.ZERO if options.is_open else game.shake_off)
+	if options.is_open:
+		fill.visible = false
+		options.draw()
+	else:
+		game.draw()
 	display.end_draw()
 	script_ms = (Time.get_ticks_usec() - t0) / 1000.0
 
@@ -359,6 +384,8 @@ func _draw_pattern() -> void:
 
 ## Debug keys: F9 unlocks every ship, F10 grants a million of each currency, F11 unlocks all galaxies.
 func _unhandled_input(event: InputEvent) -> void:
+	if options != null and options.is_open:
+		return
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
 	match event.keycode:
