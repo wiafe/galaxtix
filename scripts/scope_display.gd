@@ -164,6 +164,10 @@ func apply_settings() -> void:
 		m.set_shader_parameter("blur_radius", s.trail_blur)
 
 	var cm: ShaderMaterial = screen.material
+	var trails_enabled := not web and s.trail_feedback > 0.0
+	for vp in [trail_a, trail_b]:
+		vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS if trails_enabled else SubViewport.UPDATE_DISABLED
+	cm.set_shader_parameter("trail_tex", trail_a.get_texture() if trails_enabled else scene_vp.get_texture())
 	cm.set_shader_parameter("dry", s.trail_dry)
 	cm.set_shader_parameter("curve", s.crt_curve)
 	cm.set_shader_parameter("scan_depth", s.scan_depth)

@@ -10,6 +10,7 @@ func _ready() -> void:
 func fresh() -> void:
 	rogue.transit_skip = true
 	rogue.start_run()
+	rogue.launch_destination(0)
 	rogue.state = Game.State.PLAYING
 	rogue.surv_scale = 1.0
 	rogue.invuln = 0.0
@@ -88,6 +89,7 @@ func check() -> void:
 	await check_upgrade_tracks()
 	# Exercise the real transit/intro and live enemy update before fixture captures.
 	rogue.start_run()
+	rogue.launch_destination(0)
 	for i in 120:
 		rogue.update(0.05)
 	assert(rogue.state == Game.State.PLAYING and rogue.spawners.is_empty())
@@ -111,15 +113,15 @@ func check() -> void:
 	rogue.nodes.resize(1)
 	rogue.nodes[0].cell = Vector2i(68, 30)
 	cut_at(10, true, true)
-	assert(rogue.earned_salvage == 5 and rogue.nodes[0].captured, "Shared pickup grants four salvage plus the slow-draw bonus")
+	assert(rogue.earned_salvage == 1 and is_equal_approx(rogue.salvage_fraction, 0.25) and rogue.nodes[0].captured, "A pickup grants one salvage plus the fractional slow bonus")
 	cut_at(14)
-	assert(rogue.earned_salvage == 5, "Captured pickups cannot pay twice")
+	assert(rogue.earned_salvage == 1, "Captured pickups cannot pay twice")
 	fresh()
 	rogue.nodes.clear()
-	cut_at(18)
-	assert(rogue.phase == "run" and rogue.capture_percent < 20.0)
-	cut_at(20)
-	assert(rogue.phase == "draft" and is_equal_approx(rogue.capture_percent, 20.0), "First card arrives at exactly twenty percent")
+	cut_at(32)
+	assert(rogue.phase == "run" and rogue.capture_percent < 35.0)
+	cut_at(35)
+	assert(rogue.phase == "draft" and rogue.capture_percent >= 35.0, "The small arena offers its one card at 35 percent")
 	fresh()
 	assert(rogue.ship.id == "surveyor" and rogue.lives == 2)
 	assert(is_equal_approx(rogue.movement_mult(), 1.0) and rogue.run_rim() == 0)
@@ -132,8 +134,8 @@ func check() -> void:
 		rogue.nodes[i].cell = pickup_cells[i]
 		assert(not rogue.nodes[i].rare and rogue.cells[rogue.idx(pickup_cells[i].x, pickup_cells[i].y)] == Game.FREE)
 	assert(rogue.displayed_capture == 0.0 and rogue.capture_flights.is_empty(), "New runs clear visual capture progress")
-	cut_at(25, false)
-	assert(rogue.phase == "reward" and rogue.capture_percent >= 20 and rogue.offers.is_empty())
+	cut_at(36, false)
+	assert(rogue.phase == "reward" and rogue.capture_percent >= 35 and rogue.offers.is_empty())
 	var position: Vector2 = rogue.qixes[0].c
 	var invulnerability: float = rogue.invuln
 	var spread: float = rogue.spread_clock
@@ -164,16 +166,10 @@ func check() -> void:
 	rogue.update(0.3)
 	assert(rogue.phase == "run" and rogue.owned_cards.size() == 1)
 	cut_at(50)
-	assert(rogue.phase == "draft")
-	for card in rogue.offers:
-		assert(not rogue.owned_cards.has(card.id), "Drafts exclude owned cards")
-		assert(not rogue.draft_exclusions().has(card.id))
-	rogue.choose_card(0)
+	assert(rogue.phase == "run" and rogue.drafts_taken == 1, "The opening offers no second draft")
 	cut_at(78)
-	assert(rogue.pending_clear and rogue.phase == "draft")
-	rogue.choose_card(0)
-	assert(rogue.phase == "result" and rogue.progress.wins == 1 and rogue.drafts_taken == 3)
-	assert(rogue.banked_salvage == rogue.run_nodes * 4 and rogue.banked_salvage == 12, "Only enclosed pickups fund this win")
+	assert(rogue.phase == "result" and rogue.progress.wins == 1 and rogue.drafts_taken == 1)
+	assert(rogue.banked_salvage == rogue.run_nodes and rogue.banked_salvage == 3, "Only enclosed pickups fund this win")
 	var bank: int = rogue.progress.salvage
 	rogue.end_run()
 	assert(rogue.progress.salvage == bank and rogue.progress.runs == 1, "Settlement cannot pay twice")
@@ -193,25 +189,25 @@ func check() -> void:
 	assert(rogue.phase == "hangar", "Hangar unlocks after the victory reveal")
 	assert(Save.data == campaign, "Winning cannot change Jump's save")
 	assert(rogue.progress.buy("engines"))
-	assert(rogue.progress.rank_of("engines") == 1 and rogue.progress.salvage == bank - 8)
+	assert(rogue.progress.rank_of("engines") == 1 and rogue.progress.salvage == bank - 2)
 	assert(not rogue.progress.buy("missing"))
 	fresh()
 	assert(rogue.owned_cards.is_empty() and rogue.capture_percent == 0)
 	assert(is_equal_approx(rogue.movement_mult(), 1.02), "Only Roguelite meta affects its movement")
-	# A giant first capture queues all three drafts, but never a fourth.
+	# A giant opening capture grants its one draft, then settles.
 	cut_at(80)
-	assert(rogue.capture_percent >= 75 and rogue.pending_clear)
-	for i in 3:
+	assert(rogue.capture_percent >= rogue.capture_target() * 100 and rogue.pending_clear)
+	for i in rogue.draft_capture.size():
 		assert(rogue.phase == "draft")
 		rogue.choose_card(0)
-	assert(rogue.phase == "result" and rogue.drafts_taken == 3)
+	assert(rogue.phase == "result" and rogue.drafts_taken == rogue.draft_capture.size())
 	fresh()
 	rogue.nodes.clear()
-	rogue.drafts_taken = 3
+	rogue.drafts_taken = rogue.draft_capture.size()
 	cut_at(80, false)
 	assert(rogue.phase == "reward" and rogue.pending_clear and rogue.offers.is_empty())
 	finish_reward()
-	assert(rogue.phase == "result" and rogue.drafts_taken == 3 and rogue.banked_salvage == 0, "Final capture fills the bar, adds no fourth draft, and gives no automatic victory currency")
+	assert(rogue.phase == "result" and rogue.drafts_taken == rogue.draft_capture.size() and rogue.banked_salvage == 0, "Final capture fills the bar, adds no fourth draft, and gives no automatic victory currency")
 	fresh()
 	# Opt into the deferred system only for its unit checks.
 	rogue.corruption_active = true
@@ -283,7 +279,7 @@ func check() -> void:
 	nest.cell = Vector2i(68, 32)
 	rogue.spawners.append(nest)
 	cut_at(13)
-	assert(rogue.bonus_salvage == 5, "Void Harvest rewards actual enclosed enemies")
+	assert(rogue.bonus_salvage == 1.25, "Void Harvest rewards actual enclosed enemies")
 	rogue.p = Vector2i(54, 45)
 	rogue.safe_motion = 2.1
 	rogue.draw_armed = true
@@ -351,7 +347,7 @@ func check_clean_hud() -> void:
 	assert(rogue.CAPTURE_BAR.has_point(rogue.capture_bar_point(75)))
 	fresh()
 	rogue.owned_cards.assign(["afterburner", "hardlight", "compression"])
-	rogue.drafts_taken = 3
+	rogue.drafts_taken = rogue.draft_capture.size()
 	rogue.cooldowns.afterburner = 7.0
 	rogue.p = Vector2i(54, 40)
 	rogue.draw_armed = true
@@ -379,7 +375,7 @@ func check_clean_hud() -> void:
 	for sector in range(1, 4):
 		rogue.level = sector
 		rogue.start_level()
-		assert(rogue.base_free > previous_area, "Rectangular arenas keep growing beyond the opening")
+		assert(rogue.base_free > previous_area, "Opening arenas grow while introducing blockers and notches")
 		previous_area = rogue.base_free
 		assert(rogue.cells.size() == 160 * 104 and rogue.fill_img.get_size() == Vector2i(160, 104))
 		assert(rogue.border[rogue.idx(rogue.p.x, rogue.p.y)] == 1)
@@ -392,28 +388,28 @@ func check_clean_hud() -> void:
 	rogue.level = 8
 	rogue.start_level()
 	assert(rogue.base_free == rogue.cells.count(Game.FREE), "Island rails do not count toward first-time capture")
-	assert(rogue.cells[rogue.idx(155, 50)] == Game.FREE, "Maximum arena extends past Jump's 104 columns")
+	assert(rogue.cells[rogue.idx(118, 50)] == Game.FREE, "Later arenas extend past Jump's 104 columns")
 	assert(not rogue.in_bounds(Vector2i(160, 50)) and not rogue.in_bounds(Vector2i(100, 104)))
 	assert(rogue.in_bounds(Vector2i(159, 103)))
 	rogue.state = Game.State.PLAYING
 	rogue.owned_cards.assign(["afterburner", "hardlight", "stasis"])
-	rogue.drafts_taken = 3
+	rogue.drafts_taken = rogue.draft_capture.size()
 	rogue.cooldowns.afterburner = 6.2
 	await shot("field-full")
 	# Close a vertical cut beyond the old right edge; flood-fill, texture and capture credit
 	# must all use the rectangular row stride, including the final column of playable cells.
 	for q in rogue.qixes:
-		q.c = rogue.center(Vector2i(80, 60))
+		q.c = rogue.center(Vector2i(60, 60))
 		q.len = 10.0
-	rogue.p = Vector2i(130, 18)
+	rogue.p = Vector2i(105, 18)
 	rogue.vis = rogue.center(rogue.p)
 	rogue.draw_armed = true
 	for step in 67:
 		assert(rogue.try_step(Vector2i.DOWN, true, false))
-	assert(not rogue.drawing and rogue.p == Vector2i(130, 85))
-	assert(rogue.cells[rogue.idx(158, 80)] == Game.CLAIMED)
-	assert(rogue.credited[rogue.idx(158, 80)] == 1 and rogue.capture_percent > 18)
-	assert(rogue.fill_img.get_pixel(158, 80).a > 0)
+	assert(not rogue.drawing and rogue.p == Vector2i(105, 85))
+	assert(rogue.cells[rogue.idx(118, 80)] == Game.CLAIMED)
+	assert(rogue.credited[rogue.idx(118, 80)] == 1 and rogue.capture_percent > 18)
+	assert(rogue.fill_img.get_pixel(118, 80).a > 0)
 	await shot("field-wide-capture")
 	fresh()
 
@@ -439,11 +435,11 @@ func check_upgrade_tracks() -> void:
 	assert(rogue.progress.salvage == 200, "Clicking a node only inspects it")
 	click.position = rogue.upgrade_button_rect().get_center()
 	rogue._input(click)
-	assert(rogue.progress.rank_of("engines") == 1 and rogue.progress.salvage == 192)
+	assert(rogue.progress.rank_of("engines") == 1 and rogue.progress.salvage == 198)
 	assert(rogue.viewed_ranks[0] == 2 and rogue.node_state(0, 1) == "OWNED")
 	for i in 3:
 		rogue.activate_choice(1)
-	assert(rogue.progress.rank_of("engines") == 4 and rogue.progress.salvage == 144)
+	assert(rogue.progress.rank_of("engines") == 4 and rogue.progress.salvage == 186)
 	assert(rogue.viewed_ranks[0] == 5 and rogue.node_state(0, 5) == "NEXT")
 	rogue.progress.ranks.hull = 2
 	rogue.progress.ranks.reactor = 7
@@ -511,7 +507,7 @@ func check_scroll_list() -> void:
 	var balance: int = rogue.progress.salvage
 	click.position = rogue.upgrade_button_rect().get_center()
 	rogue._input(click)
-	assert(rogue.progress.rank_of("extractor") == 1 and rogue.progress.salvage == balance - 8, "Scrolled nodes buy the intended track")
+	assert(rogue.progress.rank_of("extractor") == 1 and rogue.progress.salvage == balance - 2, "Scrolled nodes buy the intended track")
 	await shot("upgrades-scroll-bottom")
 	rogue.focus_track(0)
 	assert(rogue.track_scroll == 0)

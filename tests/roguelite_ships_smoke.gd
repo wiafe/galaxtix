@@ -45,6 +45,7 @@ func fresh_ship(id: String) -> void:
 	assert(rogue.progress.select_ship(id))
 	rogue.transit_skip = true
 	rogue.start_run()
+	rogue.launch_destination(0)
 	rogue.state = Game.State.PLAYING
 	rogue.surv_scale = 1.0
 	rogue.invuln = 0
@@ -70,11 +71,11 @@ func check() -> void:
 	var profile := Progress.new()
 	profile.apply_profile({"version": 1, "salvage": 65, "ranks": {"hull": 3}})
 	assert(profile.selected_ship == "surveyor" and profile.owns_ship("surveyor"))
-	assert(profile.salvage == 65 and profile.rank_of("hull") == 3)
+	assert(profile.salvage == 16 and is_equal_approx(profile.salvage_fraction, 0.25) and profile.rank_of("hull") == 3)
 	assert(not profile.select_ship("lancer") and not profile.buy_ship("unknown"))
-	assert(profile.buy_ship("lancer") and profile.salvage == 25)
+	assert(profile.buy_ship("lancer") and profile.salvage == 6)
 	assert(not profile.buy_ship("lancer") and not profile.buy_ship("sapper"))
-	assert(profile.select_ship("surveyor") and profile.salvage == 25)
+	assert(profile.select_ship("surveyor") and profile.salvage == 6)
 	profile.apply_profile({"ships": {"bulwark": true}, "selected_ship": "bulwark"})
 	assert(profile.selected_ship == "surveyor" and not profile.owns_ship("bulwark"))
 	var failed := FailedProfile.new()
@@ -90,7 +91,7 @@ func check() -> void:
 	var campaign: Dictionary = Save.data.duplicate(true)
 	main.game.start_roguelite()
 	rogue = main.game.roguelite
-	rogue.progress.salvage = 65
+	rogue.progress.salvage = 16
 	await shot("upgrades")
 	click(rogue.choice_rect(5).get_center())
 	assert(rogue.hangar_page == "ships")
@@ -101,15 +102,15 @@ func check() -> void:
 	await tap("move_down")
 	assert(rogue.selection == 11)
 	click(rogue.ship_rect(1).get_center())
-	assert(rogue.progress.salvage == 65 and not rogue.progress.owns_ship("lancer"), "Previewing does not purchase")
+	assert(rogue.progress.salvage == 16 and not rogue.progress.owns_ship("lancer"), "Previewing does not purchase")
 	await shot("ships-locked")
 	click(rogue.ship_action_rect(1).get_center())
-	assert(rogue.progress.selected_ship == "lancer" and rogue.progress.salvage == 25)
+	assert(rogue.progress.selected_ship == "lancer" and rogue.progress.salvage == 6)
 	click(rogue.ship_action_rect(2).get_center())
-	assert(not rogue.progress.owns_ship("sapper") and rogue.progress.salvage == 25)
-	assert(rogue.msg_currency == 0 and rogue.msg_amount == "15")
+	assert(not rogue.progress.owns_ship("sapper") and rogue.progress.salvage == 6)
+	assert(rogue.msg_currency == 0 and rogue.msg_amount == "4")
 	await shot("ships-need-salvage")
-	rogue.progress.salvage += 15
+	rogue.progress.salvage += 4
 	click(rogue.ship_action_rect(2).get_center())
 	assert(rogue.progress.selected_ship == "sapper" and rogue.progress.salvage == 0)
 	await shot("ships-owned")
@@ -127,7 +128,7 @@ func check() -> void:
 	assert(is_equal_approx(rogue.respawn_shield_duration(), 5.0))
 
 	fresh_ship("lancer")
-	rogue.p = Vector2i(54, 40)
+	rogue.p = Vector2i(54, 46)
 	rogue.last_dir = Vector2i.RIGHT
 	rogue.vis = rogue.center(rogue.p)
 	rogue.safe_motion = 2.1
@@ -140,7 +141,7 @@ func check() -> void:
 	for step in 83:
 		if rogue.tether_active:
 			rogue.ride_step()
-	assert(not rogue.drawing and not rogue.tether_active and rogue.capture_percent >= 20)
+	assert(not rogue.drawing and not rogue.tether_active and rogue.capture_percent >= 35)
 	assert(rogue.phase == "reward", "Lance captures feed card milestones")
 	fresh_ship("lancer")
 	rogue.p = Vector2i(54, 40)
@@ -177,11 +178,11 @@ func check() -> void:
 	rogue.sap_charge = 10
 	await shot("sapper-run")
 	rogue.detonate(10)
-	assert(rogue.capture_percent > 7 and rogue.earned_salvage == 4)
+	assert(rogue.capture_percent > 7 and rogue.earned_salvage == 1)
 	var old_capture: float = rogue.capture_percent
 	rogue.sap_cell = Vector2i(71, 43)
 	rogue.detonate(10)
-	assert(rogue.capture_percent == old_capture and rogue.earned_salvage == 4, "Repeated disc territory cannot pay twice")
+	assert(rogue.capture_percent == old_capture and rogue.earned_salvage == 1, "Repeated disc territory cannot pay twice")
 	rogue.owned_cards.assign(["anchor"])
 	rogue.p = Vector2i(70, 43)
 	rogue.start_sapper_charge()

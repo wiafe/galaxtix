@@ -4,7 +4,7 @@ const PATH := "user://galaxtix_roguelite.json"
 const TRACKS := ["engines", "hull", "reactor", "scanner", "extractor", "containment"]
 const MAX_RANK := 10
 const SHIPS := ["surveyor", "lancer", "sapper"]
-const SHIP_PRICE := 40
+const SHIP_PRICE := 10
 const Sectors = preload("res://scripts/roguelite_sectors.gd")
 var salvage := 0
 var runs := 0
@@ -46,6 +46,12 @@ func apply_profile(data: Dictionary) -> void:
 		var value = data.get(key, 0)
 		if value is float or value is int:
 			set(key, clampi(int(value), 0, 100000000))
+	# Version 6 denominates both earnings and costs in quarter-sized salvage units.
+	# Keep the remainder so conversion loses neither currency nor upgrade progress.
+	if int(data.get("version", 1)) < 6:
+		var converted := (salvage + salvage_fraction) / 4.0
+		salvage = floori(converted)
+		salvage_fraction = converted - salvage
 	var saved = data.get("ranks", {})
 	if saved is Dictionary:
 		for key in TRACKS:
@@ -59,7 +65,7 @@ func write_profile() -> bool:
 	var file := FileAccess.open(PATH + ".tmp", FileAccess.WRITE)
 	if file == null:
 		return false
-	file.store_string(JSON.stringify({"version": 5, "salvage": salvage, "salvage_fraction": salvage_fraction, "best_sector": best_sector, "containment_unlocked": containment_unlocked, "runs": runs, "wins": wins, "ranks": ranks, "ships": ships, "selected_ship": selected_ship}))
+	file.store_string(JSON.stringify({"version": 6, "salvage": salvage, "salvage_fraction": salvage_fraction, "best_sector": best_sector, "containment_unlocked": containment_unlocked, "runs": runs, "wins": wins, "ranks": ranks, "ships": ships, "selected_ship": selected_ship}))
 	file.flush()
 	var error := file.get_error()
 	file.close()
@@ -101,7 +107,7 @@ func cost(track: String) -> int:
 	return node_cost(rank_of(track) + 1)
 
 func node_cost(rank: int) -> int:
-	return 8 + (rank - 1) * 4
+	return 2 + (rank - 1)
 
 func buy(track: String) -> bool:
 	if not track_available(track) or rank_of(track) >= MAX_RANK or salvage < cost(track):

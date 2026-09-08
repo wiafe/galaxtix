@@ -51,7 +51,7 @@ joins the core rail to the coast. The field autotest drops into any galaxy secto
 
 ## Roguelite shape progression and Fillit reference
 
-Roguelite now fits the existing Jump silhouettes to wide footprints through `SectorArena.contains_offset`. Its route is authored in `scripts/roguelite_sectors.gd`: small square, wider rectangle, larger square, oval, cross, notches, bridge, island. The first three footprints match Jump exactly; shape names and coaching text are omitted from the player HUD and clear screen. The island uses the same inner-rail builder as Turret Belt. Jump's masks, area accounting, and progression stay unchanged.
+Roguelite now fits the existing Jump silhouettes to wide footprints through `SectorArena.contains_offset`. Its route is authored in `scripts/roguelite_sectors.gd`: small square, paired pylons, notched square, four pillars, sliced square, notches with pylons, bridge with pylons, and an island. The first act stays mostly square; the opening footprint matches Jump exactly; shape names and coaching text are omitted from the player HUD and clear screen. The island uses the same inner-rail builder as Turret Belt. Jump's masks, area accounting, and progression stay unchanged.
 
 The local Fillit reference was checked against `C:/Users/wiafe/Projects/Decompiled/fillit/analysis/gameData_single.json`, `analysis/FINDINGS.md`, and the hole construction in `src/BoardCubeVisualHelper.cs`:
 
@@ -60,4 +60,4 @@ The local Fillit reference was checked against `C:/Users/wiafe/Projects/Decompil
 - `Lock And Key` (41) introduces room/gate ordering through blocks and keys. `Use The Portals` (74) uses flags and portals with no percentage goal.
 - These suggest teaching spatial mechanics before layering time pressure or objectives, and treating shape, target, and hazard budget as separate tuning knobs.
 
-This pass uses that lesson for walkable island rails, inset coasts, and a narrower bridge. It retains the established 75% territory/card contract and limited enemies. Pre-claimed footholds, gate/key rooms, moving walls, portals, objective sectors, and variable targets are future candidates, not implemented features. No Fillit code or map assets were imported.
+This pass uses that lesson for walkable island rails, inset coasts, and a narrower bridge. Roguelite territory goals rise from 60% to a maximum of 90% by encounter depth; card milestones remain tied to capturable arena size. Roguelite scales from one to three Anomalies, with at least two on divided layouts and opposite-side starting coverage. Pre-claimed footholds, gate/key rooms, moving walls, portals, and objective sectors remain future candidates. No Fillit code or map assets were imported.

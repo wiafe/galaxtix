@@ -1,38 +1,45 @@
 # Roguelite prototype
 
-Choose **Roguelite** from the main menu. Surveyor is free; Lancer and Sapper each cost 40 salvage in Ships. All three share permanent upgrades and reuse Jump's controls, movement, capture mechanics, enemy simulation, icons, and ship art. Jump and Battle Royale remain separate modes.
+Choose **Roguelite** from the main menu. Surveyor is free; Lancer and Sapper each cost 10 salvage in Ships. All three share permanent upgrades and reuse Jump's controls, movement, capture mechanics, enemy simulation, icons, and ship art. Jump and Battle Royale remain separate modes.
 
 ## Expedition
 
-A run has eight sectors. Claim 75% in each, then Continue after the sector-clear fanfare. Hull and the three installed systems carry forward; ability cooldowns refresh. The last sector completes the expedition.
+A run has eight encounters, selected one jump at a time on a branching star chart. Launch from the hangar opens the chart; meet the arena's territory goal, then choose Star Chart after the sector-clear fanfare. Goals rise by encounter depth: **60%, 65%, 70%, 75%, 80%, 85%, 90%, 90%**, capped at 90%. Alternate routes at the same depth share the goal. The map preview, HUD, and progress bar display that destination's target. Hull and the three installed systems carry forward; ability cooldowns refresh. The last sector completes the expedition.
+
+The survey route retains the original progression below. Alternate destinations use a different arena shape while enemy difficulty follows encounter depth.
 
 | Sector | Arena outline | Introduction |
 | --- | --- | --- |
-| 1 | Square, 52 × 52 cells / 416 × 416 pixels | Matches Jump's small opening; no turret, spawner, or corruption. |
-| 2 | Rectangle, 68 × 48 cells | Matches Jump's second sector. |
-| 3 | Square, 68 × 68 cells | Matches Jump's larger third sector. |
-| 4 | Oval, 120 × 64 cells | Jump's circle fitted into a wider field; one turret. |
-| 5 | Cross, 160 × 68 cells | Opposing arms create shorter cuts across the field. |
-| 6 | Notches, 160 × 68 cells | Inward coast creates new starting points. |
-| 7 | Bridge, 160 × 68 cells | Two lobes connected through a narrow crossing. |
-| 8 | Island, 160 × 68 cells | A 40 × 18 rock core with a walkable rail; corruption begins. |
+| 1 | Square, 52 × 52 cells | Small opening; one Anomaly, no turret or blockers. |
+| 2 | Square, 60 × 60 cells | Two interior pylons with walkable rails. |
+| 3 | Notched square, 68 × 68 cells | Opposing edge notches, two pylons, two Anomalies covering opposite sides. |
+| 4 | Square, 68 × 68 cells | Four interior pillars. |
+| 5 | Square, 68 × 68 cells | Two deep slices entering from the top edge. |
+| 6 | Notches, 80 × 68 cells | Two pylons inside a notched outline; three Anomalies. |
+| 7 | Bridge, 80 × 68 cells | Two lobes, one pylon each, connected through a narrow crossing. |
+| 8 | Island, 80 × 68 cells | A 24 × 24 rock core with a walkable rail; corruption begins. |
 
-The first three fields grow in capturable area. Later sectors change topology within the 1280 × 544 maximum footprint: a bridge need not have more area to offer a different challenge. Every sector keeps one Anomaly and at most two starting Sparx; sectors 2–8 have one turret and no spawners. Existing Anomaly speed/size progression remains. Clear screens retain the celebration and Continue button without shape announcements or tactical hints. The gameplay HUD also omits shape names.
+The chart has shared opening, fourth, and final encounters, with two destinations at every other depth. Routes stay in their lane between forks and merges, without diagonal cross-links. Routes are generated once per expedition and stay fixed while selecting. Survey encounters retain normal rewards; salvage encounters add two pickups and a second turret; repair encounters restore one hull on clear, capped at the ship’s starting maximum. The selected destination previews its actual arena coast, threats, and reward. Hull, carried salvage, installed systems, and the traveled route remain visible. Nodes use symbols for survey, salvage, repair, and the finale; only the focused destination gets a label. The expanded map has a compact status row above and an arena/threat/bonus strip below. Empty system slots and baseline reward copy are omitted. The focused reachable incoming route lights up, while completed nodes show checkmarks. Click any node to inspect its arena, threats, and reward, including locked or past destinations. Left/Right browses columns and Up/Down switches nodes. Only a connected destination in the next column can launch with Jump or Enter; other previews show Locked or Cleared. Escape banks and exits from the chart.
+
+The act uses angular, mostly square Jump silhouettes instead of an oval or stretched cross. On the survey route, the first three fields grow in capturable area; later fields vary topology. Interior pylons and the island use Jump's rock cutouts with one-cell walkable rails. Anomaly counts rise from one at depths 1–2, to two at 3–5, to three at 6–8. Notched, sliced, and bridge destinations always have at least two, including when offered early. The first two spawn on opposite sides with legal, non-overlapping full beams; the third starts toward the upper region. Enemies remain free to move after spawning. The chart reports the selected destination's actual count.
+
+Every sector keeps at most two starting Sparx; survey and repair encounters at depths 2–8 have one turret and no spawners. Existing Anomaly speed/size progression remains. Clear screens retain the celebration and Star Chart button without shape announcements or tactical hints. The gameplay HUD also omits shape names.
 
 The island is an inner coast: first cut to its rail, walk around it, then cut outward. Bridging without enclosing a region claims only the trail. Initial safe rails and rock do not advance territory or card milestones; the shared victory threshold uses the same capturable-area denominator.
 
 Cells remain square. A 160 × 104 backing grid permits wider arenas without changing movement speed. The territory bar stays above the field and installed systems below. Entry traces the playable coast without an extra square frame. Jump's own arena sizing remains unchanged.
 
-First-time captures fill the bar and earn choices at 20%, 40%, and 60% in every sector. Captured-cell particles travel to the bar before cards appear. Large captures queue every earned choice, including those on the winning cut. The simulation pauses during reward delivery, drafting, replacement, and installation. Repeated territory never earns progress twice.
+First-time captures fill the bar. Draft count follows actual capturable area, excluding rock and starting rails: fewer than 3,800 cells gives one choice at 35%; 3,800–4,399 gives two at 25% and 55%; 4,400 or more gives three at 20%, 40%, and 60%. Three is the maximum. The bar and draft screen show only that arena’s earned/remaining choices. Captured-cell particles travel to the bar before cards appear. Large captures queue every earned choice, including those on the winning cut. The simulation pauses during reward delivery, drafting, replacement, and installation. Repeated territory never earns progress twice.
 
-Each sector gives three choices, for twenty-four across a completed expedition. The first three fill empty system slots. Later offers can upgrade an installed system to rank III or replace one with a new system. Replacement previews the current systems and permits cancellation before changing the build. With three systems installed, Keep Build (Escape or click) passes an offer without replacing anything; it consumes that choice and resolves queued captures normally. Card ranks reset on a new expedition. Rank II increases the principal effect by 25%; rank III by 50%. Anchor instead reduces recharge time by the corresponding factor. Cards and pause show resulting values.
+The first three survey sectors give one choice each, gradually filling the three system slots. The full survey route gives thirteen choices; alternate routes vary with arena size. Each draft still presents three cards, from which the player installs one. Later offers can upgrade an installed system to rank III or replace one with a new system. Replacement previews the current systems and permits cancellation before changing the build. With three systems installed, Keep Build (Escape or click) passes an offer without replacing anything; it consumes that choice and resolves queued captures normally. Card ranks reset on a new expedition. Rank II increases the principal effect by 25%; rank III by 50%. Anchor instead reduces recharge time by the corresponding factor. Cards and pause show resulting values.
 
-Drafts, installation, and clears retain synth cues, radial pulses, and beam effects. Continue appears after 2.2 seconds. Intermediate clears keep the focus on the completed sector. Salvage banks exactly once when the expedition ends by completion, defeat, or early exit. Continuing between sectors does not settle the run.
+Drafts, installation, and clears retain synth cues, radial pulses, and beam effects. Star Chart appears after 2.2 seconds. Intermediate clears keep the focus on the completed sector. Salvage banks exactly once when the expedition ends by completion, defeat, or early exit. Continuing between sectors does not settle the run.
 
 ## Controls and hangar
 
 - WASD / arrows: move or face. Surveyor holds Space to draw, Shift for slow draw. Lancer presses Space to fire and ride a line. Sapper holds Space to charge and releases to detonate.
-- Q: Afterburner, if installed. E / Ctrl: Hardlight, if installed.
+- Claimed interiors and coasts use the ship's normal speed. The displayed ship follows grid movement at its travel speed instead of repeatedly easing to a stop at each cell; lance riding and Leap landing keep their distinct travel rates.
+- Q: the opening movement module; hold and release to aim Leap. E / Ctrl: Afterburner or Hardlight, if installed. Only one of these secondary active systems can be equipped at a time.
 - Escape during play pauses. Resume preserves the cut; End Expedition banks salvage. Escape at an intermediate clear banks and exits.
 - Arrows and Enter, or mouse: navigate and choose. R during drafting spends a Scanner rescan, when available.
 - Back, Upgrades, and Ships sit at top left; Launch stands alone at top right. The salvage balance is in the footer.
@@ -41,7 +48,7 @@ Drafts, installation, and clears retain synth cues, radial pulses, and beam effe
 
 ## Permanent systems
 
-Every track has ten ranks, costing 8 salvage initially and 4 more for each following rank. The inspector displays concrete before/after values. Reactor text adapts to the selected ship.
+Every track has ten ranks, costing 2 salvage initially and 1 more for each following rank. The inspector displays concrete before/after values. Reactor text adapts to the selected ship.
 
 | System | Per rank | Rank 5 | Rank 10 |
 | --- | --- | --- | --- |
@@ -54,9 +61,11 @@ Every track has ten ranks, costing 8 salvage initially and 4 more for each follo
 
 Containment becomes purchasable after reaching sector 8. Hull no longer mixes its shield benefit with corruption resistance. At Containment rank 10, overload takes about 5.7 seconds of continuous exposure instead of 4. Engines' milestone and Slipstream share the same boost; the card can improve its strength without stacking a second copy.
 
-Scanner rescans replace the three offers without consuming a capture reward. Installed rank-III systems cannot be offered as upgrades. Corruption cards enter the pool in sector 8; Void Harvest becomes eligible when turrets are present.
+The first earned draft always presents Hardening, Leap, and Dash at rank I. It cannot be rescanned and does not spend a Scanner charge. Subsequent drafts offer passive systems or one E-bound active system; the installed movement module can appear as a rank upgrade once the three slots are full. Unselected movement modules stay out of later drafts. Space retains the selected ship's native action; a successful Lancer activation no longer displays a redundant center-screen announcement.
 
-Salvage comes from enclosing board pickups using the shared Flux hexagon, collection effects, and enclosure logic. A normal pickup pays 4, or 5 on a Surveyor slow cut, before Extractor. Three baseline pickups give 12 salvage per sector. Territory and victory alone award no currency. Extractor's fractional rewards accumulate and persist between runs so early +2% purchases are not lost to rounding. Hazard enclosure rewards and Void Harvest feed the same award path.
+Scanner rescans replace later offers without consuming a capture reward. Installed rank-III systems cannot be offered as upgrades. Corruption cards enter the pool in sector 8; Void Harvest becomes eligible when turrets are present.
+
+Salvage comes from enclosing board pickups using the shared Flux hexagon, collection effects, and enclosure logic. A normal pickup pays 1, or 1.25 on a Surveyor slow cut, before Extractor. Three baseline pickups give 3 salvage per sector. Captured turrets/nests grant 0.25; Void Harvest adds 1.25 at rank I. Territory and victory alone award no currency. Extractor's fractional rewards accumulate and persist between runs so early +2% purchases are not lost to rounding. Hazard enclosure rewards and Void Harvest feed the same award path.
 
 ## Temporary systems
 
@@ -64,7 +73,10 @@ These are rank-I effects. Ranked versions retain the trigger and strengthen the 
 
 | System | Effect |
 | --- | --- |
-| Afterburner | Q: +80% cut/riding/charge speed for 3 seconds; 14-second recharge. |
+| Hardening | Q: hardens the trail behind Surveyor or Lancer at 10 cells/second for 3 seconds. Sapper instead braces its charging disc against one hit. 12-second recharge. |
+| Leap | Hold Q from a safe coast to aim; release to leap to the target and build an exposed wall in both directions. 16-second recharge after landing. |
+| Dash | Q: moves forward at 3× speed for 0.3 seconds; rock still blocks movement. Surveyor draws, Lancer boosts along its coast or tether, and Sapper moves freely. 8-second recharge. |
+| Afterburner | E: +80% cut/riding/charge speed for 3 seconds; 14-second recharge. |
 | Hardlight | E: protects the trail or charging disc for 2 seconds; 18-second recharge. |
 | Anchor | A lethal exposed hit returns to safe ground without losing a hull; 24-second recharge. |
 | Ion Thread / Ion Field | Contact repels enemies and freezes them for 1.5 seconds; 10-second recharge. |
@@ -74,18 +86,20 @@ These are rank-I effects. Ranked versions retain the trigger and strengthen the 
 | Reactor Loop | Every third capture removes 6 seconds from cooldowns. |
 | Compression | Cuts below 4% add +15% cut/charge speed, up to +45%; a cut of at least 8% resets it. |
 | Phase Line / Phase Charge | Protects the first 1.5 seconds of a cut or charge. |
-| Void Harvest | Enclosing a nest or turret grants 5 extra salvage. |
+| Void Harvest | Enclosing a nest or turret grants 1.25 extra salvage. |
 | Stasis Wake | Captures freeze enemies for 1 second. |
 
 Protection cards do not prevent corruption overload. Corruption grows in free territory every three seconds; capture cleanses enclosed infection. Sapper accumulates exposure when occupying infection. Other ships accumulate it while their exposed trail crosses infection.
 
 ## Saves and verification
 
-Profile version 5 lives in `user://galaxtix_roguelite.json`, separate from Jump's currencies, ownership, upgrades, and records. Version 1/2/3/4 profiles retain original ranks, balance, and ships; new tracks start at zero. The profile stores highest reached sector, fractional salvage, and Containment access. Existing profiles that reached the old corruption sector retain that unlock. Unknown or unowned ship selections fall back to Surveyor.
+Profile version 6 lives in `user://galaxtix_roguelite.json`, separate from Jump's currencies, ownership, upgrades, and records. Version 1–5 profiles retain their ranks, ships, and unlocks. Existing salvage balances and fractional remainders convert at 4 old units to 1 new unit, matching the price reduction; conversion remainders are preserved. Version 6 profiles do not convert again. The profile stores highest reached sector, fractional salvage, and Containment access. Existing profiles that reached the old corruption sector retain that unlock. Unknown or unowned ship selections fall back to Surveyor.
 
 Failed purchases refund their price and restore ownership/rank; failed selection saves restore the prior ship. End-of-run save failures retain rewards in memory and offer Retry Save. Active runs do not resume after closing the game.
 
 `RogueliteGame` extends `Game` through stat, capture, economy, and presentation hooks. Shared defaults retain Jump's behavior. It never swaps the campaign save dictionary.
+
+Capture rebuilds sample occupancy into padded byte masks, restrict coast/border searches to exposed regions, and upload territory pixels in one buffer. This preserves the original border ordering, coast segments, and dither pixels. Corruption strokes are cached in field-local coordinates and rebuilt after spreading, cleansing, captures, hardening, or recovery; their color pulse still animates each frame. Corruption spreads from the previous tick's mask using integer neighbour indices, preserving one-cell growth and blocked-cell rules.
 
 Run with Godot 4.7:
 
@@ -93,10 +107,22 @@ Run with Godot 4.7:
 godot --headless --path . --quit-after 1200 tests/roguelite_smoke.tscn -- --nosave --no-steam
 godot --headless --path . --quit-after 1200 tests/roguelite_ships_smoke.tscn -- --nosave --no-steam
 godot --headless --path . --quit-after 1200 tests/roguelite_expedition_smoke.tscn -- --nosave --no-steam
+godot --headless --path . --quit-after 4000 tests/roguelite_movement_smoke.tscn -- --nosave --no-steam
+godot --headless --path . --quit-after 4000 tests/roguelite_timing_smoke.tscn -- --nosave --no-steam
+godot --headless --path . --quit-after 4000 tests/roguelite_targets_smoke.tscn -- --nosave --no-steam
+godot --headless --path . --quit-after 4000 tests/roguelite_optimization_smoke.tscn -- --nosave --no-steam
 ```
 
-The expedition suite covers all eight arenas, real inter-sector transit, queued winning-cut rewards, persistent builds and hull, bounded slots/ranks, upgrades/replacement/cancellation, Scanner offers and rescans, six tracks, Containment gating, fractional salvage, and single settlement. Existing suites cover ship controls, captures, card effects, input, transactions, text bounds, and mode isolation. Assertions count as failures even if Godot exits with code zero.
+The expedition suite covers all eight arenas, repeated full-beam spawn validation, opposing-side coverage and real middle cuts, real inter-sector transit, queued winning-cut rewards, persistent builds and hull, bounded slots/ranks, upgrades/replacement/cancellation, Scanner offers and rescans, six tracks, Containment gating, fractional salvage, area-based draft limits, version-6 currency conversion, single settlement, generated routes, mouse preview/jump input, alternate geometry, and salvage/repair encounters. Existing suites cover ship controls, captures, card effects, input, transactions, text bounds, and mode isolation. Assertions count as failures even if Godot exits with code zero.
 
 For graphical screenshots, append `--rogue-shots=<absolute directory>`. For disk persistence checks, point APPDATA and LOCALAPPDATA at `.godot/test-user` and append `--rogue-save-test` to the original suite; it validates that directory before enabling writes.
 
-This slice follows the brainstorming document's numerical upgrades, milestones, distinct ships, and changing run builds. Further galaxies, routes, permanent card-family unlocks, and equipment/loadouts remain future work. Values and corruption's introduction in sector 8 need player balance feedback before extending the campaign further.
+The movement suite exercises all three opening modules on all three ships through real input, including hardening captures, disc protection, leap aiming and wall completion, dash speed and rock collisions, cooldowns, separate Q/E bindings, fixed opening offers, and the silent Lancer activation.
+
+The timing suite compares coast and interior travel for every roguelite ship, with base and upgraded engines at 30, 60, and 120 FPS. It measures visual speed consistency and verifies that releasing input and hitting rock stop the ship without drift.
+
+The targets suite uses real captures just below and exactly at every sector goal, checks progress-bar scaling and the 90% cap, and verifies Jump retains its existing 75% goal.
+
+The optimization suite compares geometry and texture output with frozen reference algorithms across arenas, random cell states, empty/full fields, and all galaxy patterns. It checks corruption growth and visual cache invalidation after captures, cleansing, hardening, Anchor recovery, and restart.
+
+This slice follows the brainstorming document's numerical upgrades, milestones, distinct ships, and changing run builds. Further galaxies, permanent card-family unlocks, and equipment/loadouts remain future work. Values and corruption's introduction in sector 8 need player balance feedback before extending the campaign further.
