@@ -72,6 +72,11 @@ var corruption := PackedByteArray()
 var corruption_strokes := PackedVector2Array()
 var corruption_visual_dirty := true
 var corruption_active := false # Introduced after the bridge, in the final island sector.
+# Objective encounters: beacon discs to enclose, a cargo pod to run home, a breach to seal.
+var zones: Array[Dictionary] = []
+var cargo := {}
+var breach := {}
+var last_objectives := {} # Handed from sector_layout to start_level; Game keeps its layout local.
 var spread_clock := SPREAD_SECONDS
 var containment_time := 0.0
 var exposure := 0.0
@@ -191,19 +196,388 @@ func sector_layout(g: Dictionary, lvl: int, rim: int) -> Dictionary:
 		occupied.append(cell)
 	layout.turrets.clear()
 	layout.spawners.clear()
-	for i in (2 if encounter_kind(lvl) == "salvage" else (1 if lvl >= 2 else 0)):
+	for i in Sectors.turret_count(encounter_kind(lvl), lvl):
 		var cell := layout_pick(placement, 10, occupied, 28.0, layout.shape, layout.arena)
 		layout.turrets.append({"cell": cell, "axis": Vector2i.DOWN})
 		occupied.append(cell)
+	# Objectives draw after pickups and turrets so existing kinds keep their placements.
+	place_objectives(layout, lvl, placement, occupied)
 	return layout
 
 func sector_shape(_g: Dictionary, lvl: int, _rng: RandomNumberGenerator) -> Array:
 	return Sectors.holes(lvl, Vector2i(grid_width, grid_height))
 
+# ------------------------------------------------------------------ objective encounters
+func place_objectives(layout: Dictionary, lvl: int, placement: RandomNumberGenerator, occupied: Array) -> void:
+	var kind := encounter_kind(lvl)
+	last_objectives = {"kind": kind, "zones": [], "pod": Vector2i(-1, -1), "breach": {}}
+	match kind:
+		"beacon":
+			for i in Sectors.objective_count(kind, lvl):
+				var disc := pick_disc(placement, Sectors.BEACON_RADIUS, occupied, layout.arena)
+				last_objectives.zones.append(disc)
+				occupied.append(disc.cell)
+		"cargo":
+			last_objectives.pod = layout_pick(placement, 10, occupied, 40.0, layout.shape, layout.arena)
+		"breach":
+			last_objectives.breach = pick_disc(placement, Sectors.BREACH_RADIUS, occupied, layout.arena)
+
+## A disc centre whose every cell is playable void, clear of pickups, turrets and the start.
+## Rails are mask 1 and begin claimed, so a disc touching one would start half captured.
+## Candidates come straight from the arena's free cells; the shared arena is never mutated.
+func pick_disc(placement: RandomNumberGenerator, radius: int, avoid: Array, arena: Dictionary) -> Dictionary:
+	var free: Array = arena.get("free_cells", [])
+	if free.is_empty():
+		return {"cell": layout_pick(placement, 10, avoid, 30.0), "radius": radius}
+	var fallback := Vector2i(-1, -1)
+	var fallback_d := -1.0
+	for r in range(radius, 0, -1):
+		var best := Vector2i(-1, -1)
+		var best_d := -1.0
+		for tries in 80:
+			var c: Vector2i = free[placement.randi_range(0, free.size() - 1)]
+			if not disc_free(c, r, arena.mask):
+				continue
+			var d := 1e9
+			for a in avoid:
+				d = minf(d, Vector2(c - (a as Vector2i)).length())
+			if d > fallback_d:
+				fallback_d = d
+				fallback = c
+			if d < r + 4:
+				continue
+			if d > best_d:
+				best_d = d
+				best = c
+			if d > 30.0:
+				break
+		if best.x >= 0:
+			return {"cell": best, "radius": r}
+	if fallback.x >= 0:
+		return {"cell": fallback, "radius": 1}
+	return {"cell": free[placement.randi_range(0, free.size() - 1)], "radius": 1}
+
+func disc_free(c: Vector2i, radius: int, mask: PackedByteArray) -> bool:
+	for dy in range(-radius, radius + 1):
+		for dx in range(-radius, radius + 1):
+			if dx * dx + dy * dy > radius * radius:
+				continue
+			var q := c + Vector2i(dx, dy)
+			if not in_bounds(q) or mask[idx(q.x, q.y)] != 2:
+				return false
+	return true
+
+func disc_cells(c: Vector2i, radius: int) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	for dy in range(-radius, radius + 1):
+		for dx in range(-radius, radius + 1):
+			var q := c + Vector2i(dx, dy)
+			if dx * dx + dy * dy <= radius * radius and in_bounds(q):
+				out.append(idx(q.x, q.y))
+	return out
+
+## Claimed means land: a live or hardened trail crossing the disc does not count.
+func disc_claimed_fraction(c: Vector2i, radius: int) -> float:
+	var cells_in := disc_cells(c, radius)
+	var claimed := 0
+	for i in cells_in:
+		if cells[i] == CLAIMED:
+			claimed += 1
+	return float(claimed) / maxi(1, cells_in.size())
+
+func setup_objectives() -> void:
+	zones.clear()
+	cargo.clear()
+	breach.clear()
+	var found: Dictionary = last_objectives
+	last_objectives = {}
+	if found.is_empty() or String(found.kind) != encounter_kind(level):
+		return
+	match encounter_kind(level):
+		"beacon":
+			for disc in found.zones:
+				zones.append({"cell": disc.cell, "radius": disc.radius, "captured": false, "spin": 0.0})
+		"cargo":
+			cargo = {"cell": found.pod, "carrying": false, "delivered": 0, "runs": Sectors.objective_count("cargo", level), "done": false}
+		"breach":
+			breach = {"cell": found.breach.cell, "radius": found.breach.radius, "sealed": false, "pressure": 0.0, "spin": 0.0}
+
+func objective_complete() -> bool:
+	match encounter_kind(level):
+		"beacon":
+			for zone in zones:
+				if not zone.captured:
+					return false
+			return not zones.is_empty()
+		"cargo":
+			return not cargo.is_empty() and int(cargo.delivered) >= int(cargo.runs)
+		"breach":
+			return not breach.is_empty() and bool(breach.sealed) and capture_percent >= Sectors.capture_goal(level)
+	return capture_percent >= Sectors.capture_goal(level)
+
+## Advances every objective from the current board and returns a note for the HUD.
+func check_objectives() -> String:
+	match encounter_kind(level):
+		"beacon": return update_zones()
+		"cargo": return update_cargo()
+		"breach": return update_breach_seal()
+	return ""
+
+## Off-claim completions (a Sapper walking cargo home, a hardened Leap wall) still clear.
+func settle_objective() -> void:
+	if pending_clear or phase != "run" or state != State.PLAYING:
+		return
+	if objective_complete():
+		begin_draft_reward()
+		level_clear()
+
+func update_zones() -> String:
+	var note := ""
+	for zone in zones:
+		if zone.captured or disc_claimed_fraction(zone.cell, zone.radius) < 1.0:
+			continue
+		zone.captured = true
+		award_flux(1.0)
+		var secured := 0
+		for other in zones:
+			if other.captured:
+				secured += 1
+		var c := center(zone.cell)
+		sparks.ripple(c, (zone.radius + 0.5) * CELL, 320.0, 0.6, Palette.GREEN)
+		sparks.burst(c, 40, 200.0, 1.5, 0.7, Palette.CYAN)
+		note = "BEACON SECURED %d/%d" % [secured, zones.size()]
+	return note
+
+func zone_contested(zone: Dictionary) -> bool:
+	var c := center(zone.cell)
+	for q: QixBody in qixes:
+		if q.c.distance_to(c) <= (zone.radius + 0.5) * CELL:
+			return true
+	return false
+
+func update_cargo() -> String:
+	if cargo.is_empty() or bool(cargo.done):
+		return ""
+	if bool(cargo.carrying):
+		if not exposed():
+			return deliver_cargo()
+		return ""
+	check_cargo_contact()
+	if bool(cargo.carrying):
+		return ""
+	var cell: Vector2i = cargo.cell
+	if cells[idx(cell.x, cell.y)] != FREE:
+		# Enclosed without contact: the pod is unreachable on land, so it drifts elsewhere.
+		relocate_pod()
+	return ""
+
+## Pickup is contact by the ship itself: the trail head, a ridden lance cell, or the Sapper.
+## A lance ray marks the cell early, but the run starts only when the ride reaches it.
+func check_cargo_contact() -> void:
+	if cargo.is_empty() or bool(cargo.carrying) or bool(cargo.done):
+		return
+	if exposed() and p == cargo.cell:
+		cargo.carrying = true
+		set_msg("CARGO ABOARD", 1.0)
+		sparks.ripple(center(cargo.cell), 4.0, 240.0, 0.4, Palette.YELLOW)
+		lines.spike(1.0, 0.2)
+
+func deliver_cargo() -> String:
+	cargo.carrying = false
+	cargo.delivered = int(cargo.delivered) + 1
+	award_flux(2.0)
+	sparks.burst(vis, 40, 200.0, 1.5, 0.7, Palette.YELLOW)
+	sparks.ripple(vis, 6.0, 300.0, 0.5, Palette.GREEN)
+	if int(cargo.delivered) >= int(cargo.runs):
+		cargo.done = true
+	else:
+		relocate_pod()
+	return "CARGO DELIVERED %d/%d" % [cargo.delivered, cargo.runs]
+
+func drop_cargo() -> void:
+	if cargo.is_empty() or bool(cargo.done):
+		return
+	if bool(cargo.carrying):
+		cargo.carrying = false
+		set_msg("CARGO LOST", 1.2)
+	var cell: Vector2i = cargo.cell
+	if cells[idx(cell.x, cell.y)] != FREE:
+		relocate_pod()
+
+## A fresh void cell, far from the ship and not hugging the coast, drawn from the live board.
+func relocate_pod() -> void:
+	var free: Array = field_arena.get("free_cells", [])
+	var best := Vector2i(-1, -1)
+	var best_d := -1.0
+	for tries in 120:
+		if free.is_empty():
+			break
+		var c: Vector2i = free[rng.randi_range(0, free.size() - 1)]
+		if cells[idx(c.x, c.y)] != FREE:
+			continue
+		var d := Vector2(c - p).length()
+		if d <= best_d:
+			continue
+		var open := true
+		for dy in range(-3, 4):
+			for dx in range(-3, 4):
+				var q := c + Vector2i(dx, dy)
+				if not in_bounds(q) or cells[idx(q.x, q.y)] != FREE:
+					open = false
+		if not open and best_d >= 0.0:
+			continue
+		best_d = d
+		best = c
+		if open and d > 40.0:
+			break
+	if best.x < 0:
+		# No void left to hide in: the remaining runs are forfeit rather than impossible.
+		cargo.runs = cargo.delivered
+		cargo.done = true
+		return
+	cargo.cell = best
+	sparks.ripple(center(best), 6.0, 200.0, 0.5, Palette.YELLOW)
+
+func update_breach_seal() -> String:
+	if breach.is_empty() or bool(breach.sealed):
+		return ""
+	if disc_claimed_fraction(breach.cell, breach.radius) < 1.0:
+		return ""
+	breach.sealed = true
+	award_flux(3.0)
+	var c := center(breach.cell)
+	sparks.ripple(c, (breach.radius + 0.5) * CELL, 360.0, 0.7, Palette.GREEN)
+	sparks.burst(c, 60, 240.0, 1.5, 0.8, Palette.MAGENTA)
+	return "BREACH SEALED"
+
+func seed_breach() -> void:
+	if breach.is_empty():
+		return
+	for i in disc_cells(breach.cell, breach.radius):
+		if cells[i] == FREE:
+			corruption[i] = 1
+	corruption_visual_dirty = true
+
+## The open breach cannot be cleansed, and its spread is the fail meter: past the limit
+## the ship takes a hit and the infection collapses back to the source.
+func update_breach_pressure() -> void:
+	seed_breach()
+	var infected := 0
+	for i in grid_width * grid_height:
+		if corruption[i] != 0 and cells[i] == FREE:
+			infected += 1
+	breach.pressure = float(infected) / maxi(1, base_free)
+	if breach.pressure < Sectors.BREACH_LIMIT:
+		return
+	die("CONTAINMENT LOST")
+	if state != State.DYING:
+		return # A shielded ship keeps its hull; the meter is checked again next tick.
+	corruption.fill(0)
+	seed_breach()
+	breach.pressure = float(disc_cells(breach.cell, breach.radius).size()) / maxi(1, base_free)
+	spread_clock = SPREAD_SECONDS
+
+func objective_label() -> String:
+	match encounter_kind(level):
+		"beacon":
+			var secured := 0
+			for zone in zones:
+				if zone.captured:
+					secured += 1
+			return "BEACONS %d/%d" % [secured, zones.size()]
+		"cargo":
+			return "CARGO %d/%d" % [int(cargo.get("delivered", 0)), int(cargo.get("runs", 0))]
+	return "CAPTURE %d%%" % Sectors.capture_goal(level)
+
+func bar_scale() -> float:
+	return 100.0 if not Sectors.territory_goal(encounter_kind(level)) else float(Sectors.capture_goal(level))
+
+func advance_objective_visuals(dt: float) -> void:
+	for zone in zones:
+		if not zone.captured:
+			zone.spin = float(zone.spin) + dt * (0.6 + (4.0 if zone_contested(zone) else 0.0))
+	if not breach.is_empty() and not bool(breach.sealed):
+		breach.spin = float(breach.spin) + dt * (0.6 + 6.0 * float(breach.pressure) / Sectors.BREACH_LIMIT)
+
+func draw_ring(c: Vector2, radius: float, spin: float, color: Color, thick := 1.4) -> void:
+	# Three arcs with gaps, spinning faster as the objective is contested.
+	for k in 3:
+		var a0 := spin + k * TAU / 3.0
+		arc(c, radius, a0, a0 + TAU / 6.0, color, thick)
+
+func draw_objectives() -> void:
+	for zone in zones:
+		var c := center(zone.cell)
+		var radius := (float(zone.radius) + 0.5) * CELL
+		if zone.captured:
+			lines.circle(c, radius, Palette.GREEN, 24, 0.3, 0.1, 1.0)
+			lines.circle(c, 3.0, Palette.GREEN, 6, 0.8, 0.3, 0.9)
+			continue
+		draw_ring(c, radius, float(zone.spin), Palette.CYAN)
+		var fraction := disc_claimed_fraction(zone.cell, zone.radius)
+		if fraction > 0.0:
+			arc(c, radius - 6.0, -PI * 0.5, -PI * 0.5 + TAU * fraction, Palette.GREEN, 1.0)
+		lines.circle(c, 3.0, Palette.FULLBRIGHT, 6, 1.0, 0.6, 0.9)
+	if not cargo.is_empty() and not bool(cargo.done):
+		var pulse := 0.5 + 0.5 * sin(time * 3.0)
+		if bool(cargo.carrying):
+			draw_pod(vis + Vector2(12, -12), 6.0, pulse)
+			lines.circle(center(anchor), 8.0 + 3.0 * pulse, Palette.YELLOW, 8, 0.8, 0.3, 1.0)
+		else:
+			var c := center(cargo.cell)
+			draw_pod(c, 9.0, pulse)
+			var label_color := Palette.YELLOW
+			label_color.a = 0.5 + 0.4 * pulse
+			VectorFont.draw(lines, "CARGO", c + Vector2(13, -6), 10, label_color, 0.5, 0.3)
+	if not breach.is_empty():
+		var c := center(breach.cell)
+		var radius := (float(breach.radius) + 0.5) * CELL
+		if bool(breach.sealed):
+			lines.circle(c, radius, Palette.DIM, 16, 0.3, 0.1, 1.0)
+		else:
+			draw_ring(c, radius, float(breach.spin), Palette.MAGENTA)
+			lines.circle(c, 3.0, Palette.MAGENTA, 6, 1.0, 0.6, 0.9)
+
+func draw_pod(c: Vector2, size: float, pulse: float) -> void:
+	var pts := PackedVector2Array()
+	for k in 4:
+		var a := time * 1.5 + k * PI * 0.5
+		pts.append(c + Vector2(cos(a), sin(a)) * (size + 1.5 * pulse))
+	lines.polyline(pts, true, Palette.YELLOW, 1.2, 0.5, 1.2)
+	lines.circle(c, 2.5, Palette.FULLBRIGHT, 6, 1.0, 0.6, 0.9)
+
+## Anomalies guard uncaptured beacons and hunt a cargo carrier: a loose pull that the
+## random re-steer keeps fighting, so windows still open.
+func steer_anomaly(q: QixBody, dt: float, speed: float) -> void:
+	if q.v.length_squared() < 0.001 or speed <= 0.0:
+		return
+	var target := Vector2.ZERO
+	var rate := 0.0
+	if not cargo.is_empty() and bool(cargo.carrying):
+		target = vis
+		rate = 1.2
+	elif not zones.is_empty():
+		var open: Array[Dictionary] = []
+		for zone in zones:
+			if not zone.captured:
+				open.append(zone)
+		if open.is_empty():
+			return
+		var zone: Dictionary = open[maxi(0, qixes.find(q)) % open.size()]
+		var c := center(zone.cell)
+		if q.c.distance_to(c) <= 3.0 * float(zone.radius) * CELL:
+			return
+		target = c
+		rate = 0.8
+	else:
+		return
+	var toward := (target - q.c).normalized() * speed
+	q.v = q.v.slerp(toward, 1.0 - exp(-dt * rate)).normalized() * speed
+
 func start_level() -> void:
 	reset_movement_module()
-	corruption_active = level >= Sectors.CORRUPTION_SECTOR
-	if corruption_active: progress.containment_unlocked = true
+	corruption_active = level >= Sectors.CORRUPTION_SECTOR or encounter_kind(level) == "breach"
+	if level >= Sectors.CORRUPTION_SECTOR: progress.containment_unlocked = true
 	progress.best_sector = maxi(progress.best_sector, mini(level, EXPEDITION_SECTORS))
 	capture_percent = 0.0
 	displayed_capture = 0.0
@@ -215,6 +589,7 @@ func start_level() -> void:
 	rerolls_left = progress.rank_of("scanner") / 5
 	sector_salvage_start = earned_salvage
 	super.start_level()
+	setup_objectives() # Before seeding corruption, which a breach sector sources from its disc.
 	draft_capture = Sectors.draft_milestones(base_free)
 	while qixes.size() < Sectors.anomaly_count(level, arena_stage(level)):
 		spawn_qix()
@@ -266,6 +641,9 @@ func seed_corruption() -> void:
 	corruption_visual_dirty = true
 	if not corruption_active:
 		return
+	if encounter_kind(level) == "breach" and not breach.is_empty():
+		seed_breach()
+		return
 	for source in [Vector2i(30, 33), Vector2i(72, 62)]:
 		for dy in range(-7, 8):
 			for dx in range(-7, 8):
@@ -278,6 +656,10 @@ func run_rim() -> int:
 	return 0
 
 func capture_target() -> float:
+	# Objective sectors never clear on territory alone; an open breach holds the goal back.
+	var kind := encounter_kind(level)
+	if not Sectors.territory_goal(kind) or (kind == "breach" and not bool(breach.get("sealed", false))):
+		return 2.0
 	return Sectors.capture_goal(level) / 100.0
 
 func run_extra_lives() -> int:
@@ -467,6 +849,7 @@ func update_play(dt: float) -> void:
 	hardlight_time = maxf(0.0, hardlight_time - dt)
 	freeze_time = maxf(0.0, freeze_time - dt)
 	containment_time = maxf(0.0, containment_time - dt)
+	advance_objective_visuals(dt)
 	if Input.is_action_just_pressed("br_harden"):
 		activate_ability(movement_module())
 	if Input.is_action_just_pressed("special"):
@@ -486,6 +869,12 @@ func update_play(dt: float) -> void:
 			safe_motion += dt
 		elif not Input.is_action_pressed("move_left") and not Input.is_action_pressed("move_right") and not Input.is_action_pressed("move_up") and not Input.is_action_pressed("move_down"):
 			safe_motion = 0.0
+	var note := check_objectives()
+	if not note.is_empty():
+		set_msg(note, 1.2)
+	settle_objective()
+	if state != State.PLAYING or pending_clear:
+		return
 	update_corruption(dt)
 
 func try_step(dir: Vector2i, draw_line: bool, slow: bool) -> bool:
@@ -495,7 +884,12 @@ func try_step(dir: Vector2i, draw_line: bool, slow: bool) -> bool:
 	var moved := super.try_step(dir, draw_line, slow)
 	if drawing and not was_drawing:
 		begin_attack()
+	check_cargo_contact() # Per step, so a fast frame cannot skip the pod's cell.
 	return moved
+
+func ride_step() -> void:
+	super.ride_step()
+	check_cargo_contact()
 
 func activate_ability(id: String) -> void:
 	if phase != "run" or state != State.PLAYING or not has_card(id) or float(cooldowns.get(id, 1.0)) > 0.0:
@@ -544,6 +938,7 @@ func tether_hit(c: Vector2i) -> bool:
 func update_qix(q: QixBody, dt: float, speed: float) -> void:
 	if freeze_time <= 0.0:
 		super.update_qix(q, dt, speed)
+		steer_anomaly(q, dt, speed)
 
 func update_sparx(s: SparxBody, dt: float) -> void:
 	if freeze_time <= 0.0:
@@ -578,8 +973,10 @@ func die(reason: String) -> void:
 		invuln = 1.0
 		exposure = 0.0
 		set_msg("ANCHOR RECOVERY", 1.0)
+		drop_cargo() # After the trail is freed, so the pod's cell reads correctly.
 		return
 	super.die(reason)
+	drop_cargo()
 	exposure = 0.0
 	safe_motion = 0.0
 
@@ -597,7 +994,13 @@ func on_claim(gained: int, caught: int) -> void:
 			corruption[i] = 0
 	# First-time territory drives both card milestones and the sector goal.
 	capture_percent = first_claims * 100.0 / maxi(1, base_free)
+	# Objectives read the board before the early return: a cut that only re-crosses
+	# credited land can still close a beacon, seal a breach or deliver cargo.
+	var note := check_objectives()
 	if newly_claimed.is_empty():
+		if not note.is_empty():
+			set_msg(note, 1.2)
+		settle_objective()
 		return
 	corruption_visual_dirty = true
 	queue_capture_feedback(newly_claimed, previous_capture)
@@ -623,11 +1026,18 @@ func on_claim(gained: int, caught: int) -> void:
 		bonus_salvage += caught * 1.25
 		award_flux(caught * 1.25 * card_power("harvest"))
 	exposure = 0.0
-	set_msg("+%d%% CAPTURE%s" % [int(fraction * 100), " / CORRUPTION CLEANSED" if cleansed > 0 else ""], 1.1)
-	if drafts_taken < draft_capture.size() and capture_percent >= draft_capture[drafts_taken]:
+	var tags := " / CORRUPTION CLEANSED" if cleansed > 0 else ""
+	if not note.is_empty():
+		tags += " / " + note
+	set_msg("+%d%% CAPTURE%s" % [int(fraction * 100), tags], 1.1)
+	# The reward phase opens first and the clear is queued behind it: level_clear settles
+	# immediately outside a draft phase, and finish_sector must run exactly once.
+	var milestone := drafts_taken < draft_capture.size() and capture_percent >= draft_capture[drafts_taken]
+	var done := objective_complete()
+	if milestone or done:
 		begin_draft_reward()
-	elif capture_percent >= Sectors.capture_goal(level):
-		begin_draft_reward()
+	if done:
+		level_clear()
 
 func refund_cooldowns(seconds: float) -> void:
 	lance_cd = maxf(0.0, lance_cd - seconds)
@@ -651,6 +1061,9 @@ func clean_near_claim(claims: Array[int], radius := 6) -> void:
 func spread_corruption() -> void:
 	if not corruption_active:
 		return
+	var breaching := encounter_kind(level) == "breach" and not breach.is_empty()
+	if breaching and bool(breach.sealed):
+		return # A sealed breach spreads no further; captures still cleanse what remains.
 	var next := corruption.duplicate()
 	var changed := false
 	for i in grid_width * grid_height:
@@ -673,6 +1086,8 @@ func spread_corruption() -> void:
 			changed = true
 	corruption = next
 	if changed: corruption_visual_dirty = true
+	if breaching:
+		update_breach_pressure()
 
 func update_corruption(dt: float) -> void:
 	if not corruption_active:
@@ -682,6 +1097,8 @@ func update_corruption(dt: float) -> void:
 		if spread_clock <= 0.0:
 			spread_clock += SPREAD_SECONDS
 			spread_corruption()
+			if state != State.PLAYING:
+				return # A breach collapse already took this frame's hit.
 	var infected_trail := false
 	if ship.id == "sapper":
 		infected_trail = corruption[idx(p.x, p.y)] != 0
@@ -768,15 +1185,20 @@ func draw_capture_flights() -> void:
 		lines.circle(head, 2.2, Palette.WHITE, 8, 0.1, 0.0, 1.1)
 
 func capture_bar_point(percent: float) -> Vector2:
-	return Vector2(CAPTURE_BAR.position.x + 3 + (CAPTURE_BAR.size.x - 6) * clampf(percent / Sectors.capture_goal(level), 0.0, 1.0), CAPTURE_BAR.get_center().y)
+	return Vector2(CAPTURE_BAR.position.x + 3 + (CAPTURE_BAR.size.x - 6) * clampf(percent / bar_scale(), 0.0, 1.0), CAPTURE_BAR.get_center().y)
 
 func hud_label(text: String, pos: Vector2, size := 16.0, color := Palette.WHITE) -> void:
 	VectorFont.draw(lines, text, pos, size, color, 0.0, 0.0)
 
 func draw_draft_meter() -> void:
 	var goal := Sectors.capture_goal(level)
-	var color := Palette.GREEN if displayed_capture >= goal else Palette.CYAN
-	hud_label("CAPTURE %d%%" % goal, Vector2(CAPTURE_BAR.position.x, 104), 13, Palette.DIM)
+	var kind := encounter_kind(level)
+	var color := Palette.GREEN if Sectors.territory_goal(kind) and displayed_capture >= goal else Palette.CYAN
+	hud_label(objective_label(), Vector2(CAPTURE_BAR.position.x, 104), 13, Palette.DIM)
+	if kind == "breach" and not breach.is_empty():
+		var pressure := int(round(100.0 * float(breach.pressure)))
+		var hot := not bool(breach.sealed) and float(breach.pressure) >= 0.15
+		hud_label("SEALED" if bool(breach.sealed) else "BREACH %d%%" % pressure, Vector2(CAPTURE_BAR.position.x + 180, 104), 13, Palette.MAGENTA if hot else Palette.DIM)
 	VectorFont.draw(lines, "%.1f%%" % displayed_capture, Vector2(CAPTURE_BAR.end.x, 102), 18, color, 0.0, 0.0, 2)
 	var left := capture_bar_point(0)
 	lines.rect(CAPTURE_BAR, Palette.WHITE if capture_flash > 0.0 else Palette.DIM, 0.0, 0.0, 1.0)
@@ -945,6 +1367,9 @@ func launch_destination(index: int) -> void:
 	level = chart_depth
 	phase = "run"
 	pending_clear = false
+	zones.clear()
+	cargo.clear()
+	breach.clear()
 	run_victory = false
 	capture_percent = 0.0
 	displayed_capture = 0.0
@@ -983,6 +1408,9 @@ func end_run() -> void:
 	ui_time = 0.0
 	drawing = false
 	trail.clear()
+	zones.clear()
+	cargo.clear()
+	breach.clear()
 	lines.zoom = Vector2.ONE
 	msg_t = 0.0
 
@@ -1840,7 +2268,7 @@ func draw_play() -> void:
 		var origin := Vector2(FX, FY)
 		for i in range(0, corruption_strokes.size(), 2):
 			lines.seg(origin + corruption_strokes[i], origin + corruption_strokes[i + 1], color, 0.4, 0.1, 1.3)
-
+	draw_objectives()
 	super.draw_play()
 	if drawing and (hardlight_time > 0.0 or (has_card("phase") and cut_time < 1.5 * card_power("phase"))):
 		lines.polyline(trail_points(), false, Palette.CYAN, 0.3, 0.1, 2.0)
@@ -1860,6 +2288,16 @@ func draw_chart_symbol(kind: String, pos: Vector2, color: Color) -> void:
 		"finale":
 			lines.polyline(PackedVector2Array([pos + Vector2(0, -14), pos + Vector2(7, 0), pos + Vector2(0, 14), pos + Vector2(-7, 0)]), true, color)
 			lines.circle(pos, 6, color, 4)
+		"beacon":
+			for k in 3:
+				var a := -PI * 0.5 + k * TAU / 3.0
+				lines.circle(pos + Vector2(cos(a), sin(a)) * 9.0, 3, color, 6)
+		"cargo":
+			lines.rect(Rect2(pos - Vector2(6, 6), Vector2(12, 12)), color)
+			lines.seg(pos - Vector2(6, 6), pos + Vector2(6, 6), color)
+		"breach":
+			arc(pos, 10.0, 0.45, TAU - 0.45, color, 1.0)
+			lines.circle(pos, 2.5, color, 6)
 		_:
 			lines.circle(pos, 4, color, 12)
 
@@ -1911,16 +2349,21 @@ func draw_chart() -> void:
 	for i in range(0, outline.size(), 2):
 		lines.seg(Vector2(195, 750) + (outline[i] - Vector2(grid_width, grid_height) * 0.5) * 1.2, Vector2(195, 750) + (outline[i + 1] - Vector2(grid_width, grid_height) * 0.5) * 1.2, Palette.CYAN)
 	label("%02d / %s" % [chart_focus_depth, Sectors.stage(shape_id).name], Vector2(350, 733), 21)
-	var turrets := 2 if node.kind == "salvage" else (0 if chart_focus_depth == 1 else 1)
+	var kind := String(node.kind)
+	var turrets := Sectors.turret_count(kind, chart_focus_depth)
 	var anomaly_count := Sectors.anomaly_count(chart_focus_depth, shape_id)
-	var threats := "CAPTURE %d%% / %d %s" % [Sectors.capture_goal(chart_focus_depth), anomaly_count, "ANOMALY" if anomaly_count == 1 else "ANOMALIES"]
+	var threats := "CAPTURE %d%%" % Sectors.capture_goal(chart_focus_depth)
+	if kind == "beacon": threats = "BEACONS %d" % Sectors.objective_count(kind, chart_focus_depth)
+	elif kind == "cargo": threats = "CARGO %d" % Sectors.objective_count(kind, chart_focus_depth)
+	threats += " / %d %s" % [anomaly_count, "ANOMALY" if anomaly_count == 1 else "ANOMALIES"]
 	if turrets > 0: threats += " / %d TURRET%s" % [turrets, "" if turrets == 1 else "S"]
+	if kind == "breach": threats += " / BREACH"
 	if chart_focus_depth >= Sectors.CORRUPTION_SECTOR: threats += " / CORRUPTION"
 	label(threats, Vector2(350, 772), 13, Palette.YELLOW)
-	if node.kind == "salvage":
-		label("+2 SALVAGE PICKUPS", Vector2(840, 754), 15, Palette.GREEN)
-	elif node.kind == "repair":
-		label("+1 HULL ON CLEAR", Vector2(840, 754), 15, Palette.GREEN)
+	var reward := Sectors.reward_copy(kind)
+	if not reward.is_empty():
+		# Right-aligned beside the Jump button, clear of the longest threat strings.
+		label(reward, Vector2(1205, 754), 15, Palette.GREEN, 2)
 	var reachable := chart_reachable(chart_focus_depth, selection)
 	lines.rect(CHART_JUMP, Palette.CYAN if reachable else Palette.DIM)
 	var action := "JUMP  [ENTER]" if reachable else ("CLEARED" if chart_focus_depth < chart_depth and route_path[chart_focus_depth - 1] == selection else "LOCKED")
