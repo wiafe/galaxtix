@@ -16,7 +16,9 @@ const KINDS := {
 	"beacon": {"min_depth": 2, "reward": "+1 SALVAGE PER BEACON"},
 	"cargo": {"min_depth": 3, "reward": "+2 SALVAGE PER DELIVERY"},
 	"breach": {"min_depth": 5, "reward": "+3 SALVAGE ON SEAL"},
+	"rival": {"min_depth": 3, "reward": "+3 SALVAGE IF DRIVEN OFF"},
 }
+const RIVAL_RADIUS := 3
 const BEACON_RADIUS := 5
 const BREACH_RADIUS := 4
 const BREACH_LIMIT := 0.25 # Infected share of the arena that costs a hull; a playtest value.
@@ -48,6 +50,8 @@ static func objective_copy(kind: String, depth: int) -> String:
 			return "TOUCH EACH POD, THEN RETURN TO SAFE LAND. ENCLOSING ALONE DOES NOT DELIVER."
 		"breach":
 			return "ENCLOSE THE BREACH AND CAPTURE %d%%. KEEP INFECTION BELOW 25%%." % capture_goal(depth)
+		"rival":
+			return "CAPTURE %d%%. A RIVAL CUTTER CLAIMS THE VOID; ENCLOSE ITS LAND TO TAKE IT BACK." % capture_goal(depth)
 		"repair":
 			return "CAPTURE %d%% TO CLEAR AND RESTORE ONE HULL." % capture_goal(depth)
 		"salvage":

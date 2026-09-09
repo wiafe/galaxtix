@@ -85,6 +85,24 @@ var zones: Array[Dictionary] = []
 var cargo := {}
 var breach := {}
 var last_objectives := {} # Handed from sector_layout to start_level; Game keeps its layout local.
+# Surge: a stalled sector surfaces a bonus disc in the void; miss it and the sector escalates.
+const SURGE_AFTER := 20.0 # Seconds without a land change before a surge surfaces; playtest values.
+const SURGE_TELEGRAPH := 2.0
+const SURGE_WINDOW := 15.0
+const SURGE_RADIUS := 3
+const SURGE_RETRY := 5.0
+var stall_time := 0.0
+var surge := {}
+var surge_expired := 0
+var surge_pressure := 0.0
+# Rival: one AI cutter claiming void. Its land and line are overlays; cells stay FREE beneath,
+# so the player's cut, the claim flood and the Sparx never need to know it exists.
+const RivalCutter = preload("res://scripts/rival_cutter.gd")
+const RIVAL_COLOR := Palette.ORANGE
+var rival = null
+var rival_land := PackedByteArray()
+var rival_segments := PackedVector2Array()
+var rival_visual_dirty := true
 var spread_clock := SPREAD_SECONDS
 var containment_time := 0.0
 var exposure := 0.0
@@ -245,6 +263,8 @@ func place_objectives(layout: Dictionary, lvl: int, placement: RandomNumberGener
 			last_objectives.pod = layout_pick(placement, 10, occupied, 40.0, layout.shape, layout.arena)
 		"breach":
 			last_objectives.breach = pick_disc(placement, Sectors.BREACH_RADIUS, occupied, layout.arena)
+		"rival":
+			last_objectives.rival = pick_disc(placement, Sectors.RIVAL_RADIUS, occupied, layout.arena)
 
 ## A disc centre whose every cell is playable void, clear of pickups, turrets and the start.
 ## Rails are mask 1 and begin claimed, so a disc touching one would start half captured.
@@ -315,6 +335,7 @@ func setup_objectives() -> void:
 	zones.clear()
 	cargo.clear()
 	breach.clear()
+	clear_rival()
 	var found: Dictionary = last_objectives
 	last_objectives = {}
 	if found.is_empty() or String(found.kind) != encounter_kind(level):
@@ -327,6 +348,8 @@ func setup_objectives() -> void:
 			cargo = {"cell": found.pod, "carrying": false, "delivered": 0, "runs": Sectors.objective_count("cargo", level), "done": false}
 		"breach":
 			breach = {"cell": found.breach.cell, "radius": found.breach.radius, "sealed": false, "pressure": 0.0, "spin": 0.0}
+		"rival":
+			setup_rival(found.rival.cell, int(found.rival.radius))
 
 func objective_complete() -> bool:
 	match encounter_kind(level):
@@ -343,11 +366,16 @@ func objective_complete() -> bool:
 
 ## Advances every objective from the current board and returns a note for the HUD.
 func check_objectives() -> String:
+	var note := ""
 	match encounter_kind(level):
-		"beacon": return update_zones()
-		"cargo": return update_cargo()
-		"breach": return update_breach_seal()
-	return ""
+		"beacon": note = update_zones()
+		"cargo": note = update_cargo()
+		"breach": note = update_breach_seal()
+	# The surge is kind-independent, so it is checked after whatever the kind reported.
+	var extra := update_surge()
+	if extra.is_empty():
+		return note
+	return extra if note.is_empty() else note + " / " + extra
 
 ## Off-claim completions (a Sapper walking cargo home, a hardened Leap wall) still clear.
 func settle_objective() -> void:
@@ -529,6 +557,7 @@ func objective_label() -> String:
 func show_objective_notice(text: String) -> void:
 	objective_notice = text
 	objective_notice_time = 4.0
+	stall_time = 0.0 # Objective events count as progress against the surge clock.
 
 func objective_instruction() -> String:
 	if encounter_kind(level) == "cargo" and not cargo.is_empty():
@@ -549,6 +578,9 @@ func advance_objective_visuals(dt: float) -> void:
 			zone.spin = float(zone.spin) + dt * (0.6 + (4.0 if zone_contested(zone) else 0.0))
 	if not breach.is_empty() and not bool(breach.sealed):
 		breach.spin = float(breach.spin) + dt * (0.6 + 6.0 * float(breach.pressure) / Sectors.BREACH_LIMIT)
+	if not surge.is_empty():
+		var urgency := 1.0 - clampf(float(surge.window) / SURGE_WINDOW, 0.0, 1.0)
+		surge.spin = float(surge.spin) + dt * (0.6 + 3.0 * urgency)
 
 func draw_ring(c: Vector2, radius: float, spin: float, color: Color, thick := 1.4) -> void:
 	# Three arcs with gaps, spinning faster as the objective is contested.
@@ -588,6 +620,26 @@ func draw_objectives() -> void:
 		else:
 			draw_ring(c, radius, float(breach.spin), Palette.MAGENTA)
 			lines.circle(c, 3.0, Palette.MAGENTA, 6, 1.0, 0.6, 0.9)
+	draw_rival()
+	if not surge.is_empty():
+		var c := center(surge.cell)
+		var radius := (float(surge.radius) + 0.5) * CELL
+		if float(surge.telegraph) > 0.0:
+			# Surfacing: a ring tightens onto the spot, as pickups do.
+			var k := clampf(float(surge.telegraph) / SURGE_TELEGRAPH, 0.0, 1.0)
+			var col := Palette.ORANGE
+			col.a = 0.2 + 0.5 * (1.0 - k)
+			lines.circle(c, radius + 26.0 * k, col, 12, 1.5, 0.3, 0.8)
+		else:
+			draw_ring(c, radius, float(surge.spin), Palette.ORANGE)
+			var fraction := disc_claimed_fraction(surge.cell, surge.radius)
+			if fraction > 0.0:
+				arc(c, radius - 6.0, -PI * 0.5, -PI * 0.5 + TAU * fraction, Palette.GREEN, 1.0)
+			var left := clampf(float(surge.window) / SURGE_WINDOW, 0.0, 1.0)
+			if left > 0.0:
+				arc(c, radius + 5.0, -PI * 0.5, -PI * 0.5 + TAU * left, Palette.ORANGE, 0.8)
+			lines.circle(c, 3.0, Palette.FULLBRIGHT, 6, 1.0, 0.6, 0.9)
+			VectorFont.draw(lines, "%dS" % ceili(maxf(0.0, float(surge.window))), c + Vector2(radius + 8.0, -6.0), 10, Palette.ORANGE, 0.5, 0.3)
 
 func draw_pod(c: Vector2, size: float, pulse: float) -> void:
 	var pts := PackedVector2Array()
@@ -625,6 +677,418 @@ func steer_anomaly(q: QixBody, dt: float, speed: float) -> void:
 	var toward := (target - q.c).normalized() * speed
 	q.v = q.v.slerp(toward, 1.0 - exp(-dt * rate)).normalized() * speed
 
+# ------------------------------------------------------------------ surge
+## The stall clock only runs while no surge is up; the surge itself telegraphs, then counts down.
+func update_surge_clock(dt: float) -> void:
+	if surge.is_empty():
+		stall_time += dt
+		if stall_time >= SURGE_AFTER:
+			spawn_surge()
+		return
+	if float(surge.telegraph) > 0.0:
+		surge.telegraph = maxf(0.0, float(surge.telegraph) - dt)
+		if float(surge.telegraph) == 0.0:
+			var c := center(surge.cell)
+			sparks.ripple(c, 3.0, 220.0, 0.5, Palette.ORANGE)
+			sparks.burst(c, 24, 120.0, 1.5, 0.5, Palette.ORANGE)
+		return
+	surge.window = float(surge.window) - dt
+
+## Every disc cell must be live void, off every objective, and out of an Anomaly's reach,
+## otherwise a fifteen-second window on a guarded pocket would be a guaranteed penalty.
+func surge_disc_open(c: Vector2i, radius: int, blocked: Dictionary) -> bool:
+	for i in disc_cells(c, radius):
+		if cells[i] != FREE or blocked.has(i):
+			return false
+	var point := center(c)
+	for q: QixBody in qixes:
+		if q.c.distance_to(point) < q.len * 0.5 + (radius + 3) * CELL:
+			return false
+	return true
+
+func spawn_surge() -> void:
+	var free: Array = field_arena.get("free_cells", [])
+	var blocked := {}
+	for zone in zones:
+		for i in disc_cells(zone.cell, zone.radius):
+			blocked[i] = true
+	if not breach.is_empty():
+		for i in disc_cells(breach.cell, breach.radius):
+			blocked[i] = true
+	if not cargo.is_empty() and not bool(cargo.done):
+		blocked[idx(cargo.cell.x, cargo.cell.y)] = true
+	for r in range(SURGE_RADIUS, 0, -1):
+		var best := Vector2i(-1, -1)
+		var best_d := -1.0
+		for tries in 80:
+			if free.is_empty():
+				break
+			var c: Vector2i = free[rng.randi_range(0, free.size() - 1)]
+			if not surge_disc_open(c, r, blocked):
+				continue
+			var d := Vector2(c - p).length()
+			if d > best_d:
+				best_d = d
+				best = c
+			if d > 30.0:
+				break
+		if best.x >= 0:
+			surge = {"cell": best, "radius": r, "telegraph": SURGE_TELEGRAPH, "window": SURGE_WINDOW, "spin": 0.0}
+			show_objective_notice("SURGE - ENCLOSE THE ZONE WITHIN %d SECONDS" % int(SURGE_WINDOW))
+			set_msg("SURGE", 1.0)
+			return
+	# No open pocket right now: try again shortly rather than giving up on the sector.
+	stall_time = SURGE_AFTER - SURGE_RETRY
+
+func update_surge() -> String:
+	if surge.is_empty() or disc_claimed_fraction(surge.cell, surge.radius) < 1.0:
+		return ""
+	var c := center(surge.cell)
+	award_flux(2.0)
+	sparks.ripple(c, (float(surge.radius) + 0.5) * CELL, 320.0, 0.6, Palette.GREEN)
+	sparks.burst(c, 40, 200.0, 1.5, 0.7, Palette.ORANGE)
+	surge.clear()
+	show_objective_notice("SURGE SECURED - SALVAGE AWARDED")
+	return "SURGE SECURED"
+
+## A missed surge brings a Sparx while the coast can take one, then the Anomaly speeds up.
+func expire_surge() -> void:
+	var c := center(surge.cell)
+	sparks.burst(c, 30, 160.0, 1.5, 0.5, Palette.ORANGE)
+	lines.spike(1.5, 0.25)
+	surge.clear()
+	surge_expired += 1
+	stall_time = 0.0
+	var authored := authored_map != null and authored_map.override_enemies
+	if surge_expired <= 2 and not authored:
+		sparx_to_spawn += 1
+		sparx_spawn_t = 0.0
+		show_objective_notice("SURGE LOST - SPARX INBOUND")
+	else:
+		surge_pressure = minf(0.5, surge_pressure + 0.1)
+		show_objective_notice("SURGE LOST - ANOMALY SURGING")
+	set_msg("SURGE LOST", 1.2)
+
+func qix_speed() -> float:
+	return super.qix_speed() * (1.0 + surge_pressure)
+
+# ------------------------------------------------------------------ rival cutter
+func clear_rival() -> void:
+	rival = null
+	rival_land.resize(0)
+	rival_segments.clear()
+	rival_visual_dirty = true
+
+func setup_rival(seed_cell: Vector2i, radius: int) -> void:
+	rival_land.resize(grid_width * grid_height)
+	rival_land.fill(0)
+	for i in disc_cells(seed_cell, radius):
+		if cells[i] == FREE:
+			rival_land[i] = 1
+	rival = RivalCutter.new()
+	rival.setup(Vector2i(grid_width, grid_height), rng, {
+		"owner_of": rival_owner_of,
+		"is_solid": rival_is_solid,
+		"player_trail_at": rival_player_trail_at,
+		"on_capture": rival_capture,
+		"on_cross_player_trail": rival_crossed_trail,
+		"on_fail": rival_failed,
+	})
+	rival.pos = seed_cell
+	rival.anchor = seed_cell
+	rival.speed_scale = 1.0 + 0.03 * level
+	refresh_rival_owned()
+
+func rival_active() -> bool:
+	return rival != null and rival.alive and rival_land.size() == cells.size()
+
+## The board as the rival sees it: its land, open void it may cut through, or a wall.
+func rival_owner_of(c: Vector2i) -> int:
+	if not in_bounds(c):
+		return -1
+	var i := idx(c.x, c.y)
+	if rival_land[i] == 1:
+		return 1
+	return 0 if cells[i] == FREE or cells[i] == TRAIL else -1
+
+func rival_is_solid(c: Vector2i) -> bool:
+	return not in_bounds(c) or (cells[idx(c.x, c.y)] != FREE and cells[idx(c.x, c.y)] != TRAIL)
+
+func rival_player_trail_at(c: Vector2i) -> bool:
+	return in_bounds(c) and cells[idx(c.x, c.y)] == TRAIL
+
+func rival_failed() -> void:
+	if rival != null and rival.alive:
+		sparks.burst(center(rival.pos), 20, 140.0, 1.5, 0.4, RIVAL_COLOR)
+		set_msg("RIVAL LINE CUT", 1.0)
+
+## The rival's line crossed ours: the same gate bolts and mites use, so Hardlight, Phase,
+## Ion and a hardened Leap wall protect the trail exactly as they do against them.
+func rival_crossed_trail(c: Vector2i) -> void:
+	if tether_hit(c) and wire_hit():
+		lose_trail("RIVAL CUT YOUR LINE")
+
+## Battle Royale's contact rule: the line is lost and the ship returns to its anchor,
+## with a short shield and no hull lost.
+func lose_trail(reason: String) -> void:
+	for c in trail:
+		var i := idx(c.x, c.y)
+		if cells[i] == TRAIL or cells[i] == HARD:
+			cells[i] = FREE
+	trail.clear()
+	tether_active = false
+	tether_i = -1
+	leap_building = false
+	wall_building = false
+	wall_cells = [[], []]
+	harden_len = 0.0
+	sap_live = false
+	sap_charge = 0.0
+	drawing = false
+	fuse_on = false
+	draw_armed = false
+	move_acc = 0.0
+	p = anchor
+	vis = center(p)
+	invuln = 1.0
+	exposure = 0.0
+	cut_time = 0.0
+	reset_movement_module()
+	drop_cargo()
+	grid_changed()
+	sparks.burst(vis, 30, 200.0, 1.5, 0.5, RIVAL_COLOR)
+	lines.spike(2.0, 0.3)
+	set_msg(reason, 1.4)
+	show_objective_notice(reason + " - BACK TO YOUR ANCHOR")
+
+## A closed rival loop claims the void it walls off, judged the same way as ours: whatever
+## no Anomaly can reach. The seed has to be open void, because Anomalies float over rival
+## land and a seedless flood would hand the rival the whole arena.
+func rival_capture(loop: Array) -> void:
+	if not rival_active():
+		return
+	for c in loop:
+		rival_land[idx(c.x, c.y)] = 1
+	reach.fill(0)
+	var sp := 0
+	for q: QixBody in qixes:
+		var seed_i := rival_seed_index(q)
+		if seed_i >= 0 and reach[seed_i] == 0:
+			reach[seed_i] = 1
+			stack[sp] = seed_i
+			sp += 1
+	if sp > 0:
+		while sp > 0:
+			sp -= 1
+			var i := stack[sp]
+			var x := i % grid_width
+			var y := i / grid_width
+			for n in [i - 1 if x > 0 else -1, i + 1 if x < grid_width - 1 else -1, i - grid_width if y > 0 else -1, i + grid_width if y < grid_height - 1 else -1]:
+				if n < 0 or reach[n] != 0 or rival_land[n] == 1:
+					continue
+				if cells[n] != FREE and cells[n] != TRAIL:
+					continue
+				reach[n] = 1
+				stack[sp] = n
+				sp += 1
+		var gained := PackedInt32Array()
+		for i in grid_width * grid_height:
+			if cells[i] == FREE and rival_land[i] == 0 and reach[i] == 0:
+				gained.append(i)
+		if gained.size() <= 0.4 * free_count:
+			for i in gained:
+				rival_land[i] = 1
+		if gained.size() > 0:
+			sparks.ripple(center(rival.pos), 6.0, 280.0, 0.5, RIVAL_COLOR)
+	refresh_rival_owned()
+	rival_visual_dirty = true
+	update_fill()
+
+func rival_seed_index(q: QixBody) -> int:
+	var c := to_cell(q.c)
+	for r in 11:
+		for dy in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				if maxi(absi(dx), absi(dy)) != r:
+					continue
+				var n := c + Vector2i(dx, dy)
+				if not in_bounds(n):
+					continue
+				var i := idx(n.x, n.y)
+				if cells[i] == FREE and rival_land[i] == 0:
+					return i
+	return -1
+
+## Land under the rival is always in step with the board: the player's claims and blasts
+## take it back, its line fails when land closes over it, and no land at all drives it off.
+func sweep_rival() -> void:
+	if rival == null or not rival.alive or rival_land.size() != cells.size():
+		return
+	var changed := false
+	var line_cut := false
+	for i in grid_width * grid_height:
+		var v := cells[i]
+		if v != FREE and v != TRAIL:
+			if rival_land[i] == 1:
+				rival_land[i] = 0
+				changed = true
+			if rival.trail_mask[i] == 1:
+				line_cut = true
+	if line_cut:
+		rival.fail()
+	if changed or line_cut:
+		refresh_rival_owned()
+		rival_visual_dirty = true
+
+func refresh_rival_owned() -> void:
+	if rival == null or not rival.alive:
+		return
+	var owned: Array[Vector2i] = []
+	for i in grid_width * grid_height:
+		if rival_land[i] == 1:
+			owned.append(Vector2i(i % grid_width, i / grid_width))
+	rival.owned = owned
+	if owned.is_empty():
+		eliminate_rival()
+		return
+	if not rival.exposed and rival_land[idx(rival.pos.x, rival.pos.y)] == 0:
+		rival.pos = rival.nearest_owned(rival.pos)
+		rival.plan.clear()
+
+func eliminate_rival() -> void:
+	rival.alive = false
+	rival.clear_trail()
+	rival_land.fill(0)
+	award_flux(3.0)
+	sparks.burst(center(rival.pos), 60, 240.0, 1.5, 0.8, RIVAL_COLOR)
+	sparks.ripple(center(rival.pos), 6.0, 360.0, 0.7, Palette.GREEN)
+	set_msg("RIVAL DRIVEN OFF", 1.4)
+	show_objective_notice("RIVAL DRIVEN OFF - SALVAGE AWARDED")
+	rival_visual_dirty = true
+	update_fill()
+
+func beam_cuts_rival(q: QixBody) -> bool:
+	var e := qix_ends(q.c, q.theta, q.len)
+	var n := int(maxf(2.0, q.len / 5.0))
+	for k in range(n + 1):
+		if rival.trail_at(to_cell(e[0].lerp(e[1], float(k) / n))):
+			return true
+	return false
+
+func update_rival(dt: float) -> void:
+	if not rival_active():
+		return
+	for q: QixBody in qixes:
+		if rival.exposed and beam_cuts_rival(q):
+			rival.fail()
+			break
+	if freeze_time <= 0.0:
+		rival.tick(dt)
+
+func rival_touched(c: Vector2i) -> void:
+	if rival_active() and rival.exposed and rival.trail_at(c):
+		rival.fail()
+
+## Merged runs of the rival's coast, cached in field-local pixels like corruption strokes.
+func rebuild_rival_segments() -> void:
+	rival_segments.clear()
+	rival_visual_dirty = false
+	if rival_land.size() != cells.size():
+		return
+	for y in grid_height:
+		var top_start := -1
+		var bottom_start := -1
+		for x in range(grid_width + 1):
+			var i := y * grid_width + x
+			var mine := x < grid_width and rival_land[i] == 1
+			var top := mine and (y == 0 or rival_land[i - grid_width] == 0)
+			var bottom := mine and (y == grid_height - 1 or rival_land[i + grid_width] == 0)
+			if top and top_start < 0: top_start = x
+			elif not top and top_start >= 0:
+				rival_segments.append(Vector2(top_start * CELL, y * CELL))
+				rival_segments.append(Vector2(x * CELL, y * CELL))
+				top_start = -1
+			if bottom and bottom_start < 0: bottom_start = x
+			elif not bottom and bottom_start >= 0:
+				rival_segments.append(Vector2(bottom_start * CELL, (y + 1) * CELL))
+				rival_segments.append(Vector2(x * CELL, (y + 1) * CELL))
+				bottom_start = -1
+	for x in grid_width:
+		var left_start := -1
+		var right_start := -1
+		for y in range(grid_height + 1):
+			var i := y * grid_width + x
+			var mine := y < grid_height and rival_land[i] == 1
+			var left := mine and (x == 0 or rival_land[i - 1] == 0)
+			var right := mine and (x == grid_width - 1 or rival_land[i + 1] == 0)
+			if left and left_start < 0: left_start = y
+			elif not left and left_start >= 0:
+				rival_segments.append(Vector2(x * CELL, left_start * CELL))
+				rival_segments.append(Vector2(x * CELL, y * CELL))
+				left_start = -1
+			if right and right_start < 0: right_start = y
+			elif not right and right_start >= 0:
+				rival_segments.append(Vector2((x + 1) * CELL, right_start * CELL))
+				rival_segments.append(Vector2((x + 1) * CELL, y * CELL))
+				right_start = -1
+
+func draw_rival() -> void:
+	if rival == null or not rival.alive or rival_land.size() != cells.size():
+		return
+	if rival_visual_dirty:
+		rebuild_rival_segments()
+	var coast := RIVAL_COLOR
+	coast.a = 0.55
+	var origin := Vector2(FX, FY)
+	for i in range(0, rival_segments.size(), 2):
+		lines.seg(origin + rival_segments[i], origin + rival_segments[i + 1], coast, 0.4, 0.1, 1.0)
+	if rival.trail.size() > 0:
+		var pts := PackedVector2Array()
+		pts.append(center(rival.anchor))
+		for c in rival.trail:
+			pts.append(center(c))
+		lines.polyline(pts, false, RIVAL_COLOR, 2.2, 0.45, 1.3)
+		lines.circle(center(rival.anchor), 4.0, RIVAL_COLOR, 8, 1.0, 0.3, 0.8)
+	var hp := center(rival.pos)
+	for pth in Hulls.paths("surveyor", hp, 7.0, 0.0, 0.0):
+		lines.polyline(pth, false, RIVAL_COLOR)
+	lines.seg(hp, hp + Vector2(rival.facing) * 9.0, RIVAL_COLOR, 0.0, 0.0, 1.0)
+
+## In a rival sector both colours are baked into the one fill texture and it is drawn
+## unmodulated; everywhere else Game's byte-identical dither and modulate tint stay in use.
+func update_fill() -> void:
+	if rival_land.size() != cells.size():
+		super.update_fill()
+		return
+	var dither := int(cur_gal().dither)
+	var mine := fill_color()
+	var mine_on := Color(mine.r, mine.g, mine.b, 0.16).to_abgr32()
+	var mine_off := Color(mine.r * 0.5, mine.g * 0.5, mine.b * 0.5, 0.16).to_abgr32()
+	var theirs_on := Color(RIVAL_COLOR.r, RIVAL_COLOR.g, RIVAL_COLOR.b, 0.16).to_abgr32()
+	var theirs_off := Color(RIVAL_COLOR.r * 0.5, RIVAL_COLOR.g * 0.5, RIVAL_COLOR.b * 0.5, 0.16).to_abgr32()
+	var rivalry := rival_land.size() == cells.size()
+	var pixels := PackedByteArray()
+	pixels.resize(grid_width * grid_height * 4)
+	for y in grid_height:
+		var row := y * grid_width
+		for x in grid_width:
+			var i := row + x
+			var claimed := cells[i] == CLAIMED
+			var theirs := rivalry and not claimed and rival_land[i] == 1
+			if not claimed and not theirs: continue
+			var on := false
+			match dither:
+				0: on = ((x + y) & 1) == 0
+				1: on = (y & 1) == 0
+				_: on = (x & 1) == 0 and (y & 1) == 0
+			if claimed:
+				pixels.encode_u32(i * 4, mine_on if on else mine_off)
+			else:
+				pixels.encode_u32(i * 4, theirs_on if on else theirs_off)
+	fill_img.set_data(grid_width, grid_height, false, Image.FORMAT_RGBA8, pixels)
+	fill_tex.update(fill_img)
+	fill.modulate = Color.WHITE
+
 func start_level() -> void:
 	authored_behaviors.clear()
 	authored_map = MapCatalog.read(arena_stage(level))
@@ -641,6 +1105,7 @@ func start_level() -> void:
 	capture_flights.clear()
 	rerolls_left = progress.rank_of("scanner") / 5
 	sector_salvage_start = earned_salvage
+	clear_rival() # The field rebuild below calls grid_changed; no stale rival may react to it.
 	super.start_level()
 	setup_objectives() # Before seeding corruption, which a breach sector sources from its disc.
 	draft_capture = Sectors.draft_milestones(base_free)
@@ -660,6 +1125,10 @@ func start_level() -> void:
 	exposure = 0.0
 	cut_time = 0.0
 	spread_clock = SPREAD_SECONDS
+	stall_time = 0.0
+	surge.clear()
+	surge_expired = 0
+	surge_pressure = 0.0
 	anchor = p
 	if authored_map != null and authored_map.override_enemies:
 		apply_authored_enemies()
@@ -779,6 +1248,9 @@ func fire_lance(extend := false) -> void:
 	super.fire_lance(extend)
 	if drawing and not was_drawing:
 		begin_attack()
+	if tether_active:
+		for c in trail:
+			rival_touched(c) # A cast ray cuts the rival's line where it crosses it.
 
 func start_sapper_charge() -> void:
 	super.start_sapper_charge()
@@ -964,6 +1436,7 @@ func update_play(dt: float) -> void:
 	freeze_time = maxf(0.0, freeze_time - dt)
 	containment_time = maxf(0.0, containment_time - dt)
 	advance_objective_visuals(dt)
+	update_surge_clock(dt)
 	if Input.is_action_just_pressed("br_harden"):
 		activate_ability(movement_module())
 	if Input.is_action_just_pressed("special"):
@@ -983,12 +1456,19 @@ func update_play(dt: float) -> void:
 			safe_motion += dt
 		elif not Input.is_action_pressed("move_left") and not Input.is_action_pressed("move_right") and not Input.is_action_pressed("move_up") and not Input.is_action_pressed("move_down"):
 			safe_motion = 0.0
+	update_rival(dt)
+	if state != State.PLAYING or phase != "run":
+		return
 	var note := check_objectives()
 	if not note.is_empty():
 		set_msg(note, 1.2)
 	settle_objective()
 	if state != State.PLAYING or pending_clear:
 		return
+	# Expiry runs only after a frame that neither cleared nor died, so a lost surge
+	# never lands on top of a sector clear.
+	if not surge.is_empty() and float(surge.telegraph) <= 0.0 and float(surge.window) <= 0.0:
+		expire_surge()
 	update_corruption(dt)
 
 func try_step(dir: Vector2i, draw_line: bool, slow: bool) -> bool:
@@ -999,11 +1479,13 @@ func try_step(dir: Vector2i, draw_line: bool, slow: bool) -> bool:
 	if drawing and not was_drawing:
 		begin_attack()
 	check_cargo_contact() # Per step, so a fast frame cannot skip the pod's cell.
+	rival_touched(p)
 	return moved
 
 func ride_step() -> void:
 	super.ride_step()
 	check_cargo_contact()
+	rival_touched(p)
 
 func activate_ability(id: String) -> void:
 	if phase != "run" or state != State.PLAYING or not has_card(id) or float(cooldowns.get(id, 1.0)) > 0.0:
@@ -1184,11 +1666,13 @@ func die(reason: String) -> void:
 		exposure = 0.0
 		set_msg("ANCHOR RECOVERY", 1.0)
 		drop_cargo() # After the trail is freed, so the pod's cell reads correctly.
+		stall_time = 0.0
 		return
 	super.die(reason)
 	drop_cargo()
 	exposure = 0.0
 	safe_motion = 0.0
+	stall_time = 0.0
 
 func on_claim(gained: int, caught: int) -> void:
 	var previous_capture := capture_percent
@@ -1593,6 +2077,7 @@ func launch_destination(index: int) -> void:
 	zones.clear()
 	cargo.clear()
 	breach.clear()
+	clear_rival()
 	run_victory = false
 	capture_percent = 0.0
 	displayed_capture = 0.0
@@ -1649,6 +2134,7 @@ func end_run() -> void:
 	zones.clear()
 	cargo.clear()
 	breach.clear()
+	clear_rival()
 	lines.zoom = Vector2.ONE
 	msg_t = 0.0
 
@@ -1869,7 +2355,7 @@ func button(index: int, text: String) -> void:
 
 func draw() -> void:
 	battle_fill.visible = false
-	fill.modulate = fill_color()
+	fill.modulate = Color.WHITE if rival_land.size() == cells.size() else fill_color() # See update_fill.
 	if phase == "briefing":
 		super.draw()
 		lines.modal_start = lines.count
@@ -2556,8 +3042,10 @@ func draw_pause() -> void:
 	button(1, "END EXPEDITION")
 
 func grid_changed() -> void:
+	sweep_rival() # Before the fill rebuild below, so stolen rival land never flashes twice.
 	super.grid_changed()
 	corruption_visual_dirty = true
+	stall_time = 0.0 # Any land change, including blasts and hardened walls, is progress.
 
 func rebuild_corruption_strokes() -> void:
 	corruption_strokes.clear()
@@ -2610,6 +3098,9 @@ func draw_chart_symbol(kind: String, pos: Vector2, color: Color) -> void:
 		"cargo":
 			lines.rect(Rect2(pos - Vector2(6, 6), Vector2(12, 12)), color)
 			lines.seg(pos - Vector2(6, 6), pos + Vector2(6, 6), color)
+		"rival":
+			lines.polyline(PackedVector2Array([pos + Vector2(-10, 6), pos + Vector2(-2, 0), pos + Vector2(-10, -6)]), true, color)
+			lines.polyline(PackedVector2Array([pos + Vector2(10, 6), pos + Vector2(2, 0), pos + Vector2(10, -6)]), true, color)
 		"breach":
 			arc(pos, 10.0, 0.45, TAU - 0.45, color, 1.0)
 			lines.circle(pos, 2.5, color, 6)
@@ -2681,6 +3172,7 @@ func draw_chart() -> void:
 	threats += " / %d %s" % [anomaly_count, ("VOID ENEMIES" if map != null and map.override_enemies else ("ANOMALY" if anomaly_count == 1 else "ANOMALIES"))]
 	if turrets > 0: threats += " / %d TURRET%s" % [turrets, "" if turrets == 1 else "S"]
 	if kind == "breach": threats += " / BREACH"
+	if kind == "rival": threats += " / RIVAL"
 	if chart_focus_depth >= Sectors.CORRUPTION_SECTOR: threats += " / CORRUPTION"
 	label(threats, Vector2(350, 772), 13, Palette.YELLOW)
 	label("OBJECTIVE: " + Sectors.objective_copy(kind, chart_focus_depth), Vector2(350, 805), 12, Palette.CYAN)
