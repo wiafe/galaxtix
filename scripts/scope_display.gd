@@ -15,6 +15,8 @@ var screen: ColorRect
 var env: Environment
 var scene_root: Node2D
 var lines: ScopeLines
+var modal_backdrop: ColorRect
+var modal_lines: ScopeLines
 var sparks: Sparks
 var compat := false   # true on the Compatibility renderer (web builds)
 var web := false      # true in browser builds (or with --webprofile): stripped-down effect profile
@@ -65,6 +67,20 @@ func _ready() -> void:
 	# Forward+ has 4x MSAA to resolve sub-pixel beams; Compatibility has none, so widen and dim
 	lines.min_width = 2.0 if web else (1.6 if compat else 1.0)
 	scene_vp.add_child(lines)
+	# Blur only the arena; the second beam batch draws the modal above this pass.
+	modal_backdrop = ColorRect.new()
+	modal_backdrop.size = Vector2(W, H)
+	modal_backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var backdrop_material := ShaderMaterial.new()
+	backdrop_material.shader = preload("res://shaders/modal_backdrop.gdshader")
+	# HDR is brightened again by the CRT's sRGB conversion; compensate before that pass.
+	backdrop_material.set_shader_parameter("brightness", 1.0 if compat else 0.2)
+	modal_backdrop.material = backdrop_material
+	modal_backdrop.visible = false
+	scene_vp.add_child(modal_backdrop)
+	modal_lines = ScopeLines.new()
+	modal_lines.visible = false
+	scene_vp.add_child(modal_lines)
 	sparks = Sparks.new()
 
 	# --- phosphor trails: two feedback buffers reading each other
@@ -203,6 +219,16 @@ func begin_draw(shake: Vector2 = Vector2.ZERO) -> void:
 
 func end_draw() -> void:
 	lines.end()
+	var modal := lines.modal_start >= 0
+	modal_backdrop.visible = modal
+	modal_lines.visible = modal
+	if modal:
+		modal_lines.count = lines.count - lines.modal_start
+		modal_lines.buf = lines.buf.slice(lines.modal_start * ScopeLines.STRIDE, lines.count * ScopeLines.STRIDE)
+		modal_lines.buf.resize(ScopeLines.MAX_SEGS * ScopeLines.STRIDE)
+		modal_lines.mat.set_shader_parameter("lfo_time", lines.lfo_time)
+		modal_lines.end()
+		lines.multimesh.visible_instance_count = lines.modal_start
 	screen.material.set_shader_parameter("time", t)
 
 

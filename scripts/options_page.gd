@@ -19,6 +19,8 @@ var baseline: FxSettings
 var status := "CHANGES SAVE AUTOMATICALLY"
 var category := 0
 var selection := 0
+var settings_focused := false
+var adjusting_value := false
 var is_open := false
 var pending_action: Callable
 var confirm_title := ""
@@ -41,6 +43,8 @@ func setup(tube: ScopeDisplay) -> void:
 
 func open() -> void:
 	is_open = true
+	settings_focused = false
+	adjusting_value = false
 	previous_zoom = display.lines.zoom
 	display.lines.zoom = Vector2.ONE
 
@@ -66,6 +70,8 @@ func confirm_rect(index: int) -> Rect2:
 func select_category(index: int) -> void:
 	category = posmod(index, CATEGORIES.size())
 	selection = 0
+	settings_focused = false
+	adjusting_value = false
 
 func _disabled(key: String) -> bool:
 	return (key == "fullscreen" and OS.has_feature("web")) or (key == "resolution" and (OS.has_feature("web") or preferences.values.fullscreen))
@@ -124,27 +130,43 @@ func resolve_confirmation() -> void:
 func _input(event: InputEvent) -> void:
 	if not is_open:
 		return
-	if event is InputEventKey and event.pressed and not event.echo:
+	Controls.observe_input(event)
+	if (event is InputEventKey or event is InputEventJoypadButton or event is InputEventJoypadMotion) and not event.is_echo():
 		if pending_action.is_valid():
-			if event.is_action_pressed("abort"):
+			if Controls.event_pressed(event, "abort"):
 				pending_action = Callable()
-			elif event.is_action_pressed("move_left") or event.is_action_pressed("move_right") or event.is_action_pressed("tab"):
+			elif Controls.event_pressed(event, "move_left") or Controls.event_pressed(event, "move_right"):
 				confirm_selection = 1 - confirm_selection
-			elif event.is_action_pressed("confirm") or event.is_action_pressed("launch"):
+			elif Controls.event_pressed(event, "confirm") or Controls.event_pressed(event, "launch"):
 				resolve_confirmation()
-		elif event.is_action_pressed("abort"):
-			close()
-		elif event.is_action_pressed("tab"):
-			select_category(category + (-1 if event.shift_pressed else 1))
-		elif event.is_action_pressed("move_up"):
-			selection = posmod(selection - 1, ROWS[category].size())
-		elif event.is_action_pressed("move_down"):
-			selection = posmod(selection + 1, ROWS[category].size())
-		elif event.is_action_pressed("move_left") or event.is_action_pressed("move_right"):
-			if preferences.values.has(ROWS[category][selection][1]):
-				activate(-1 if event.is_action_pressed("move_left") else 1)
-		elif event.is_action_pressed("confirm") or event.is_action_pressed("launch"):
-			activate()
+		elif adjusting_value:
+			if Controls.event_pressed(event, "abort") or Controls.event_pressed(event, "confirm") or Controls.event_pressed(event, "launch"):
+				adjusting_value = false
+			elif Controls.event_pressed(event, "move_left") or Controls.event_pressed(event, "move_right"):
+				activate(-1 if Controls.event_pressed(event, "move_left") else 1)
+		elif settings_focused:
+			if Controls.event_pressed(event, "move_left") or Controls.event_pressed(event, "abort"):
+				settings_focused = false
+			elif Controls.event_pressed(event, "move_up"):
+				selection = posmod(selection - 1, ROWS[category].size())
+			elif Controls.event_pressed(event, "move_down"):
+				selection = posmod(selection + 1, ROWS[category].size())
+			elif Controls.event_pressed(event, "confirm") or Controls.event_pressed(event, "launch"):
+				var key: String = ROWS[category][selection][1]
+				if not _disabled(key):
+					if key == "volume" or key == "resolution":
+						adjusting_value = true
+					else:
+						activate()
+		else:
+			if Controls.event_pressed(event, "abort"):
+				close()
+			elif Controls.event_pressed(event, "move_up"):
+				select_category(category - 1)
+			elif Controls.event_pressed(event, "move_down"):
+				select_category(category + 1)
+			elif Controls.event_pressed(event, "confirm") or Controls.event_pressed(event, "launch"):
+				settings_focused = true
 		get_viewport().set_input_as_handled()
 	elif event is InputEventMouseMotion or event is InputEventMouseButton:
 		var click: bool = event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed
@@ -158,9 +180,11 @@ func _input(event: InputEvent) -> void:
 				if click and category_rect(index).has_point(event.position):
 					select_category(index)
 			for index in ROWS[category].size():
-				if row_rect(index).has_point(event.position):
+				if row_rect(index).has_point(event.position) and (click or (settings_focused and not adjusting_value)):
 					selection = index
 					if click:
+						settings_focused = true
+						adjusting_value = false
 						if ROWS[category][index][1] == "volume":
 							_change("volume", clampi(roundi((event.position.x - 1120) / 300.0 * 20.0) * 5, 0, 100))
 						else:
@@ -184,12 +208,13 @@ func draw() -> void:
 		var rect := category_rect(index)
 		var selected: bool = index == category
 		if selected:
-			_marker(rect.position + Vector2(0, 7))
+			if not settings_focused:
+				_marker(rect.position + Vector2(0, 7))
 			lines.seg(rect.position + Vector2(28, 48), rect.position + Vector2(292, 48), Palette.CYAN, 0.4, 0.1)
 		_text(CATEGORIES[index], rect.position + Vector2(30, 3), 25, Palette.FULLBRIGHT if selected else Palette.DIM, 0, true)
-	_text("TAB   CHANGE CATEGORY", Vector2(82, 684), 11, Palette.DIM)
-	_text("SHIFT+TAB   PREVIOUS", Vector2(82, 706), 11, Palette.DIM)
-	_text("ESC  BACK TO TITLE", back_rect().position + Vector2(0, 18), 16, Palette.CYAN)
+	_text("UP / DOWN   CATEGORY", Vector2(82, 684), 11, Palette.DIM)
+	_text(Controls.hint("ENTER   SELECT CATEGORY"), Vector2(82, 706), 11, Palette.DIM)
+	_text("BACK TO TITLE" if settings_focused else Controls.hint("ESC  BACK TO TITLE"), back_rect().position + Vector2(0, 18), 16, Palette.CYAN)
 	_text("%02d / %02d" % [category + 1, CATEGORIES.size()], Vector2(1480, 119), 12, Palette.DIM, 2)
 	_text(CATEGORIES[category], Vector2(510, 112), 36, Palette.CYAN, 0, true)
 	lines.seg(Vector2(510, 184), Vector2(1480, 184), Palette.DIM, 0.3, 0.1)
@@ -200,12 +225,12 @@ func draw() -> void:
 		var row: Array = ROWS[category][index]
 		var key: String = row[1]
 		var rect := row_rect(index)
-		var selected: bool = selection == index
+		var selected: bool = settings_focused and selection == index
 		var disabled := _disabled(key)
 		var color := Palette.DIM if disabled else (Palette.FULLBRIGHT if selected else Palette.WHITE)
 		if selected:
 			_marker(rect.position + Vector2(-25, 4))
-			lines.seg(rect.position + Vector2(0, 40), rect.position + Vector2(rect.size.x, 40), Palette.DIM, 0.3, 0.1, 0.6)
+			lines.seg(rect.position + Vector2(0, 40), rect.position + Vector2(rect.size.x, 40), Palette.YELLOW if adjusting_value else Palette.DIM, 0.3, 0.1, 0.6)
 		_text(row[0], rect.position, 19, color)
 		if key == "volume":
 			for tick in 21:
@@ -216,13 +241,18 @@ func draw() -> void:
 			var resolution: Vector2i = Preferences.RESOLUTIONS[preferences.values.resolution]
 			_text("< %d X %d >" % [resolution.x, resolution.y], Vector2(1480, rect.position.y), 17, Palette.DIM if disabled else Palette.CYAN, 2)
 		elif preferences.values.has(key):
-			_text("< ON >" if preferences.values[key] else "< OFF >", Vector2(1480, rect.position.y), 17, Palette.DIM if disabled else (Palette.GREEN if preferences.values[key] else Palette.CYAN), 2)
+			_text("ON" if preferences.values[key] else "OFF", Vector2(1480, rect.position.y), 17, Palette.DIM if disabled else (Palette.GREEN if preferences.values[key] else Palette.CYAN), 2)
 		else:
-			_text("ENTER" if selected else "--", Vector2(1480, rect.position.y), 15, Palette.YELLOW if selected else Palette.DIM, 2)
-	var notes := ["WINDOW RESOLUTION APPLIES IN WINDOWED MODE.", "EFFECTS APPLY LIVE TO THIS DISPLAY.", "LEFT / RIGHT ADJUST   CLICK THE METER TO SET VOLUME.", "RESETS REQUIRE CONFIRMATION. OPTIONS ARE KEPT."]
+			_text(Controls.hint("ENTER") if selected else "--", Vector2(1480, rect.position.y), 15, Palette.YELLOW if selected else Palette.DIM, 2)
+	var notes := ["WINDOW RESOLUTION APPLIES IN WINDOWED MODE.", "EFFECTS APPLY LIVE TO THIS DISPLAY.", Controls.hint("ENTER TO ADJUST VOLUME   CLICK THE METER TO SET VOLUME."), "RESETS REQUIRE CONFIRMATION. OPTIONS ARE KEPT."]
 	_text(notes[category], Vector2(510, 748), 12, Palette.CYAN)
 	_text(status, Vector2(510, 782), 12, Palette.YELLOW)
-	_text("UP / DOWN SELECT   LEFT / RIGHT ADJUST   ENTER ACTIVATE", Vector2(510, 858), 11, Palette.DIM)
+	var hint := Controls.hint("UP / DOWN CATEGORY   ENTER SELECT")
+	if adjusting_value:
+		hint = Controls.hint("LEFT / RIGHT ADJUST   ENTER / ESC DONE")
+	elif settings_focused:
+		hint = Controls.hint("UP / DOWN SETTING   ENTER ACTIVATE / ADJUST   LEFT / ESC CATEGORIES")
+	_text(hint, Vector2(510, 858), 11, Palette.DIM)
 
 func _draw_confirmation() -> void:
 	var lines := display.lines
@@ -237,4 +267,4 @@ func _draw_confirmation() -> void:
 		var rect := confirm_rect(index)
 		lines.rect(rect, Palette.YELLOW if confirm_selection == index else Palette.DIM, 0.3, 0.1)
 		_text("CANCEL" if index == 0 else "CONFIRM", rect.position + Vector2(175, 20), 20, Palette.FULLBRIGHT if confirm_selection == index else Palette.DIM, 1)
-	_text("LEFT / RIGHT CHOOSE   ENTER SELECT   ESC CANCEL", Vector2(510, 748), 12, Palette.CYAN)
+	_text(Controls.hint("LEFT / RIGHT CHOOSE   ENTER SELECT   ESC CANCEL"), Vector2(510, 748), 12, Palette.CYAN)

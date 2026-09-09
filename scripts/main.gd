@@ -287,31 +287,7 @@ func _ready() -> void:
 
 
 func _setup_input() -> void:
-	var map := {
-		"move_left": [KEY_LEFT, KEY_A],
-		"move_right": [KEY_RIGHT, KEY_D],
-		"move_up": [KEY_UP, KEY_W],
-		"move_down": [KEY_DOWN, KEY_S],
-		"draw": [KEY_SPACE],
-		"slow": [KEY_SHIFT],
-		"confirm": [KEY_ENTER, KEY_KP_ENTER],
-		"launch": [KEY_SPACE],
-		"abort": [KEY_ESCAPE],
-		"special": [KEY_E, KEY_CTRL],
-		"tab": [KEY_TAB],
-		"br_harden": [KEY_Q],
-		"br_overdrive": [KEY_E],
-		"br_host": [KEY_H],
-		"br_join": [KEY_J],
-		"br_invite": [KEY_I],
-	}
-	for action in map:
-		if not InputMap.has_action(action):
-			InputMap.add_action(action)
-		for key in map[action]:
-			var ev := InputEventKey.new()
-			ev.physical_keycode = key
-			InputMap.action_add_event(action, ev)
+	Controls.setup_actions()
 
 
 func _process(dt: float) -> void:

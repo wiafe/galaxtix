@@ -558,9 +558,7 @@ func advance() -> void:
 	begin_round()
 
 func poll_local_input() -> void:
-	var d := Vector2i.ZERO
-	for pair in [["move_up", Vector2i.UP], ["move_right", Vector2i.RIGHT], ["move_down", Vector2i.DOWN], ["move_left", Vector2i.LEFT]]:
-		if Input.is_action_pressed(pair[0]): d = pair[1]
+	var d := Controls.direction()
 	set_intent(local_id, d, true)   # no draw key in this mode: leaving your land is the cut
 	var me := racer(local_id)
 	if me == null: return
@@ -848,32 +846,32 @@ func draw(lines: ScopeLines, fill: Sprite2D) -> void:
 	if phase != "results":
 		text(lines, "YOUR TERRITORY", Vector2(LX, 206), 13, Palette.DIM)
 		text(lines, "%.1f%%" % percent(player), Vector2(LX + COL_W, 206), 16, Palette.CYAN, 2)
-		text(lines, "Q HARDEN", Vector2(LX, 250), 12, Palette.CYAN if player.has_harden else Palette.DIM)
-		text(lines, "E OVERDRIVE", Vector2(LX + 150, 250), 12, Palette.CYAN if player.has_drive else Palette.DIM)
+		text(lines, Controls.action_label("br_harden", "Q") + " HARDEN", Vector2(LX, 250), 10 if Controls.using_controller else 12, Palette.CYAN if player.has_harden else Palette.DIM)
+		text(lines, Controls.action_label("br_overdrive", "E") + " OVERDRIVE", Vector2(LX + 150, 250), 10 if Controls.using_controller else 12, Palette.CYAN if player.has_drive else Palette.DIM)
 		if player.harden > 0.0:
 			text(lines, "HARDENED  %.1fS" % player.harden, Vector2(LX, 282), 13, Palette.WHITE)
 		elif player.drive > 0.0:
 			text(lines, "OVERDRIVE  %.1fS" % player.drive, Vector2(LX, 282), 13, Palette.WHITE)
 		elif player.exposed:
 			text(lines, "CUTTING", Vector2(LX, 282), 13, Palette.ORANGE)
-	text(lines, "ARROWS MOVE", Vector2(LX, 786), 12, Palette.WHITE)
+	text(lines, Controls.hint("ARROWS MOVE"), Vector2(LX, 786), 12, Palette.WHITE)
 	text(lines, "LEAVE YOUR LAND TO CUT", Vector2(LX, 810), 12, Palette.WHITE)
-	text(lines, "ESC MENU", Vector2(LX, 846), 11, Palette.DIM)
+	text(lines, Controls.hint("ESC MENU"), Vector2(LX, 846), 11, Palette.DIM)
 	if notice_time > 0.0: text(lines, notice, Vector2(FRAME.get_center().x, 740), 12, Palette.YELLOW, 1)
 	if phase != "playing":
 		var title := "SURVEYORS ONLY - CLOSE A LOOP TO CLAIM"
-		var sub := "ENTER START - TOP %d %s" % [CUTS[round_index], "WINS" if round_index == 2 else "ADVANCE"]
+		var sub := Controls.hint("ENTER START - TOP %d %s") % [CUTS[round_index], "WINS" if round_index == 2 else "ADVANCE"]
 		if guest: sub = "WAITING FOR THE HOST"
-		elif humans == 1 and Net.is_offline(): sub += "   H HOST FOR FRIENDS   J JOIN"
+		elif humans == 1 and Net.is_offline(): sub += "   %s HOST FOR FRIENDS   %s JOIN" % [Controls.action_label("br_host", "H"), Controls.action_label("br_join", "J")]
 		if phase == "results":
 			title = "QUALIFIED" if qualified() else "ELIMINATED"
 			if round_index == 2: title = "CHAMPION" if qualified() else "%s WINS" % label(standings[0].id)
-			sub = "ENTER NEXT ROUND" if qualified() and round_index < 2 else "ENTER PLAY AGAIN"
-			if humans > 1 and not qualified() and round_index < 2: sub = "ENTER WATCH THE NEXT ROUND"
+			sub = Controls.hint("ENTER NEXT ROUND") if qualified() and round_index < 2 else Controls.hint("ENTER PLAY AGAIN")
+			if humans > 1 and not qualified() and round_index < 2: sub = Controls.hint("ENTER WATCH THE NEXT ROUND")
 			if guest: sub = "WAITING FOR THE HOST"
 			if not reveal_complete():
 				title = "TIME" if phase_time < REVEAL_BEAT else "FINAL STANDINGS"
-				sub = "WAITING FOR THE HOST" if guest else "ENTER SKIP"
+				sub = "WAITING FOR THE HOST" if guest else Controls.hint("ENTER SKIP")
 		if Net.pending(): sub = "OPENING A STEAM LOBBY..."
 		text(lines, title, Vector2(FRAME.get_center().x, 130), 18, Palette.YELLOW, 1)
 		text(lines, sub, Vector2(FRAME.get_center().x, 166), 12, Palette.WHITE, 1)
@@ -959,8 +957,8 @@ func draw_lobby(lines: ScopeLines) -> void:
 	var message: String = lobby.get("message", "")
 	if message != "": text(lines, message, Vector2(cx, 640), 12, Palette.YELLOW, 1)
 	if lobby.get("host", false):
-		text(lines, "ENTER START THE MATCH" if lobby_names.size() > 1 else "WAITING FOR FRIENDS - ENTER STARTS ANYWAY", Vector2(cx, 166), 12, Palette.WHITE, 1)
-		if lobby.get("overlay", false): text(lines, "I STEAM INVITE OVERLAY", Vector2(cx, 700), 11, Palette.CYAN, 1)
+		text(lines, Controls.hint("ENTER START THE MATCH") if lobby_names.size() > 1 else Controls.hint("WAITING FOR FRIENDS - ENTER STARTS ANYWAY"), Vector2(cx, 166), 12, Palette.WHITE, 1)
+		if lobby.get("overlay", false): text(lines, Controls.action_label("br_invite", "I") + " STEAM INVITE OVERLAY", Vector2(cx, 700), 11, Palette.CYAN, 1)
 	else:
 		text(lines, "WAITING FOR THE HOST TO START", Vector2(cx, 166), 12, Palette.WHITE, 1)
-	text(lines, "ESC LEAVE", Vector2(LX, 846), 11, Palette.DIM)
+	text(lines, Controls.hint("ESC LEAVE"), Vector2(LX, 846), 11, Palette.DIM)

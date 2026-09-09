@@ -74,6 +74,8 @@ func render_frame() -> void:
 
 func check() -> void:
 	assert(not Save.enabled)
+	# Placement fixtures describe built-in arenas, independent of maps edited by the player.
+	for stage in range(1, 9): MapCatalog.testing["roguelite_%02d" % stage] = null
 	Save.set_process(false)
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--rogue-shots="):
@@ -92,7 +94,11 @@ func check() -> void:
 	check_beacon()
 	check_cargo()
 	check_breach()
+	await check_objective_guidance()
+	await check_sector_briefings()
+	await check_corruption_guidance()
 	rogue.end_run()
+	MapCatalog.testing.clear()
 	assert(Save.data == campaign, "Objective encounters leave Jump untouched")
 	print("ROGUELITE OBJECTIVES OK: kind table and routes, disc placement, beacon capture/guard/clear, cargo pickup/delivery/drop for every ship, breach seeding/pressure/seal and goal ordering")
 	get_tree().quit()
@@ -258,6 +264,7 @@ func check_cargo() -> void:
 		assert(rogue.try_step(Vector2i.DOWN, true, false))
 		assert(not rogue.cargo.carrying, "No pickup before the ship reaches the pod")
 	assert(rogue.try_step(Vector2i.DOWN, true, false) and rogue.p == c and rogue.cargo.carrying, "The trail head picks the pod up")
+	assert(rogue.objective_instruction().contains("RETURN TO SAFE LAND") and rogue.objective_notice.begins_with("CARGO ABOARD"))
 	for step in hi.y - c.y + 1:
 		assert(rogue.try_step(Vector2i.DOWN, true, false))
 	assert(not rogue.drawing and not rogue.cargo.carrying and int(rogue.cargo.delivered) == 1)
@@ -265,6 +272,7 @@ func check_cargo() -> void:
 	var moved: Vector2i = rogue.cargo.cell
 	assert(moved != c and rogue.cells[rogue.idx(moved.x, moved.y)] == Game.FREE, "The next pod waits in the void")
 	assert(rogue.objective_label() == "CARGO 1/2")
+	assert(rogue.objective_notice.begins_with("CARGO DELIVERED 1/2") and rogue.objective_notice_time > 0)
 	# The second run completes the objective on the same claim.
 	var c2 := Vector2i(hi.x - 10, lo.y + 10)
 	rogue.cargo.cell = c2
@@ -279,6 +287,12 @@ func check_cargo() -> void:
 	assert(rogue.cells[rogue.idx(c.x, c.y)] == Game.CLAIMED and rogue.cargo.cell != c and not rogue.cargo.carrying)
 	moved = rogue.cargo.cell
 	assert(rogue.cells[rogue.idx(moved.x, moved.y)] == Game.FREE and int(rogue.cargo.delivered) == 0)
+	assert(rogue.objective_notice.begins_with("POD RELOCATED") and rogue.objective_instruction().contains("ENCLOSING ALONE DOES NOT DELIVER"), "Enclosing without touching explains the missing delivery")
+	var notice: String = rogue.objective_notice
+	var notice_time: float = rogue.objective_notice_time
+	rogue.begin_draft_reward()
+	rogue.update(0.016)
+	assert(rogue.objective_notice == notice and rogue.objective_notice_time == notice_time, "Card rewards must not consume objective feedback")
 	# Death drops the pod where it was; hardened trail turning to land relocates it.
 	c = cargo_fixture("surveyor")
 	var lives: int = rogue.lives
@@ -290,6 +304,7 @@ func check_cargo() -> void:
 	rogue.invuln = 0
 	rogue.die("TEST")
 	assert(not rogue.cargo.carrying and rogue.lives == lives - 1)
+	assert(rogue.objective_notice.begins_with("CARGO DROPPED"))
 	assert(rogue.cargo.cell == c and rogue.cells[rogue.idx(c.x, c.y)] == Game.FREE, "Dropped cargo returns to its cell")
 	rogue.state = Game.State.PLAYING
 	c = cargo_fixture("surveyor")
@@ -332,14 +347,16 @@ func check_cargo() -> void:
 	rogue.lance_cd = 0
 	rogue.fire_lance()
 	assert(rogue.tether_active and rogue.trail.has(c) and not rogue.cargo.carrying, "Casting the tether is not contact")
+	rogue.update(0.016)
+	assert(rogue.cargo.cell == c and not rogue.cargo.carrying, "Cargo must stay on an exposed tether until the rider reaches it")
 	for step in 200:
 		if rogue.cargo.carrying: break
-		rogue.ride_step()
+		rogue.update(0.016)
 		assert(rogue.cargo.carrying == (rogue.p == c), "Pickup happens exactly when the ride reaches the pod")
 	assert(rogue.cargo.carrying)
 	for step in 200:
 		if not rogue.tether_active: break
-		rogue.ride_step()
+		rogue.update(0.016)
 	assert(not rogue.tether_active and int(rogue.cargo.delivered) == 1 and rogue.earned_salvage == salvage + 2)
 	# Sapper: walks the void to the pod, and delivers by stepping back onto land.
 	c = cargo_fixture("sapper")
@@ -431,3 +448,132 @@ func check_breach() -> void:
 	assert(rogue.breach.sealed and rogue.pending_clear and rogue.phase == "reward")
 	resolve_to_clear()
 	assert(rogue.phase == "sector_clear" and rogue.lives == lives)
+
+func check_objective_guidance() -> void:
+	for kind in Sectors.KINDS:
+		var depth := maxi(3, int(Sectors.KINDS[kind].min_depth))
+		force_kind("surveyor", kind, depth, 3)
+		var instruction: String = rogue.objective_instruction()
+		assert(not instruction.is_empty())
+		var rows: Array[String] = rogue.paragraph_lines(instruction, 820, 18)
+		assert(rows.size() <= 3, "Briefing instructions fit above the reward and Begin button")
+		for row in rows: assert(VectorFont.width(row, 18) <= 820)
+		assert(VectorFont.width("OBJECTIVE: " + instruction, 13) <= 1120, "Objective instruction fits the pause screen")
+		assert(VectorFont.width("OBJECTIVE: " + Sectors.objective_copy(kind, depth), 12) <= 1150, "Chart preview explains its clear rule without clipping")
+		if kind == "breach":
+			assert(instruction.contains("ENCLOSE THE BREACH") and instruction.contains("25%"))
+			rogue.breach.sealed = true
+			assert(rogue.objective_instruction().begins_with("BREACH SEALED - REACH"))
+		if kind == "beacon": assert(instruction.contains("BEACON DISCS"))
+	var c := cargo_fixture("surveyor")
+	await shot("cargo-pickup-instructions")
+	cut_line_to(c)
+	await shot("cargo-aboard-instructions")
+	for step in hi.y - c.y + 1:
+		assert(rogue.try_step(Vector2i.DOWN, true, false))
+	assert(rogue.objective_notice.contains("SALVAGE AWARDED"))
+	assert(VectorFont.width(rogue.objective_notice, 12) < 620, "Delivery feedback fits beside the territory readout")
+	await shot("cargo-delivery-feedback")
+	rogue.pause_run()
+	await shot("cargo-pause-objective")
+	rogue.chart_depth = 3
+	rogue.route_path.assign([0, 1])
+	rogue.route[2][1] = {"depth": 3, "stage": 3, "kind": "cargo"}
+	rogue.msg_t = 0.0
+	rogue.open_chart()
+	await shot("cargo-chart-objective")
+
+func check_corruption_guidance() -> void:
+	for ship_id in ["surveyor", "lancer", "sapper"]:
+		for kind in ["survey", "breach"]:
+			force_kind(ship_id, kind, 8, 3)
+			for rank in [0, 10]:
+				rogue.progress.ranks.containment = rank
+				var help: Array[String] = rogue.corruption_help()
+				assert(help[0].contains("STANDING ON PURPLE" if ship_id == "sapper" else "ANY UNFINISHED TRAIL"))
+				assert(help[0].contains("4.0S" if rank == 0 else "5.7S"), "Displayed contact time follows Containment resistance")
+				assert(" ".join(help).contains("25%") == (kind == "breach"), "Only breaches have an arena infection limit")
+				for layout in [Vector3(820, 15, 22), Vector3(540, 13, 20)]:
+					var height := 0.0
+					for section in help:
+						var rows: Array[String] = rogue.paragraph_lines(section, layout.x, layout.y)
+						height += rows.size() * layout.z + 8
+						for row in rows: assert(VectorFont.width(row, layout.y) <= layout.x)
+					assert(height <= (120 if layout.x == 820 else 230), "Compact corruption help stays clear of the Begin button: %s" % height)
+			rogue.phase = "briefing"
+			await shot("corruption-briefing-" + kind + "-" + ship_id)
+			rogue.phase = "run"
+			rogue.exposure = 2.0
+			await shot("corruption-hud-" + kind + "-" + ship_id)
+			rogue.pause_run()
+			await shot("corruption-pause-" + kind + "-" + ship_id)
+			if kind == "breach":
+				rogue.breach.sealed = true
+				var sealed_help := " ".join(rogue.corruption_help())
+				assert(sealed_help.contains("SPREAD STOPPED") and sealed_help.contains("STILL CAUSES EXPOSURE"))
+				assert(not sealed_help.contains("25%"))
+				await shot("corruption-sealed-" + ship_id)
+	rogue.progress.ranks.containment = 0
+
+func check_sector_briefings() -> void:
+	# Launch every kind through the real transit and intro, including a second sector.
+	rogue.start_run()
+	rogue.transit_skip = false
+	var depth := 0
+	for kind in Sectors.KINDS:
+		depth += 1
+		rogue.chart_depth = depth
+		rogue.route[depth - 1] = [{"depth": depth, "stage": mini(depth, 6), "kind": kind}]
+		rogue.open_chart()
+		rogue.launch_destination(0)
+		assert(rogue.state == Game.State.TRANSIT and rogue.phase == "run")
+		for frame in 600:
+			rogue.update(0.016)
+			if rogue.phase == "briefing": break
+		assert(rogue.phase == "briefing" and rogue.state == Game.State.PLAYING, "Each loaded sector waits at its briefing")
+		assert(not rogue.cells.is_empty() and not rogue.qixes.is_empty())
+		if kind == "cargo": assert(not rogue.cargo.is_empty() and rogue.cargo.runs > 0)
+		if kind == "beacon": assert(not rogue.zones.is_empty())
+		if kind == "breach": assert(not rogue.breach.is_empty() and rogue.corruption.count(1) > 0)
+		var position: Vector2 = rogue.qixes[0].c
+		var clock_before: float = rogue.time
+		var invuln_before: float = rogue.invuln
+		var infection: PackedByteArray = rogue.corruption.duplicate()
+		var hull: int = rogue.lives
+		Input.action_press("confirm")
+		for frame in 30: rogue.update(0.1)
+		assert(rogue.phase == "briefing" and not rogue.briefing_ready, "Held launch input cannot dismiss the briefing")
+		Input.action_release("confirm")
+		await get_tree().process_frame
+		rogue.update(0.016)
+		assert(rogue.qixes[0].c == position and rogue.time == clock_before and rogue.invuln == invuln_before)
+		assert(rogue.corruption == infection and rogue.lives == hull, "Enemies, infection, protection and hull stay frozen")
+		render_frame()
+		assert(main.display.modal_backdrop.visible and main.display.modal_lines.visible)
+		assert(main.display.modal_lines.count > 0 and main.display.lines.multimesh.visible_instance_count == main.display.lines.modal_start, "Modal text renders separately above the blurred arena")
+		click(Vector2(100, 100))
+		assert(rogue.phase == "briefing", "Clicking outside the modal does not launch")
+		await shot("briefing-" + kind)
+		if kind == "cargo":
+			var event := InputEventJoypadButton.new()
+			event.device = 3
+			event.button_index = JOY_BUTTON_A
+			event.pressed = true
+			Input.parse_input_event(event)
+			Input.flush_buffered_events()
+			rogue.update(0.016)
+			assert(rogue.phase == "run" and not rogue.draw_armed, "Controller confirm begins without firing the ship")
+			var release := event.duplicate() as InputEventJoypadButton
+			release.pressed = false
+			Input.parse_input_event(release)
+			Input.flush_buffered_events()
+			await get_tree().process_frame
+		elif kind == "beacon":
+			click(rogue.choice_rect(0).get_center())
+		else:
+			await tap("confirm")
+		assert(rogue.phase == "run" and rogue.qixes[0].c == position, "Confirmation leaves the loaded arena intact")
+		render_frame()
+		assert(not main.display.modal_backdrop.visible and not main.display.modal_lines.visible, "Begin removes blur and modal text immediately")
+		rogue.update(0.016)
+		assert(rogue.time > clock_before, "Simulation resumes after Begin")

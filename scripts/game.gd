@@ -176,6 +176,7 @@ class Turret:
 class Bolt:
 	var pos: Vector2
 	var vel: Vector2
+	var source := "TURRET FIRE"
 
 class Spawner:
 	var cell: Vector2i
@@ -743,15 +744,7 @@ func sparx_speed() -> float:
 func read_input() -> Dictionary:
 	if autopilot:
 		return read_autopilot()
-	var d := Vector2i.ZERO
-	if Input.is_action_pressed("move_left"):
-		d = Vector2i.LEFT
-	elif Input.is_action_pressed("move_right"):
-		d = Vector2i.RIGHT
-	elif Input.is_action_pressed("move_up"):
-		d = Vector2i.UP
-	elif Input.is_action_pressed("move_down"):
-		d = Vector2i.DOWN
+	var d := Controls.direction()
 	return {"dir": d, "draw": Input.is_action_pressed("draw"), "slow": Input.is_action_pressed("slow"),
 		"abort": Input.is_action_just_pressed("abort"), "special": Input.is_action_just_pressed("special")}
 
@@ -967,13 +960,13 @@ func update_play(dt: float) -> void:
 		update_qix(q, dt, qix_speed())
 		var qc := qix_trail_cell(q)
 		if qc.x >= 0 and tether_hit(qc):
-			die("ANOMALY CONTACT")
+			die(qix_contact_reason(q))
 			return
 		if sap_live and qix_in_disc(q) and wire_hit():
 			die("CHARGE BREACHED")
 			return
 		if exposed() and not drawing and qix_near(q, vis, CELL * 0.9):
-			die("ANOMALY CONTACT")   # a Sapper out in the void with no line
+			die(qix_contact_reason(q))   # a Sapper out in the void with no line
 			return
 		var hit_seal := qix_hits_seal(q)
 		if hit_seal != null:
@@ -1324,6 +1317,9 @@ func spawn_qix() -> void:
 func qix_ends(c: Vector2, theta: float, len: float) -> PackedVector2Array:
 	var d := Vector2(cos(theta), sin(theta)) * len * 0.5
 	return PackedVector2Array([c - d, c + d])
+
+func qix_contact_reason(_q: QixBody) -> String:
+	return "ANOMALY CONTACT"
 
 
 func qix_blocked(c: Vector2, theta: float, len: float) -> bool:
@@ -1792,7 +1788,7 @@ func draw_hud() -> void:
 				sub = "ONE SIDE HARD - OTHER RUNNING" if (wall_done[0] or wall_done[1]) else "WALL BUILDING - A HIT HURTS"
 				ab_col = Palette.YELLOW
 			else:
-				sub = "HOLD SPACE: BUILD A LINE"
+				sub = Controls.hint("HOLD SPACE: BUILD A LINE")
 		"lancer":
 			if tether_active:
 				sub = "RIDING"
@@ -1813,7 +1809,7 @@ func draw_hud() -> void:
 				ab = sap_charge / float(sap_radius())
 				ab_col = Palette.YELLOW
 			else:
-				sub = "HOLD SPACE: CHARGE"
+				sub = Controls.hint("HOLD SPACE: CHARGE")
 	VectorFont.draw(lines, ship_line, Vector2(lx, y), 14, Palette.WHITE, 0.4, 0.15)
 	y += 20
 	if sub != "":
@@ -1845,24 +1841,24 @@ func draw_hud() -> void:
 	if status != "":
 		VectorFont.draw(lines, status, Vector2(lx, y + 8), 15, sc, 1.0, 0.4)
 	# how-to card at the foot of the left column
-	var help1 := "SPACE: DRAW INTO THE VOID. CLOSE A LOOP TO CLAIM."
-	var help2 := "ENCLOSE NODES FOR FLUX. SHIFT: SLOW, +1 EACH."
-	var verb := "SPACE DRAW"
+	var help1 := Controls.hint("SPACE: DRAW INTO THE VOID. CLOSE A LOOP TO CLAIM.")
+	var help2 := Controls.hint("ENCLOSE NODES FOR FLUX. SHIFT: SLOW, +1 EACH.")
+	var verb := Controls.hint("SPACE DRAW")
 	match ship.id:
 		"sapper":
-			help1 = "HOLD SPACE IN THE VOID OR ON THE COAST: A DISC GROWS."
+			help1 = Controls.hint("HOLD SPACE IN THE VOID OR ON THE COAST: A DISC GROWS.")
 			help2 = "IT CAN BE HIT. RELEASE TO CLAIM IT. ENCLOSE NODES FOR FLUX."
-			verb = "SPACE CHARGE"
+			verb = Controls.hint("SPACE CHARGE")
 		"leaper":
-			help1 = "HOLD SPACE TO AIM THE BUOY, ARROWS TURN IT. RELEASE: LEAP."
+			help1 = Controls.hint("HOLD SPACE TO AIM THE BUOY, ARROWS TURN IT. RELEASE: LEAP.")
 			help2 = "RELEASE: LEAP TO THE TIP, A WALL SPLITS BOTH WAYS. HOLD TO THE FAR COAST TO LEAP THERE. FIRST SIDE TO LAND HARDENS."
-			verb = "SPACE LEAP"
+			verb = Controls.hint("SPACE LEAP")
 		"lancer":
-			help1 = "SPACE: LANCE A TETHER AHEAD AND RIDE IT TO LAND."
-			help2 = "IT CAN BE CUT. STEER + SPACE MID-RIDE TO BEND."
-			verb = "SPACE LANCE"
+			help1 = Controls.hint("SPACE: LANCE A TETHER AHEAD AND RIDE IT TO LAND.")
+			help2 = Controls.hint("IT CAN BE CUT. STEER + SPACE MID-RIDE TO BEND.")
+			verb = Controls.hint("SPACE LANCE")
 		"bulwark":
-			help1 = "HOLD SPACE TO ADVANCE. LET GO IN THE VOID: BRACE, HARDENING X3."
+			help1 = Controls.hint("HOLD SPACE TO ADVANCE. LET GO IN THE VOID: BRACE, HARDENING X3.")
 			help2 = "THE TRAIL HARDENS BEHIND YOU. LOOPS SEAL WHEN IT CATCHES UP."
 	var help: Array = wrap_text(help1 + " " + help2, 40)
 	var hy := 866.0 - help.size() * 16.0
@@ -1878,7 +1874,7 @@ func draw_hud() -> void:
 	VectorFont.draw(lines, "NODES %d/%d" % [sector_nodes_captured, nodes.size()], Vector2(rx, y), 14, nc, 0.5, 0.2)
 	if level == Galaxies.LENGTH and not endless:
 		VectorFont.draw(lines, "BOSS: " + String(gal.boss_name), Vector2(rx, y + 40), 12, Palette.RED, 0.6, 0.2)
-	var keys := ["ARROWS  MOVE", verb.replace(" ", "  "), "SHIFT  SLOW", "ESC  ABORT"]
+	var keys := [Controls.hint("ARROWS  MOVE"), verb.replace(" ", "  "), Controls.hint("SHIFT  SLOW"), Controls.hint("ESC  ABORT")]
 	var ky := 866.0 - keys.size() * 16.0
 	lines.seg(Vector2(rx, ky - 14), Vector2(rx + w, ky - 14), Palette.DIM, 0.3, 0.1, 0.7)
 	for i in keys.size():
@@ -2054,16 +2050,16 @@ func update_hazards(dt: float) -> void:
 			bolts.remove_at(j)
 		elif cells[idx(bc.x, bc.y)] == TRAIL:
 			if tether_hit(bc) and wire_hit():
-				die("TURRET FIRE")
+				die(b.source)
 				return
 			bolts.remove_at(j)
 		elif sap_live and b.pos.distance_to(center(sap_cell)) < sap_charge * CELL:
 			bolts.remove_at(j)
 			if wire_hit():
-				die("TURRET FIRE")
+				die(b.source)
 				return
 		elif exposed() and b.pos.distance_to(vis) < 7.0:
-			die("TURRET FIRE")
+			die(b.source)
 			return
 		elif cells[idx(bc.x, bc.y)] == SEAL_SOFT:
 			lose_seal(seal_at(bc))
@@ -2775,7 +2771,7 @@ func draw_title_panel() -> void:
 		VectorFont.draw(lines, TITLE_ITEMS[i], Vector2(PANEL_X + 30, ry), 30, col, 1.0 if sel else 0.4, 0.4 if sel else 0.1, 0, 1.3, VectorFont.display)
 	var hc := Palette.DIM
 	hc.a = a
-	VectorFont.draw(lines, "ARROWS   ENTER", Vector2(PANEL_X, 850), 11, hc, 0.3, 0.1)
+	VectorFont.draw(lines, Controls.hint("ARROWS   ENTER"), Vector2(PANEL_X, 850), 11, hc, 0.3, 0.1)
 	if beacon_note_t > 0.0:
 		VectorFont.draw(lines, "BEACON +%s FLUX WHILE AWAY" % fmt(Save.offline_gain), Vector2(PANEL_X, 780), 11, Palette.GREEN, 0.6, 0.2)
 
@@ -3237,6 +3233,7 @@ func activate_result(index: int) -> void:
 
 
 func _input(event: InputEvent) -> void:
+	Controls.observe_input(event)
 	if state == State.ROGUELITE:
 		return
 	if state == State.TITLE and title_t >= 1.0 and title_exit < 0 and not show_log:
@@ -3365,7 +3362,7 @@ func draw_outro_card() -> void:
 			var col := Palette.CYAN if result_selection == i else Palette.DIM
 			lines.rect(rect, col, 0.5, 0.2, 1.2)
 			VectorFont.draw(lines, "UPGRADES" if i == 0 else "RESTART", rect.get_center() - Vector2(0, 8), 16, col, 0.5, 0.2, 1)
-		VectorFont.draw(lines, "LEFT/RIGHT CHOOSE   ENTER SELECT   ESC DOCK", Vector2(cx, 746), 11, Palette.DIM, 0.4, 0.1, 1)
+		VectorFont.draw(lines, Controls.hint("LEFT/RIGHT CHOOSE   ENTER SELECT   ESC DOCK"), Vector2(cx, 746), 11, Palette.DIM, 0.4, 0.1, 1)
 
 
 # ------------------------------------------------------------------ transit (dock -> sector)
@@ -3487,7 +3484,7 @@ func draw_transit() -> void:
 		lines.rect(Rect2(bx + 2.0, by + 2.0, 596.0 * k, 6.0), gal.coast, 0.3, 0.1, 0.9)
 	VectorFont.draw(lines, "DISTANCE", Vector2(bx, by - 12), 10, Palette.WHITE, 0.4, 0.1, 0)
 	VectorFont.draw(lines, "%d%%" % int(k * 100.0), Vector2(bx + 600.0, by - 12), 10, Palette.WHITE, 0.4, 0.1, 2)
-	VectorFont.draw(lines, "SPACE  SKIP", Vector2(cx, 850), 9, Palette.DIM, 0.4, 0.1, 1)
+	VectorFont.draw(lines, Controls.hint("SPACE  SKIP"), Vector2(cx, 850), 9, Palette.DIM, 0.4, 0.1, 1)
 
 
 # ------------------------------------------------------------------ leaper
@@ -4096,14 +4093,14 @@ func draw_dock_panel() -> void:
 			draw_dock_desc(635, 205, 420)
 		lines.rect(Rect2(580, 804, 440, 44), Palette.CYAN)
 		if dock_sel == 2 and not Ships.owned(sh.id):
-			draw_currency_caption("UNLOCK", str(int(sh.cost)), true, Vector2(800, 826), " [ENTER]", Ships.can_buy(sh.id))
+			draw_currency_caption("UNLOCK", str(int(sh.cost)), true, Vector2(800, 826), Controls.hint(" [ENTER]"), Ships.can_buy(sh.id))
 		else:
-			VectorFont.draw(lines, action + " [ENTER]", Vector2(800, 819), 16, Palette.CYAN, 0.0, 0.0, 1)
-	var hint := "LEFT/RIGHT CHOOSE   ENTER CONTINUE   ESC BACK"
+			VectorFont.draw(lines, action + Controls.hint(" [ENTER]"), Vector2(800, 819), 16, Palette.CYAN, 0.0, 0.0, 1)
+	var hint := Controls.hint("LEFT/RIGHT CHOOSE   ENTER CONTINUE   ESC BACK")
 	if dock_tab == 1:
-		hint = "UP/DOWN ROW   LEFT/RIGHT SHIP   ENTER BUY   ESC BACK"
+		hint = Controls.hint("UP/DOWN ROW   LEFT/RIGHT SHIP   ENTER BUY   ESC BACK")
 	elif dock_sel == 2:
-		hint = "LEFT/RIGHT SHIP   DOWN UPGRADES   %s   ESC BACK" % ("ENTER/SPACE LAUNCH" if Ships.owned(sh.id) else "ENTER UNLOCK")
+		hint = Controls.hint("LEFT/RIGHT SHIP   DOWN UPGRADES   %s   ESC BACK") % (Controls.hint("ENTER/SPACE LAUNCH") if Ships.owned(sh.id) else Controls.hint("ENTER UNLOCK"))
 	VectorFont.draw(lines, hint, Vector2(800, 873), 11, Palette.DIM, 0.0, 0.0, 1)
 
 
@@ -4190,14 +4187,14 @@ func draw_dock_desc(y: float, x := 360.0, max_width := 880.0) -> void:
 		elif not scan_layout.is_empty():
 			text = "%d NODES / %d HAZARDS / CLAIM %d%%" % [scan_layout.nodes.size(), scan_layout.turrets.size() + scan_layout.spawners.size(), roundi(capture_target() * 100)]
 	elif dock_sel == 2:
-		text = String(sh.desc)
+		text = Controls.hint(String(sh.desc))
 		if not Ships.owned(sh.id):
 			VectorFont.draw(lines, "UNLOCK", Vector2(x, y), 12, Palette.CYAN)
 			draw_dock_currency(Vector2(x + VectorFont.width("UNLOCK", 12) + 18, y + 6), str(int(sh.cost)), true, Ships.can_buy(sh.id))
 			y += 26
 	elif dock_sel < dock_rows() - 1:
 		var entry := dock_upgrade_at(dock_sel)
-		text = String(entry[1].desc)
+		text = Controls.hint(String(entry[1].desc))
 		if entry[0] == "ship":
 			text = String(sh.name) + ": " + text
 	else:

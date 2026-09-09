@@ -93,6 +93,9 @@ func check() -> void:
 	for i in 120:
 		rogue.update(0.05)
 	assert(rogue.state == Game.State.PLAYING and rogue.spawners.is_empty())
+	assert(rogue.phase == "briefing")
+	rogue.activate_choice(0)
+	assert(rogue.phase == "run")
 	rogue.invuln = 10.0
 	for i in 120:
 		rogue.update(0.05)

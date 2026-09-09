@@ -11,6 +11,7 @@ const STRIDE := 16          # 8 transform + 4 color + 4 custom floats per instan
 
 var buf := PackedFloat32Array()
 var count := 0
+var modal_start := -1 # Beams after this index stay sharp above the modal backdrop.
 var mod_cursor := 0
 var offset := Vector2.ZERO   # screen shake, applied on the CPU
 var zoom := Vector2.ONE      # whole-picture squash about zoom_center (CRT switch-off outro)
@@ -72,6 +73,7 @@ func spike(w: float, s: float) -> void:
 
 func begin() -> void:
 	count = 0
+	modal_start = -1
 	mod_cursor = 0
 	clip_y = Vector2(-INF, INF)
 

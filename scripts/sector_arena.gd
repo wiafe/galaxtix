@@ -1,3 +1,4 @@
+@tool
 class_name SectorArena
 extends RefCounted
 ## Configurable rectangular grid (104 by 104 by default), authored playable silhouettes, plus rock holes with a one-cell walkable rim.
@@ -92,6 +93,12 @@ static func build(level: int, rim: int, galaxy := "helix", holes: Array = [], si
 						solid = true
 						break
 			rock[y * size.x + x] = 1 if solid else 0
+	var result := from_rock(rock, size, rim, galaxy == "roguelite")
+	cache[key] = result
+	return result
+
+## Build the same coast and inner rails from painted terrain.
+static func from_rock(rock: PackedByteArray, size: Vector2i, rim := 0, newly_captured := false) -> Dictionary:
 	# Outer rock is every rock cell 8-connected to the frame; the rest are holes with their own rail.
 	var outer := PackedByteArray()
 	outer.resize(size.x * size.y)
@@ -172,6 +179,13 @@ static func build(level: int, rim: int, galaxy := "helix", holes: Array = [], si
 		if mask[y * size.x + size.x / 2] == 2:
 			start.y = y - 1
 			break
+	if mask[start.y * size.x + start.x] != 1 and not free_cells.is_empty():
+		# Painted arenas can live entirely away from the centre column.
+		var first: Vector2i = free_cells[0]
+		for neighbour in neighbours(first.y * size.x + first.x, size):
+			if mask[neighbour] == 1:
+				start = Vector2i(neighbour % size.x, neighbour / size.x)
+				break
 	var outline := PackedVector2Array()
 	# Merge straight runs to keep circular and plus previews inexpensive.
 	for axis in 2:
@@ -189,9 +203,8 @@ static func build(level: int, rim: int, galaxy := "helix", holes: Array = [], si
 					begin = -1
 	# Roguelite rewards only newly captured territory; initial inner rails must not
 	# count as progress or make the shared win threshold precede its card meter.
-	if galaxy == "roguelite": base_free = free_cells.size()
+	if newly_captured: base_free = free_cells.size()
 	var result := {"mask": mask, "distance": distance, "free_cells": free_cells, "base_free": base_free, "start": start, "outline": outline}
-	cache[key] = result
 	return result
 
 static func neighbours(index: int, size := Vector2i(N, N)) -> PackedInt32Array:

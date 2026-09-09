@@ -22,9 +22,13 @@ const Sectors = preload("res://scripts/roguelite_sectors.gd")
 const EXPEDITION_SECTORS := Sectors.LENGTH
 const MAX_CARD_RANK := 3
 const CHART_JUMP := Rect2(1240, 718, 260, 60)
+const BRIEFING_PANEL := Rect2(380, 320, 840, 250)
+var briefing_ready := false
 var route: Array = []
 var route_path: Array[int] = []
 var active_destination := {}
+var authored_map: MapDefinition
+var authored_behaviors := {} # QixBody -> attack state; also participates in capture flood seeds.
 var chart_depth := 1
 var chart_focus_depth := 1
 var sector_limit := EXPEDITION_SECTORS # Also supports isolated one-sector test fixtures.
@@ -46,6 +50,8 @@ var scroll_dragging := false
 var scroll_grab := 0.0
 var owned_cards: Array[String] = []
 var card_ranks := {}
+var draft_speed_stacks := 0
+var draft_shield_stacks := 0
 var pending_card := {}
 var replace_id := ""
 var rerolls_left := 0
@@ -62,6 +68,8 @@ var drafts_taken := 0
 var credited := PackedByteArray()
 var first_claims := 0
 var capture_count := 0
+var objective_notice := ""
+var objective_notice_time := 0.0
 var pending_clear := false
 var settled := false
 var earned_salvage := 0
@@ -129,6 +137,8 @@ func start_run(_retry_sector := 0) -> void:
 	reset_movement_module()
 	owned_cards.clear()
 	card_ranks.clear()
+	draft_speed_stacks = 0
+	draft_shield_stacks = 0
 	pending_card.clear()
 	replace_id = ""
 	salvage_fraction = progress.salvage_fraction
@@ -186,9 +196,18 @@ func sector_layout(g: Dictionary, lvl: int, rim: int) -> Dictionary:
 	var layout_galaxy := g.duplicate(true)
 	layout_galaxy.id = "roguelite"
 	var layout := super.sector_layout(layout_galaxy, arena_stage(lvl), rim)
+	var map := MapCatalog.read(arena_stage(lvl))
+	if map != null and map.override_terrain:
+		layout.arena = map.arena(rim)
+		layout.shape = map.rock_rectangles()
+		layout.start = layout.arena.start
+	if map != null and map.override_start:
+		layout.start = MapCatalog.nearest(layout.arena.mask, map.grid_size, map.player_start, 1)
 	var placement := RandomNumberGenerator.new()
 	placement.seed = hash("roguelite-pickups:%d" % lvl)
 	var occupied: Array = [layout.start]
+	if map != null and map.override_enemies:
+		for enemy in map.enemies: occupied.append(enemy.cell)
 	layout.nodes.clear()
 	for i in 3 + progress.rank_of("extractor") / 5 + (2 if encounter_kind(lvl) == "salvage" else 0):
 		var cell := layout_pick(placement, 10, occupied, 24.0, layout.shape, layout.arena)
@@ -200,6 +219,11 @@ func sector_layout(g: Dictionary, lvl: int, rim: int) -> Dictionary:
 		var cell := layout_pick(placement, 10, occupied, 28.0, layout.shape, layout.arena)
 		layout.turrets.append({"cell": cell, "axis": Vector2i.DOWN})
 		occupied.append(cell)
+	if map != null and map.override_enemies:
+		layout.turrets.clear()
+		for enemy in map.enemies:
+			if enemy.kind == "turret": layout.turrets.append({"cell": enemy.cell, "axis": enemy.get("axis", Vector2i.DOWN)})
+			elif enemy.kind == "spawner": layout.spawners.append({"cell": enemy.cell})
 	# Objectives draw after pickups and turrets so existing kinds keep their placements.
 	place_objectives(layout, lvl, placement, occupied)
 	return layout
@@ -286,6 +310,8 @@ func disc_claimed_fraction(c: Vector2i, radius: int) -> float:
 	return float(claimed) / maxi(1, cells_in.size())
 
 func setup_objectives() -> void:
+	objective_notice = ""
+	objective_notice_time = 0.0
 	zones.clear()
 	cargo.clear()
 	breach.clear()
@@ -346,6 +372,8 @@ func update_zones() -> String:
 		sparks.ripple(c, (zone.radius + 0.5) * CELL, 320.0, 0.6, Palette.GREEN)
 		sparks.burst(c, 40, 200.0, 1.5, 0.7, Palette.CYAN)
 		note = "BEACON SECURED %d/%d" % [secured, zones.size()]
+	if not note.is_empty():
+		show_objective_notice(note)
 	return note
 
 func zone_contested(zone: Dictionary) -> bool:
@@ -366,9 +394,13 @@ func update_cargo() -> String:
 	if bool(cargo.carrying):
 		return ""
 	var cell: Vector2i = cargo.cell
-	if cells[idx(cell.x, cell.y)] != FREE:
+	if cells[idx(cell.x, cell.y)] not in [FREE, TRAIL]:
 		# Enclosed without contact: the pod is unreachable on land, so it drifts elsewhere.
+		# A Lancer's exposed tether is still reachable when the rider gets here.
 		relocate_pod()
+		var note := "POD RELOCATED - TOUCH IT BEFORE RETURNING TO LAND"
+		show_objective_notice(note)
+		return note
 	return ""
 
 ## Pickup is contact by the ship itself: the trail head, a ridden lance cell, or the Sapper.
@@ -378,6 +410,7 @@ func check_cargo_contact() -> void:
 		return
 	if exposed() and p == cargo.cell:
 		cargo.carrying = true
+		show_objective_notice("CARGO ABOARD - RETURN TO SAFE LAND")
 		set_msg("CARGO ABOARD", 1.0)
 		sparks.ripple(center(cargo.cell), 4.0, 240.0, 0.4, Palette.YELLOW)
 		lines.spike(1.0, 0.2)
@@ -392,13 +425,16 @@ func deliver_cargo() -> String:
 		cargo.done = true
 	else:
 		relocate_pod()
-	return "CARGO DELIVERED %d/%d" % [cargo.delivered, cargo.runs]
+	var note := "CARGO DELIVERED %d/%d" % [cargo.delivered, cargo.runs]
+	show_objective_notice(note + " - SALVAGE AWARDED")
+	return note
 
 func drop_cargo() -> void:
 	if cargo.is_empty() or bool(cargo.done):
 		return
 	if bool(cargo.carrying):
 		cargo.carrying = false
+		show_objective_notice("CARGO DROPPED - PICK THE POD UP AGAIN")
 		set_msg("CARGO LOST", 1.2)
 	var cell: Vector2i = cargo.cell
 	if cells[idx(cell.x, cell.y)] != FREE:
@@ -448,6 +484,7 @@ func update_breach_seal() -> String:
 	var c := center(breach.cell)
 	sparks.ripple(c, (breach.radius + 0.5) * CELL, 360.0, 0.7, Palette.GREEN)
 	sparks.burst(c, 60, 240.0, 1.5, 0.8, Palette.MAGENTA)
+	show_objective_notice("BREACH SEALED - SALVAGE AWARDED")
 	return "BREACH SEALED"
 
 func seed_breach() -> void:
@@ -488,6 +525,20 @@ func objective_label() -> String:
 		"cargo":
 			return "CARGO %d/%d" % [int(cargo.get("delivered", 0)), int(cargo.get("runs", 0))]
 	return "CAPTURE %d%%" % Sectors.capture_goal(level)
+
+func show_objective_notice(text: String) -> void:
+	objective_notice = text
+	objective_notice_time = 4.0
+
+func objective_instruction() -> String:
+	if encounter_kind(level) == "cargo" and not cargo.is_empty():
+		if bool(cargo.done):
+			return "ALL CARGO RUNS COMPLETE."
+		if bool(cargo.carrying):
+			return "CARGO ABOARD - RETURN TO SAFE LAND TO DELIVER. ANOMALIES ARE CHASING YOU."
+	if encounter_kind(level) == "breach" and not breach.is_empty() and bool(breach.sealed):
+		return "BREACH SEALED - REACH %d%% TERRITORY TO CLEAR." % Sectors.capture_goal(level)
+	return Sectors.objective_copy(encounter_kind(level), level)
 
 func bar_scale() -> float:
 	return 100.0 if not Sectors.territory_goal(encounter_kind(level)) else float(Sectors.capture_goal(level))
@@ -575,6 +626,8 @@ func steer_anomaly(q: QixBody, dt: float, speed: float) -> void:
 	q.v = q.v.slerp(toward, 1.0 - exp(-dt * rate)).normalized() * speed
 
 func start_level() -> void:
+	authored_behaviors.clear()
+	authored_map = MapCatalog.read(arena_stage(level))
 	reset_movement_module()
 	corruption_active = level >= Sectors.CORRUPTION_SECTOR or encounter_kind(level) == "breach"
 	if level >= Sectors.CORRUPTION_SECTOR: progress.containment_unlocked = true
@@ -608,6 +661,34 @@ func start_level() -> void:
 	cut_time = 0.0
 	spread_clock = SPREAD_SECONDS
 	anchor = p
+	if authored_map != null and authored_map.override_enemies:
+		apply_authored_enemies()
+
+func apply_authored_enemies() -> void:
+	qixes.clear()
+	sparxes.clear()
+	sparx_to_spawn = 0
+	for enemy in authored_map.enemies:
+		var cell: Vector2i = enemy.cell
+		if enemy.kind in MapCatalog.VOID_ENEMIES:
+			super.spawn_qix()
+			var q: QixBody = qixes.back()
+			q.c = center(MapCatalog.nearest(field_arena.mask, authored_map.grid_size, cell, 2))
+			# Keep the authored centre, fitting the initial beam into nearby geometry.
+			while q.len > CELL and qix_blocked(q.c, q.theta, q.len): q.len *= 0.8
+			if enemy.kind != "anomaly":
+				if enemy.kind == "rotor":
+					q.theta = 0.0
+					q.omega = 1.6
+				q.len = 80.0 if enemy.kind == "rotor" else 12.0
+				while q.len > 2.0 and qix_blocked(q.c, q.theta, q.len): q.len *= 0.8
+				authored_behaviors[q] = {"kind": enemy.kind, "phase": "roam", "clock": 2.4, "aim": q.theta}
+		elif enemy.kind == "sparx":
+			var s := SparxBody.new()
+			s.c = MapCatalog.nearest(field_arena.mask, authored_map.grid_size, cell, 1)
+			s.prev = s.c
+			s.vis = center(s.c)
+			sparxes.append(s)
 
 func spawn_qix() -> void:
 	var count := Sectors.anomaly_count(level, arena_stage(level))
@@ -666,7 +747,7 @@ func run_extra_lives() -> int:
 	return progress.rank_of("hull") / 5
 
 func movement_mult() -> float:
-	var mult: float = 1.0 + progress.rank_of("engines") * 0.02
+	var mult: float = 1.0 + progress.rank_of("engines") * 0.02 + draft_speed_stacks * 0.05
 	if dash_time > 0.0: mult *= 3.0
 	if drawing:
 		if boost_time > 0.0:
@@ -677,7 +758,7 @@ func movement_mult() -> float:
 	return mult
 
 func respawn_shield_duration() -> float:
-	return 2.5 + progress.rank_of("hull") * 0.5
+	return 2.5 + progress.rank_of("hull") * 0.5 + draft_shield_stacks * 0.5
 
 func sap_rate() -> float:
 	var mult := 1.0 + 0.03 * progress.rank_of("reactor")
@@ -754,6 +835,18 @@ func card_power(id: String) -> float:
 func card_definition(id: String, rank := 0) -> Dictionary:
 	return Cards.definition(id, ship.id, card_rank(id) if rank == 0 else rank)
 
+func draft_bonus(id: String) -> Dictionary:
+	match id:
+		"draft_speed":
+			return {"id": id, "name": "THRUSTER TUNING", "kind": "PASSIVE", "action": "BONUS", "desc": "Move faster for the rest of this expedition.", "stats": "+5% MOVEMENT SPEED", "detail": "NO SLOT / STACKS THIS RUN"}
+		"draft_shield":
+			return {"id": id, "name": "RECOVERY SHIELD", "kind": "PASSIVE", "action": "BONUS", "desc": "Stay protected longer after respawning.", "stats": "+0.5S RESPAWN PROTECTION", "detail": "NO SLOT / STACKS THIS RUN"}
+	return {"id": "draft_salvage", "name": "SALVAGE CACHE", "kind": "CURRENCY", "action": "COLLECT", "desc": "Add salvage to your expedition earnings.", "stats": "+3 SALVAGE", "detail": "SPEND ON PERMANENT UPGRADES"}
+
+func can_rescan_draft() -> bool:
+	# Full builds have guaranteed upgrades/rewards, so rescanning cannot improve them.
+	return not opening_draft_pending and owned_cards.size() < 3 and rerolls_left > 0
+
 func roll_offers(avoid: Array[String] = []) -> void:
 	if opening_draft_pending:
 		offers.clear()
@@ -762,12 +855,24 @@ func roll_offers(avoid: Array[String] = []) -> void:
 			card.action = "NEW"
 			offers.append(card)
 		return
+	if owned_cards.size() >= 3:
+		offers.clear()
+		for id in owned_cards:
+			if card_rank(id) >= MAX_CARD_RANK: continue
+			var card := card_definition(id, card_rank(id) + 1)
+			card.action = "UPGRADE"
+			offers.append(card)
+		# Currency is always available when fewer than three upgrades remain.
+		for id in ["draft_salvage", "draft_speed", "draft_shield"]:
+			if offers.size() >= 3: break
+			offers.append(draft_bonus(id))
+		return
 	var pool: Array[String] = []
 	var excluded := draft_exclusions()
 	for card in Cards.LIST:
 		if Cards.OPENING.has(card.id) and not has_card(card.id): continue
 		if Cards.SECONDARY.has(card.id) and not secondary_ability().is_empty() and not has_card(card.id): continue
-		if not excluded.has(card.id) and (not has_card(card.id) or (owned_cards.size() >= 3 and card_rank(card.id) < MAX_CARD_RANK)):
+		if not excluded.has(card.id) and not has_card(card.id):
 			pool.append(card.id)
 	var fresh_pool: Array[String] = []
 	for id in pool:
@@ -784,7 +889,7 @@ func roll_offers(avoid: Array[String] = []) -> void:
 		offers.append(card)
 
 func reroll_draft() -> void:
-	if opening_draft_pending or phase != "draft" or ui_time < DRAFT_REVEAL or rerolls_left <= 0:
+	if not can_rescan_draft() or phase != "draft" or ui_time < DRAFT_REVEAL:
 		return
 	rerolls_left -= 1
 	var previous: Array[String] = []
@@ -797,6 +902,14 @@ func reroll_draft() -> void:
 
 func update(dt: float) -> void:
 	ui_time += dt
+	if phase == "briefing":
+		# A held launch/skip button must be released before accepting a new press.
+		if not briefing_ready:
+			if not Input.is_action_pressed("confirm") and not Input.is_action_pressed("draw"):
+				briefing_ready = true
+			return
+		update_choices()
+		return
 	if phase == "paused":
 		update_choices()
 		return
@@ -843,6 +956,7 @@ func update_play(dt: float) -> void:
 	# advances between that capture, its choices and settlement.
 	if pending_clear or (drafts_taken < draft_capture.size() and capture_percent >= draft_capture[drafts_taken]):
 		return
+	objective_notice_time = maxf(0.0, objective_notice_time - dt)
 	for key in cooldowns:
 		cooldowns[key] = maxf(0.0, float(cooldowns[key]) - dt * (1.0 + 0.03 * progress.rank_of("reactor")))
 	boost_time = maxf(0.0, boost_time - dt)
@@ -937,8 +1051,104 @@ func tether_hit(c: Vector2i) -> bool:
 
 func update_qix(q: QixBody, dt: float, speed: float) -> void:
 	if freeze_time <= 0.0:
+		if authored_behaviors.has(q):
+			update_authored_enemy(q, dt, speed)
+			return
 		super.update_qix(q, dt, speed)
 		steer_anomaly(q, dt, speed)
+
+func enemy_beam_length(q: QixBody, desired: float) -> float:
+	var length := desired
+	while length > 2.0 and qix_blocked(q.c, q.theta, length): length -= 2.0
+	return maxf(2.0, length)
+
+func move_authored_orb(q: QixBody, dt: float, speed: float) -> void:
+	# Small steps keep the body from crossing thin rails or rock at low frame rates.
+	var steps := maxi(1, ceili(speed * dt / 3.0))
+	for step in steps:
+		var delta := q.v.normalized() * speed * dt / steps
+		if not qix_blocked(q.c + delta, q.theta, q.len):
+			q.c += delta
+		elif not qix_blocked(q.c + Vector2(-delta.x, delta.y), q.theta, q.len):
+			q.v.x *= -1
+			q.c += Vector2(-delta.x, delta.y)
+		elif not qix_blocked(q.c + Vector2(delta.x, -delta.y), q.theta, q.len):
+			q.v.y *= -1
+			q.c += Vector2(delta.x, -delta.y)
+		else: q.v = -q.v
+
+func update_authored_enemy(q: QixBody, dt: float, speed: float) -> void:
+	var behavior: Dictionary = authored_behaviors[q]
+	if behavior.kind == "rotor":
+		q.len = enemy_beam_length(q, q.len)
+		var next_angle := q.theta + q.omega * dt * 0.65
+		if qix_blocked(q.c, next_angle, q.len):
+			q.omega = -q.omega
+		else: q.theta = next_angle
+		return
+	# Entry/death animations may move enemies, but never spend attack timers or fire.
+	if state != State.PLAYING or phase != "run": return
+	behavior.clock -= dt
+	match String(behavior.phase):
+		"roam":
+			q.len = enemy_beam_length(q, 12.0)
+			move_authored_orb(q, dt, speed * 0.55)
+			if behavior.clock <= 0.0:
+				behavior.phase = "warn"
+				behavior.clock = 0.85 if behavior.kind == "gunner_orb" else 1.15
+				behavior.aim = (vis - q.c).angle()
+				q.theta = behavior.aim
+		"warn":
+			if behavior.clock <= 0.0:
+				if behavior.kind == "gunner_orb":
+					for i in 5:
+						var bolt := Bolt.new()
+						bolt.vel = Vector2.RIGHT.rotated(float(behavior.aim) + (i - 2) * 0.22) * 125.0
+						bolt.pos = q.c
+						bolt.source = "GUNNER ORB FIRE"
+						bolts.append(bolt)
+					behavior.phase = "roam"
+					behavior.clock = 3.2
+				else:
+					behavior.phase = "fire"
+					behavior.clock = 1.1
+		"fire":
+			var extension := sin(PI * clampf(1.0 - float(behavior.clock) / 1.1, 0.0, 1.0))
+			q.len = enemy_beam_length(q, 12.0 + 164.0 * extension)
+			if behavior.clock <= 0.0:
+				q.len = enemy_beam_length(q, 12.0)
+				behavior.phase = "roam"
+				behavior.clock = 3.6
+
+func draw_qix(q: QixBody) -> void:
+	if not authored_behaviors.has(q):
+		super.draw_qix(q)
+		return
+	var behavior: Dictionary = authored_behaviors[q]
+	var color := Palette.ORANGE if behavior.kind == "gunner_orb" else (Palette.CYAN if behavior.kind == "ray_orb" else Palette.YELLOW)
+	if behavior.kind == "rotor":
+		var ends := qix_ends(q.c, q.theta, q.len)
+		lines.seg(ends[0], ends[1], color, 0.2, 0.05, 2.0)
+		for end in ends: lines.circle(end, 4, color, 6)
+		lines.circle(q.c, 6, color, 8)
+		return
+	lines.circle(q.c, 7, color, 10, 0.2, 0.05, 1.4)
+	if behavior.kind == "gunner_orb":
+		for i in 3:
+			var angle := time * 0.8 + i * TAU / 3.0
+			lines.seg(q.c + Vector2.RIGHT.rotated(angle) * 9, q.c + Vector2.RIGHT.rotated(angle) * 14, color)
+	if behavior.phase == "warn":
+		lines.circle(q.c, 12 + sin(time * 20) * 2, color, 16)
+		if behavior.kind == "ray_orb":
+			var ends := qix_ends(q.c, q.theta, enemy_beam_length(q, 176.0))
+			dashed(ends[0], ends[1], Color(color, 0.5), 5, 5)
+	elif behavior.phase == "fire":
+		var ends := qix_ends(q.c, q.theta, q.len)
+		lines.seg(ends[0], ends[1], Palette.WHITE, 0.2, 0.05, 2.2)
+
+func qix_contact_reason(q: QixBody) -> String:
+	if authored_behaviors.has(q): return String(authored_behaviors[q].kind).replace("_", " ").to_upper() + " CONTACT"
+	return super.qix_contact_reason(q)
 
 func update_sparx(s: SparxBody, dt: float) -> void:
 	if freeze_time <= 0.0:
@@ -1195,11 +1405,15 @@ func draw_draft_meter() -> void:
 	var kind := encounter_kind(level)
 	var color := Palette.GREEN if Sectors.territory_goal(kind) and displayed_capture >= goal else Palette.CYAN
 	hud_label(objective_label(), Vector2(CAPTURE_BAR.position.x, 104), 13, Palette.DIM)
+	if objective_notice_time > 0.0:
+		hud_label(objective_notice, Vector2(CAPTURE_BAR.position.x + 400, 104), 12, Palette.YELLOW)
 	if kind == "breach" and not breach.is_empty():
 		var pressure := int(round(100.0 * float(breach.pressure)))
 		var hot := not bool(breach.sealed) and float(breach.pressure) >= 0.15
-		hud_label("SEALED" if bool(breach.sealed) else "BREACH %d%%" % pressure, Vector2(CAPTURE_BAR.position.x + 180, 104), 13, Palette.MAGENTA if hot else Palette.DIM)
-	VectorFont.draw(lines, "%.1f%%" % displayed_capture, Vector2(CAPTURE_BAR.end.x, 102), 18, color, 0.0, 0.0, 2)
+		hud_label("BREACH SEALED" if bool(breach.sealed) else "ARENA %d%% / 25%%" % pressure, Vector2(CAPTURE_BAR.position.x + 180, 104), 12, Palette.MAGENTA if hot else Palette.DIM)
+	var area_text := "%.1f%%" % displayed_capture
+	if not Sectors.territory_goal(kind): area_text = "TERRITORY " + area_text
+	VectorFont.draw(lines, area_text, Vector2(CAPTURE_BAR.end.x, 102), 18, color, 0.0, 0.0, 2)
 	var left := capture_bar_point(0)
 	lines.rect(CAPTURE_BAR, Palette.WHITE if capture_flash > 0.0 else Palette.DIM, 0.0, 0.0, 1.0)
 	var fill_x := capture_bar_point(displayed_capture).x
@@ -1232,7 +1446,7 @@ func open_draft() -> void:
 func begin_card_install(index: int) -> void:
 	if phase != "draft" or ui_time < DRAFT_REVEAL or index < 0 or index >= offers.size():
 		return
-	if not has_card(offers[index].id) and owned_cards.size() >= 3 and replace_id.is_empty():
+	if offers[index].get("action", "") not in ["BONUS", "COLLECT"] and not has_card(offers[index].id) and owned_cards.size() >= 3 and replace_id.is_empty():
 		pending_card = {"index": index}
 		phase = "replace"
 		selection = 0
@@ -1250,6 +1464,15 @@ func choose_card(index: int) -> void:
 	if phase != "draft" or index < 0 or index >= offers.size():
 		return
 	var id: String = offers[index].id
+	if offers[index].get("action", "") in ["BONUS", "COLLECT"]:
+		match id:
+			"draft_speed": draft_speed_stacks += 1
+			"draft_shield": draft_shield_stacks += 1
+			"draft_salvage": earned_salvage += 3
+		pending_card.clear()
+		replace_id = ""
+		finish_draft()
+		return
 	if not has_card(id) and owned_cards.size() >= 3 and replace_id.is_empty():
 		pending_card = {"index": index}
 		phase = "replace"
@@ -1383,6 +1606,21 @@ func launch_destination(index: int) -> void:
 	hot_entry = false
 	begin_transit(false)
 
+func update_intro(dt: float) -> void:
+	super.update_intro(dt)
+	if phase == "run" and state == State.PLAYING:
+		phase = "briefing"
+		selection = 0
+		ui_time = 0.0
+		briefing_ready = false
+		shake_off = Vector2.ZERO
+
+func begin_sector() -> void:
+	if phase != "briefing" or not briefing_ready or ui_time < choice_delay(): return
+	phase = "run"
+	ui_time = 0.0
+	draw_armed = false
+
 func end_run() -> void:
 	if settled:
 		return
@@ -1466,7 +1704,9 @@ func update_choices() -> void:
 			activate_choice(0)
 
 func activate_choice(index: int) -> void:
-	if phase == "chart":
+	if phase == "briefing":
+		begin_sector()
+	elif phase == "chart":
 		launch_destination(index)
 	elif phase == "sector_clear":
 		continue_expedition()
@@ -1529,6 +1769,8 @@ func leave_mode() -> void:
 	exited.emit()
 
 func choice_rect(index: int) -> Rect2:
+	if phase == "briefing":
+		return Rect2(580, 452, 440, 64)
 	if phase == "paused":
 		return Rect2(240 + index * 600, 726, 520, 64)
 	if phase in ["draft", "install", "replace"]:
@@ -1546,13 +1788,14 @@ func choice_rect(index: int) -> Rect2:
 	return Rect2(355, 205 + (index - 1) * 160, 780, 145)
 
 func _input(event: InputEvent) -> void:
+	Controls.observe_input(event)
 	var host := get_parent() as Game
 	if host != null and host.state == State.ROGUELITE and phase == "draft":
 		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT and keep_build_rect().has_point(event.position):
 			keep_build()
 			get_viewport().set_input_as_handled()
 			return
-		if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_R:
+		if event.is_action_pressed("reroll"):
 			reroll_draft()
 			get_viewport().set_input_as_handled()
 			return
@@ -1626,6 +1869,14 @@ func button(index: int, text: String) -> void:
 
 func draw() -> void:
 	battle_fill.visible = false
+	fill.modulate = fill_color()
+	if phase == "briefing":
+		super.draw()
+		lines.modal_start = lines.count
+		lines.offset = Vector2.ZERO
+		lines.zoom = Vector2.ONE
+		draw_briefing()
+		return
 	if phase == "paused":
 		fill.visible = false
 		lines.zoom = Vector2.ONE
@@ -1654,6 +1905,44 @@ func draw() -> void:
 			draw_currency_caption(msg, msg_amount, false, Vector2(950, 774), "", false, Palette.RED)
 		else:
 			label(msg, Vector2(950, 766), 15, Palette.YELLOW, 1)
+
+## Shared briefing/pause copy follows the current ship, upgrades and breach state.
+func corruption_help() -> Array[String]:
+	var contact := "ANY UNFINISHED TRAIL IN PURPLE"
+	if ship.id == "sapper": contact = "STANDING ON PURPLE"
+	var seconds := 4.0 / (1.0 - 0.03 * progress.rank_of("containment"))
+	var result: Array[String] = [
+		"%s: 100%% EXPOSURE = HULL HIT (%.1fS)." % [contact, seconds],
+		"CAPTURE TO CLEANSE AND RESET. AVOID PURPLE TO LOWER EXPOSURE.",
+	]
+	if encounter_kind(level) == "breach" and bool(breach.get("sealed", false)):
+		result.append("SEALED: SPREAD STOPPED. REMAINING PURPLE STILL CAUSES EXPOSURE.")
+	else:
+		if encounter_kind(level) == "breach":
+			result.append("SPREADS EVERY 3S; SEAL TO STOP. ARENA 25% = HIT EVEN ON SAFE LAND.")
+		else:
+			result.append("PURPLE SPREADS EVERY 3S.")
+	return result
+
+func draw_corruption_help(pos: Vector2, width: float, size: float, row_height: float) -> void:
+	for section in corruption_help():
+		for row in paragraph_lines(section, width, size):
+			hud_label(row, pos, size)
+			pos.y += row_height
+		pos.y += 8
+
+func draw_briefing() -> void:
+	var kind := encounter_kind(level)
+	lines.rect(BRIEFING_PANEL, Palette.CYAN, 0.0, 0.0, 1.2)
+	var goal := "CAPTURE %d%%" % Sectors.capture_goal(level)
+	match kind:
+		"cargo": goal = "BRING %d PODS TO SAFE LAND" % int(cargo.get("runs", 0))
+		"beacon": goal = "ENCLOSE %d BEACONS" % zones.size()
+		"breach": goal = "SEAL BREACH + " + goal
+	var rows := paragraph_lines(goal, 740, 26)
+	for i in rows.size():
+		label(rows[i], Vector2(800, 365 + i * 36), 26, Palette.WHITE, 1)
+	button(0, "START")
 
 ## Reuse the board currency glyph, with aligned amounts at the hangar and reward sizes.
 func draw_salvage(amount: String, pos: Vector2, text_size := 14.0, align := 0, affordable := true) -> void:
@@ -1691,13 +1980,13 @@ func draw_hangar() -> void:
 	lines.circle(Vector2(562, 716), 7, Palette.YELLOW)
 	lines.circle(Vector2(723, 716), 7, Palette.DIM)
 	var enter_action: String = {0: "LAUNCH", 4: "BACK", 5: "SHIPS", 6: "UPGRADES"}.get(selection, "BUY")
-	label("ARROWS: BROWSE    ENTER: %s    ESC: BACK" % enter_action, Vector2(950, 815), 13, Palette.DIM, 1)
+	label(Controls.hint("ARROWS: BROWSE    ENTER: %s    ESC: BACK") % enter_action, Vector2(950, 815), 13, Palette.DIM, 1)
 
 func ship_controls(id: String) -> String:
 	match id:
-		"lancer": return "ARROWS / WASD: AIM\nSPACE: LANCE + RIDE"
-		"sapper": return "ARROWS / WASD: MOVE\nHOLD SPACE: CHARGE\nRELEASE: DETONATE"
-	return "ARROWS / WASD: MOVE\nSPACE: DRAW\nSHIFT: SLOW DRAW"
+		"lancer": return Controls.hint("ARROWS / WASD: AIM\nSPACE: LANCE + RIDE")
+		"sapper": return Controls.hint("ARROWS / WASD: MOVE\nHOLD SPACE: CHARGE\nRELEASE: DETONATE")
+	return Controls.hint("ARROWS / WASD: MOVE\nSPACE: DRAW\nSHIFT: SLOW DRAW")
 
 func ship_rect(index: int) -> Rect2:
 	return Rect2(80 + index * 490, 185, 450, 515)
@@ -1749,7 +2038,7 @@ func draw_ship_shop() -> void:
 		else:
 			draw_currency_caption("UNLOCK", str(Progress.SHIP_PRICE), false, action.get_center(), "", affordable, Palette.CYAN if affordable else Palette.RED)
 	label("UPGRADES APPLY TO EVERY SHIP", Vector2(800, 724), 13, Palette.DIM, 1)
-	label("ARROWS: BROWSE    ENTER: SELECT / UNLOCK    ESC: BACK", Vector2(950, 815), 13, Palette.DIM, 1)
+	label(Controls.hint("ARROWS: BROWSE    ENTER: SELECT / UNLOCK    ESC: BACK"), Vector2(950, 815), 13, Palette.DIM, 1)
 
 func track_node_position(track_index: int, rank: int) -> Vector2:
 	return Vector2(386 + (rank - 1) * 80, TRACK_VIEW.position.y + 75 + track_index * TRACK_ROW - track_scroll)
@@ -2006,6 +2295,8 @@ func draw_node_details() -> void:
 		label(action, rect.position + Vector2(20, 24), 16, color)
 
 func card_color(id: String) -> Color:
+	if id == "draft_salvage": return Palette.YELLOW
+	if id == "draft_speed": return Palette.ORANGE
 	if id in ["afterburner", "slipstream", "compression", "dash", "leap"]:
 		return Palette.ORANGE
 	if id in ["ion", "stasis", "loop"]:
@@ -2013,6 +2304,8 @@ func card_color(id: String) -> Color:
 	return Palette.CYAN
 
 func draw_card_icon(id: String, center_at: Vector2, color: Color, scale_at := 1.0) -> void:
+	# Slot-free rewards reuse the established speed, shield and salvage symbols.
+	id = {"draft_speed": "slipstream", "draft_shield": "hardlight", "draft_salvage": "harvest"}.get(id, id)
 	var paths: Array = []
 	match id:
 		"hardening": paths = [[-42, -36, -42, 36, 42, 36, 42, -36, -42, -36], [-42, 0, 42, 0], [0, -36, 0, 0], [-20, 0, -20, 36], [20, 0, 20, 36]]
@@ -2055,7 +2348,10 @@ func draw_card_icon(id: String, center_at: Vector2, color: Color, scale_at := 1.
 
 func draw_draft() -> void:
 	var installing := phase == "install"
-	label("INSTALLED" if installing else ("MOVEMENT" if opening_draft_pending else "POWER UP"), Vector2(800, 130), 38, Palette.GREEN if installing else Palette.WHITE, 1)
+	var title := "MOVEMENT" if opening_draft_pending else ("UPGRADE SYSTEMS" if owned_cards.size() >= 3 else "POWER UP")
+	if owned_cards.size() >= 3 and not offers.any(func(card: Dictionary) -> bool: return card.get("action", "") == "UPGRADE"):
+		title = "EXPEDITION BONUS"
+	label("REWARD APPLIED" if installing else title, Vector2(800, 130), 38, Palette.GREEN if installing else Palette.WHITE, 1)
 	for j in draft_capture.size():
 		var dot := Vector2(800 + (j - (draft_capture.size() - 1) * 0.5) * 24, 188)
 		lines.circle(dot, 5, Palette.GREEN if j < drafts_taken else (Palette.YELLOW if j == drafts_taken else Palette.DIM), 4)
@@ -2083,8 +2379,15 @@ func draw_draft() -> void:
 		var center_at := Vector2(r.get_center().x, r.position.y + 135)
 		lines.circle(center_at, 79, Color(color, 0.25 * opacity), 48)
 		draw_card_icon(card.id, center_at, Color(color, opacity), 1.15 + (0.15 * sin(ui_time * PI / 0.45) if installing and selected else 0.0))
-		label(card.kind, r.position + Vector2(24, 25), 12, Color(color, opacity))
-		label("%s / %s" % [card.get("action", "NEW"), ["I", "II", "III"][int(card.get("rank", 1)) - 1]], Vector2(r.end.x - 24, r.position.y + 25), 12, Color(Palette.GREEN if int(card.get("rank", 1)) > 1 else color, opacity), 2)
+		var kind: String = card.kind
+		if Cards.OPENING.has(card.id):
+			kind = ("HOLD " if card.id == "leap" else "") + Controls.action_label("br_harden", "Q")
+		elif Cards.SECONDARY.has(card.id):
+			kind = Controls.action_label("special", "E")
+		label(kind, r.position + Vector2(24, 25), 12, Color(color, opacity))
+		var action: String = card.get("action", "NEW")
+		var badge := action if action in ["BONUS", "COLLECT"] else "%s / %s" % [action, ["I", "II", "III"][int(card.get("rank", 1)) - 1]]
+		label(badge, Vector2(r.end.x - 24, r.position.y + 25), 12, Color(Palette.GREEN if int(card.get("rank", 1)) > 1 else color, opacity), 2)
 		label(card.name, Vector2(center_at.x, r.position.y + 243), 23, Color(Palette.WHITE, opacity), 1)
 		var rows := paragraph_lines(card.desc, 390, 14)
 		for row in rows.size():
@@ -2096,13 +2399,13 @@ func draw_draft() -> void:
 			lines.seg(r.position + Vector2(22, 414), r.position + Vector2(r.size.x - 22, 414), Palette.GREEN if installing else color, 0.0, 0.0, 2.0)
 	if not installing and ui_time >= DRAFT_REVEAL:
 		label("CHOOSE ONE", Vector2(800, 751), 18, Palette.WHITE, 1)
-		label("ARROWS + ENTER / CLICK", Vector2(800, 803), 12, Palette.DIM, 1)
+		label(Controls.hint("ARROWS + ENTER / CLICK"), Vector2(800, 803), 12, Palette.DIM, 1)
 		if owned_cards.size() == 3:
 			lines.rect(keep_build_rect(), Palette.DIM)
-			label("ESC: KEEP BUILD", keep_build_rect().position + Vector2(16, 14), 13, Palette.DIM)
-		if rerolls_left > 0 and not opening_draft_pending:
+			label(Controls.hint("ESC: KEEP BUILD"), keep_build_rect().position + Vector2(16, 14), 13, Palette.DIM)
+		if can_rescan_draft():
 			lines.rect(reroll_rect(), Palette.CYAN)
-			label("R: RESCAN %d" % rerolls_left, reroll_rect().position + Vector2(16, 14), 13, Palette.CYAN)
+			label("%s: RESCAN %d" % [Controls.action_label("reroll", "R"), rerolls_left], reroll_rect().position + Vector2(16, 14), 13, Palette.CYAN)
 
 func reroll_rect() -> Rect2:
 	return Rect2(1260, 760, 240, 48)
@@ -2130,7 +2433,7 @@ func draw_replacement() -> void:
 		label(card.name, r.position + Vector2(220, 260), 23, Palette.WHITE, 1)
 		label("RANK " + ["I", "II", "III"][card_rank(card.id) - 1], r.position + Vector2(220, 315), 14, Palette.DIM, 1)
 		label("REPLACE", r.position + Vector2(220, 380), 16, color, 1)
-	label("ENTER: REPLACE    ESC: KEEP CURRENT BUILD", Vector2(800, 795), 14, Palette.DIM, 1)
+	label(Controls.hint("ENTER: REPLACE    ESC: KEEP CURRENT BUILD"), Vector2(800, 795), 14, Palette.DIM, 1)
 
 func draw_result() -> void:
 	if run_victory:
@@ -2178,7 +2481,7 @@ func draw_victory() -> void:
 		label("%d SECTORS SECURED" % run_sectors, Vector2(800, 630), 16, Palette.DIM, 1)
 	if ui_time >= VICTORY_REVEAL:
 		button(0, "STAR CHART" if phase == "sector_clear" else ("RETRY SAVE" if save_failed else "HANGAR"))
-		if phase == "sector_clear": label("ESC: BANK AND EXIT", Vector2(800, 810), 13, Palette.DIM, 1)
+		if phase == "sector_clear": label(Controls.hint("ESC: BANK AND EXIT"), Vector2(800, 810), 13, Palette.DIM, 1)
 		if save_failed:
 			label("SAVE FAILED - PROGRESS IS HELD IN MEMORY", Vector2(800, 818), 16, Palette.YELLOW, 1)
 
@@ -2199,7 +2502,7 @@ func draw_hud() -> void:
 	draw_hull_icons(Vector2(1254, 70), maxi(0, lives + 1))
 	draw_dock_currency(Vector2(1374, 70), str(earned_salvage), false)
 	draw_draft_meter()
-	hud_label("ESC  PAUSE", Vector2(FIELD_X, 794), 12, Palette.DIM)
+	hud_label(Controls.hint("ESC  PAUSE"), Vector2(FIELD_X, 794), 12, Palette.DIM)
 	for i in owned_cards.size():
 		var id: String = owned_cards[i]
 		var r := run_card_rect(i)
@@ -2213,21 +2516,33 @@ func draw_hud() -> void:
 			hud_label(["I", "II", "III"][card_rank(id) - 1], r.position + Vector2(50, -10), 11, Palette.GREEN)
 		if id in ["afterburner", "hardlight"] or Cards.OPENING.has(id):
 			lines.rect(r, Color(color, 0.5), 0.0, 0.0, 0.7)
-			hud_label("E" if Cards.SECONDARY.has(id) else "Q", r.position + Vector2(0, 80), 13)
+			var ability_key := Controls.action_label("special", "E") if Cards.SECONDARY.has(id) else Controls.action_label("br_harden", "Q")
+			hud_label(ability_key, r.position + Vector2(0, 80), 9 if ability_key.length() > 2 else 13)
 		if active > 0.0 or cooldown > 0.0:
-			hud_label("%.1fS" % (active if active > 0.0 else cooldown), r.position + Vector2(24, 80), 12, Palette.GREEN if active > 0.0 else Palette.DIM)
+			hud_label("%.1fS" % (active if active > 0.0 else cooldown), r.position + Vector2(24, 98 if Controls.using_controller else 80), 12, Palette.GREEN if active > 0.0 else Palette.DIM)
 	if corruption_active:
-		# Reserved for later sectors in the bottom HUD band.
-			hud_label("EXPOSURE %.1f/4S" % exposure, Vector2(1080, 794), 13, Palette.MAGENTA)
+		VectorFont.draw(lines, "PERSONAL EXPOSURE %d%%" % int(clampf(exposure / 4.0, 0.0, 1.0) * 100), Vector2(1440, 790), 13, Palette.MAGENTA, 0.0, 0.0, 2)
+		VectorFont.draw(lines, "100% = HULL HIT / CAPTURE TO RESET", Vector2(1440, 814), 11, Palette.DIM, 0.0, 0.0, 2)
 
 func draw_pause() -> void:
 	label("PAUSED", Vector2(240, 100), 34)
+	hud_label("OBJECTIVE: " + objective_instruction(), Vector2(240, 152), 13, Palette.CYAN)
 	hud_label("CONTROLS", Vector2(240, 191), 16, Palette.CYAN)
 	paragraph(ship_controls(ship.id), Vector2(240, 235), 36, 15)
-	hud_label("PERMANENT UPGRADES", Vector2(240, 404), 16, Palette.CYAN)
-	for i in Progress.TRACKS.size():
-		var track: String = Progress.TRACKS[i]
-		hud_label("%s  %d" % [track.to_upper(), progress.rank_of(track)], Vector2(240, 450 + i * 30), 15)
+	if draft_speed_stacks > 0 or draft_shield_stacks > 0:
+		hud_label("RUN BONUSES / +%d%% MOVE SPEED / +%.1fS RESPAWN SHIELD" % [draft_speed_stacks * 5, draft_shield_stacks * 0.5], Vector2(240, 660), 12, Palette.GREEN)
+	if corruption_active:
+		hud_label("CORRUPTION", Vector2(240, 370), 15, Palette.MAGENTA)
+		draw_corruption_help(Vector2(240, 404), 540, 13, 20)
+		var ranks: Array[String] = []
+		for track in Progress.TRACKS:
+			ranks.append("%s %d" % [track.to_upper(), progress.rank_of(track)])
+		hud_label("UPGRADES / " + "   ".join(ranks), Vector2(240, 685), 12, Palette.DIM)
+	else:
+		hud_label("PERMANENT UPGRADES", Vector2(240, 404), 16, Palette.CYAN)
+		for i in Progress.TRACKS.size():
+			var track: String = Progress.TRACKS[i]
+			hud_label("%s  %d" % [track.to_upper(), progress.rank_of(track)], Vector2(240, 450 + i * 30), 15)
 	for i in owned_cards.size():
 		var card := card_definition(owned_cards[i])
 		var y := 190.0 + i * 160
@@ -2345,6 +2660,8 @@ func draw_chart() -> void:
 	lines.seg(Vector2(80, 680), Vector2(1500, 680), Palette.DIM * 0.6)
 	var shape_id := int(node.stage)
 	var arena := SectorArena.build(shape_id, 0, "roguelite", Sectors.holes(shape_id, Vector2i(grid_width, grid_height)), Vector2i(grid_width, grid_height))
+	var map := MapCatalog.read(shape_id)
+	if map != null and map.override_terrain: arena = map.arena()
 	var outline: PackedVector2Array = arena.outline
 	for i in range(0, outline.size(), 2):
 		lines.seg(Vector2(195, 750) + (outline[i] - Vector2(grid_width, grid_height) * 0.5) * 1.2, Vector2(195, 750) + (outline[i + 1] - Vector2(grid_width, grid_height) * 0.5) * 1.2, Palette.CYAN)
@@ -2352,24 +2669,31 @@ func draw_chart() -> void:
 	var kind := String(node.kind)
 	var turrets := Sectors.turret_count(kind, chart_focus_depth)
 	var anomaly_count := Sectors.anomaly_count(chart_focus_depth, shape_id)
+	if map != null and map.override_enemies:
+		turrets = 0
+		anomaly_count = 0
+		for enemy in map.enemies:
+			if enemy.kind == "turret": turrets += 1
+			elif enemy.kind in MapCatalog.VOID_ENEMIES: anomaly_count += 1
 	var threats := "CAPTURE %d%%" % Sectors.capture_goal(chart_focus_depth)
 	if kind == "beacon": threats = "BEACONS %d" % Sectors.objective_count(kind, chart_focus_depth)
 	elif kind == "cargo": threats = "CARGO %d" % Sectors.objective_count(kind, chart_focus_depth)
-	threats += " / %d %s" % [anomaly_count, "ANOMALY" if anomaly_count == 1 else "ANOMALIES"]
+	threats += " / %d %s" % [anomaly_count, ("VOID ENEMIES" if map != null and map.override_enemies else ("ANOMALY" if anomaly_count == 1 else "ANOMALIES"))]
 	if turrets > 0: threats += " / %d TURRET%s" % [turrets, "" if turrets == 1 else "S"]
 	if kind == "breach": threats += " / BREACH"
 	if chart_focus_depth >= Sectors.CORRUPTION_SECTOR: threats += " / CORRUPTION"
 	label(threats, Vector2(350, 772), 13, Palette.YELLOW)
+	label("OBJECTIVE: " + Sectors.objective_copy(kind, chart_focus_depth), Vector2(350, 805), 12, Palette.CYAN)
 	var reward := Sectors.reward_copy(kind)
 	if not reward.is_empty():
 		# Right-aligned beside the Jump button, clear of the longest threat strings.
 		label(reward, Vector2(1205, 754), 15, Palette.GREEN, 2)
 	var reachable := chart_reachable(chart_focus_depth, selection)
 	lines.rect(CHART_JUMP, Palette.CYAN if reachable else Palette.DIM)
-	var action := "JUMP  [ENTER]" if reachable else ("CLEARED" if chart_focus_depth < chart_depth and route_path[chart_focus_depth - 1] == selection else "LOCKED")
+	var action := Controls.hint("JUMP  [ENTER]") if reachable else ("CLEARED" if chart_focus_depth < chart_depth and route_path[chart_focus_depth - 1] == selection else "LOCKED")
 	label(action, CHART_JUMP.get_center() - Vector2(0, 8.5), 17, Palette.WHITE if reachable else Palette.DIM, 1)
-	label("ESC  BANK & EXIT", Vector2(80, 842), 12, Palette.DIM)
-	label("ARROWS  SELECT", Vector2(1500, 842), 12, Palette.DIM, 2)
+	label(Controls.hint("ESC  BANK & EXIT"), Vector2(80, 842), 12, Palette.DIM)
+	label(Controls.hint("ARROWS  SELECT"), Vector2(1500, 842), 12, Palette.DIM, 2)
 
 func announce_lance() -> void:
 	pass # Space already communicates the Lancer's action; keep failure/recharge messages.

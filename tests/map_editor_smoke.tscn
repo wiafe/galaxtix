@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://d1oarkm1ji76k"]
+
+[ext_resource type="Script" uid="uid://ngxw4gkowhyi" path="res://tests/map_editor_smoke.gd" id="1"]
+
+[node name="MapEditorSmoke" type="Node" unique_id=1820894097]
+script = ExtResource("1")

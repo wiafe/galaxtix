@@ -1,3 +1,4 @@
+@tool
 extends RefCounted
 ## Jump silhouettes fitted into Roguelite's wider viewport; cell size never changes.
 const CORRUPTION_SECTOR := 8
@@ -38,6 +39,20 @@ static func territory_goal(kind: String) -> bool:
 
 static func reward_copy(kind: String) -> String:
 	return String(KINDS.get(kind, {}).get("reward", ""))
+
+static func objective_copy(kind: String, depth: int) -> String:
+	match kind:
+		"beacon":
+			return "ENCLOSE ALL %d BEACON DISCS. WAIT FOR GUARDING ANOMALIES TO MOVE OUT." % objective_count(kind, depth)
+		"cargo":
+			return "TOUCH EACH POD, THEN RETURN TO SAFE LAND. ENCLOSING ALONE DOES NOT DELIVER."
+		"breach":
+			return "ENCLOSE THE BREACH AND CAPTURE %d%%. KEEP INFECTION BELOW 25%%." % capture_goal(depth)
+		"repair":
+			return "CAPTURE %d%% TO CLEAR AND RESTORE ONE HULL." % capture_goal(depth)
+		"salvage":
+			return "CAPTURE %d%% TO CLEAR. ENCLOSE THE EXTRA SALVAGE PICKUPS FOR REWARDS." % capture_goal(depth)
+	return "CAPTURE %d%% OF THE ARENA TO CLEAR." % capture_goal(depth)
 
 static func alternate_kinds(depth: int) -> Array[String]:
 	var kinds: Array[String] = []

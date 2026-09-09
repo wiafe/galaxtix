@@ -22,9 +22,13 @@ func shot(name: String) -> void:
 
 func play_until_ready() -> void:
 	for step in 220:
-		if rogue.state == Game.State.PLAYING: return
+		if rogue.phase == "briefing":
+			rogue.update(0.25)
+			rogue.activate_choice(0)
+			assert(rogue.phase == "run", "The loaded sector begins after its briefing")
+			return
 		rogue.update(0.05)
-	assert(false, "Transit must reach the next arena")
+	assert(false, "Transit must reach the next sector briefing")
 
 func capture_sector() -> void:
 	rogue.sparxes.clear()
@@ -321,16 +325,16 @@ func check_draft_choices() -> void:
 	for card in rogue.offers: prior.append(card.id)
 	rogue.ui_time = rogue.DRAFT_REVEAL
 	rogue.reroll_draft()
-	assert(rogue.rerolls_left == 1 and rogue.drafts_taken == 2)
+	assert(rogue.rerolls_left == 2 and rogue.drafts_taken == 2, "Guaranteed full-build choices never waste a rescan")
 	for card in rogue.offers:
-		assert(not prior.has(card.id))
+		assert(prior.has(card.id))
 		assert(card.id != "ion", "Max-rank cards cannot appear as useless upgrades")
 	rogue.ui_time = rogue.DRAFT_REVEAL
 	rogue.reroll_draft()
 	rogue.ui_time = rogue.DRAFT_REVEAL
 	var last: Array = rogue.offers.duplicate(true)
 	rogue.reroll_draft()
-	assert(rogue.rerolls_left == 0 and rogue.offers == last)
+	assert(rogue.rerolls_left == 2 and rogue.offers == last)
 	var kept: Dictionary = rogue.card_ranks.duplicate()
 	rogue.level = 8
 	rogue.level_clear()
@@ -344,6 +348,76 @@ func check_draft_choices() -> void:
 		for card in rogue.offers:
 			if card.rank == 2: upgraded += 1
 	assert(upgraded > 0, "Scanner produces upgraded versions in the normal offer pool")
+	rogue.phase = "draft"
+	rogue.ui_time = rogue.DRAFT_REVEAL
+	prior.clear()
+	for card in rogue.offers: prior.append(card.id)
+	rogue.reroll_draft()
+	assert(rogue.rerolls_left == 1)
+	for card in rogue.offers: assert(not prior.has(card.id), "Underfilled builds can rescan for different systems")
+	await check_full_build_rewards()
+
+func check_full_build_rewards() -> void:
+	rogue.start_run()
+	rogue.launch_destination(0)
+	rogue.state = Game.State.PLAYING
+	rogue.opening_draft_pending = false
+	rogue.owned_cards.assign(["dash", "clean", "harvest"])
+	# Owned systems remain upgradeable even when their acquisition gates are closed.
+	rogue.corruption_active = false
+	rogue.spawners.clear()
+	rogue.turrets.clear()
+	for ranks in [[1, 1, 1], [3, 2, 1], [3, 3, 2], [3, 3, 3]]:
+		for i in 3: rogue.card_ranks[rogue.owned_cards[i]] = ranks[i]
+		for seed_value in 20:
+			rogue.rng.seed = seed_value
+			rogue.open_draft()
+			assert(rogue.offers.size() == 3)
+			var seen: Array[String] = []
+			for card in rogue.offers:
+				assert(not seen.has(card.id), "Every reward is distinct")
+				seen.append(card.id)
+				if card.action == "UPGRADE":
+					assert(rogue.has_card(card.id) and card.rank == rogue.card_rank(card.id) + 1 and card.rank <= 3)
+				else:
+					assert(card.action in ["BONUS", "COLLECT"], "Full builds offer no forced replacements")
+			for id in rogue.owned_cards:
+				assert(seen.has(id) == (rogue.card_rank(id) < 3), "Every unfinished system is guaranteed an upgrade")
+		rogue.ui_time = rogue.DRAFT_REVEAL
+		await shot("full-build-" + str(ranks[0]) + str(ranks[1]) + str(ranks[2]))
+	var build: Dictionary = rogue.card_ranks.duplicate()
+	var slots: Array = rogue.owned_cards.duplicate()
+	var earned: int = rogue.earned_salvage
+	var speed: float = rogue.movement_mult()
+	var shield: float = rogue.respawn_shield_duration()
+	# Resolve three queued rewards through the same install path used by all input devices.
+	rogue.draft_capture.assign([20, 40, 60])
+	rogue.drafts_taken = 0
+	rogue.capture_percent = 65
+	for id in ["draft_salvage", "draft_speed", "draft_shield"]:
+		var pick := -1
+		for i in rogue.offers.size():
+			if rogue.offers[i].id == id: pick = i
+		assert(pick >= 0)
+		rogue.ui_time = rogue.DRAFT_REVEAL
+		rogue.activate_choice(pick)
+		assert(rogue.phase == "install", "Slot-free rewards bypass replacement")
+		rogue.update(0.5)
+	assert(rogue.phase == "run" and rogue.drafts_taken == 3)
+	assert(rogue.card_ranks == build and rogue.owned_cards == slots)
+	assert(rogue.earned_salvage == earned + 3, "The cache awards exactly the displayed salvage")
+	assert(is_equal_approx(rogue.movement_mult(), speed + 0.05))
+	assert(is_equal_approx(rogue.respawn_shield_duration(), shield + 0.5))
+	rogue.open_draft()
+	rogue.choose_card(1) # The speed bonus stacks without using a system slot.
+	assert(is_equal_approx(rogue.movement_mult(), speed + 0.1))
+	rogue.pause_run()
+	await shot("full-build-passives-pause")
+	rogue.level = 2
+	rogue.start_level()
+	assert(rogue.draft_speed_stacks == 2 and rogue.draft_shield_stacks == 1, "Bonuses carry between sectors")
+	rogue.start_run()
+	assert(rogue.draft_speed_stacks == 0 and rogue.draft_shield_stacks == 0, "Run bonuses reset on a fresh expedition")
 
 func check_routes() -> void:
 	for seed_value in 20:
