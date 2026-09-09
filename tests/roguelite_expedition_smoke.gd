@@ -80,6 +80,8 @@ func resolve_rewards() -> void:
 
 func check() -> void:
 	assert(not Save.enabled)
+	# The expedition walks the built-in arenas; player-edited maps must not change its counts.
+	for stage in range(1, 9): MapCatalog.testing["roguelite_%02d" % stage] = null
 	Save.set_process(false)
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--rogue-shots="):
@@ -429,7 +431,7 @@ func check_routes() -> void:
 			assert(route[depth - 1].size() == (1 if depth in [1, 4, 8] else 2))
 			if route[depth - 1].size() == 2:
 				assert(route[depth - 1][0].stage != route[depth - 1][1].stage)
-	for kind in ["salvage", "repair", "beacon", "cargo", "breach"]:
+	for kind in ["salvage", "repair", "beacon", "cargo", "breach", "rival"]:
 		rogue.start_run()
 		rogue.launch_destination(0)
 		play_until_ready()
@@ -473,7 +475,8 @@ func check_routes() -> void:
 		assert(rogue.nodes.size() == 3 + rogue.progress.rank_of("extractor") / 5 + (2 if kind == "salvage" else 0))
 		assert(rogue.corruption_active == (kind == "breach"), "Only a breach brings corruption forward")
 		assert(rogue.zones.size() == (2 if kind == "beacon" else 0) and rogue.cargo.is_empty() != (kind == "cargo") and rogue.breach.is_empty() != (kind == "breach"))
-		assert(is_equal_approx(rogue.capture_target(), 0.65) == (kind in ["salvage", "repair"]), "Objective kinds hold the territory clear back")
+		assert(is_equal_approx(rogue.capture_target(), 0.65) == (kind in ["salvage", "repair", "rival"]), "Objective kinds hold the territory clear back")
+		assert((rogue.rival != null and rogue.rival.alive) == (kind == "rival"))
 		rogue.level_clear()
 		assert(rogue.lives == (1 if kind == "repair" else 0))
 		rogue.finish_sector()

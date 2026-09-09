@@ -94,19 +94,21 @@ func check() -> void:
 	check_beacon()
 	check_cargo()
 	check_breach()
+	await check_surge()
+	check_rival()
 	await check_objective_guidance()
 	await check_sector_briefings()
 	await check_corruption_guidance()
 	rogue.end_run()
 	MapCatalog.testing.clear()
 	assert(Save.data == campaign, "Objective encounters leave Jump untouched")
-	print("ROGUELITE OBJECTIVES OK: kind table and routes, disc placement, beacon capture/guard/clear, cargo pickup/delivery/drop for every ship, breach seeding/pressure/seal and goal ordering")
+	print("ROGUELITE OBJECTIVES OK: kind table and routes, disc placement, beacon capture/guard/clear, cargo pickup/delivery/drop for every ship, breach seeding/pressure/seal and goal ordering, surge stall/capture/expiry/pause, rival planning/claims/contact/steals/elimination")
 	get_tree().quit()
 
 func check_table_and_routes() -> void:
 	assert(Sectors.alternate_kinds(2) == ["salvage", "repair", "beacon"])
-	assert(Sectors.alternate_kinds(3) == ["salvage", "repair", "beacon", "cargo"])
-	assert(Sectors.alternate_kinds(5) == ["salvage", "repair", "beacon", "cargo", "breach"])
+	assert(Sectors.alternate_kinds(3) == ["salvage", "repair", "beacon", "cargo", "rival"])
+	assert(Sectors.alternate_kinds(5) == ["salvage", "repair", "beacon", "cargo", "breach", "rival"])
 	assert(Sectors.turret_count("salvage", 2) == 2 and Sectors.turret_count("beacon", 2) == 1 and Sectors.turret_count("survey", 1) == 0)
 	assert(Sectors.objective_count("beacon", 3) == 2 and Sectors.objective_count("beacon", 5) == 3)
 	assert(Sectors.objective_count("cargo", 4) == 2 and Sectors.objective_count("cargo", 5) == 3 and Sectors.objective_count("breach", 7) == 1)
@@ -131,12 +133,12 @@ func check_table_and_routes() -> void:
 				assert(row[0].stage != row[1].stage)
 				previous = kind
 				seen[kind] = true
-	for kind in ["salvage", "repair", "beacon", "cargo", "breach"]:
+	for kind in ["salvage", "repair", "beacon", "cargo", "breach", "rival"]:
 		assert(seen.has(kind), "Every kind appears across seeds: " + kind)
 
 func check_placement() -> void:
 	for stage in range(2, 9):
-		for kind in ["beacon", "cargo", "breach"]:
+		for kind in ["beacon", "cargo", "breach", "rival"]:
 			var depth := maxi(stage, int(Sectors.KINDS[kind].min_depth))
 			force_kind("surveyor", kind, depth, stage)
 			var avoid: Array = [rogue.p]
@@ -174,6 +176,17 @@ func check_placement() -> void:
 					assert(rogue.objective_label() == "CAPTURE %d%%" % Sectors.capture_goal(depth) and rogue.bar_scale() == float(Sectors.capture_goal(depth)))
 					if depth < Sectors.CORRUPTION_SECTOR: assert(not rogue.progress.containment_unlocked and not rogue.progress.track_available("containment"), "A breach does not unlock the Containment track")
 					assert(not rogue.draft_exclusions().has("clean") and not rogue.draft_exclusions().has("containment"))
+				"rival":
+					assert(rogue.zones.is_empty() and rogue.cargo.is_empty() and rogue.breach.is_empty())
+					assert(rogue.rival != null and rogue.rival.alive and rogue.rival_land.size() == rogue.cells.size())
+					var seed_disc: PackedInt32Array = rogue.disc_cells(rogue.rival.pos, Sectors.RIVAL_RADIUS)
+					for i in seed_disc:
+						assert(rogue.cells[i] == Game.FREE and rogue.rival_land[i] == 1, "The rival's seed sits entirely in live void")
+					assert(rogue.rival_land.count(1) == seed_disc.size() and rogue.rival.owned.size() == seed_disc.size())
+					for a in avoid:
+						assert(Vector2(rogue.rival.pos - (a as Vector2i)).length() >= Sectors.RIVAL_RADIUS + 4)
+					assert(is_equal_approx(rogue.capture_target(), Sectors.capture_goal(depth) / 100.0), "A rival sector keeps the territory goal")
+					assert(rogue.objective_label() == "CAPTURE %d%%" % Sectors.capture_goal(depth) and rogue.corruption_active == (depth >= Sectors.CORRUPTION_SECTOR))
 			render_frame()
 			if stage == 3: await shot("objective-" + kind)
 	# Survey stays survey: the label, scale and goal are untouched.
@@ -448,6 +461,237 @@ func check_breach() -> void:
 	assert(rogue.breach.sealed and rogue.pending_clear and rogue.phase == "reward")
 	resolve_to_clear()
 	assert(rogue.phase == "sector_clear" and rogue.lives == lives)
+
+func wait_for_surge() -> void:
+	for i in 230:
+		if not rogue.surge.is_empty():
+			return
+		rogue.update(0.1)
+	assert(false, "The stall clock must surface a surge within the limit")
+
+func check_surge() -> void:
+	force_kind("surveyor", "survey", 3, 1)
+	bare_field()
+	rogue.freeze_time = 1000
+	park_anomalies(Vector2i(hi.x - 3, lo.y + 25))
+	rogue.rng.seed = 5
+	var salvage: int = rogue.earned_salvage
+	var base_speed: float = rogue.qix_speed()
+	assert(rogue.stall_time == 0.0 and rogue.surge.is_empty() and rogue.surge_pressure == 0.0)
+	for i in 199:
+		rogue.update(0.1)
+	assert(rogue.surge.is_empty() and rogue.stall_time > 19.0, "No surge before the stall limit")
+	rogue.update(0.2)
+	assert(not rogue.surge.is_empty() and float(rogue.surge.telegraph) > 0.0, "A stalled sector surfaces a surge")
+	var cell: Vector2i = rogue.surge.cell
+	for i in rogue.disc_cells(cell, rogue.surge.radius):
+		assert(rogue.cells[i] == Game.FREE, "The surge disc is live void")
+	for q in rogue.qixes:
+		assert(q.c.distance_to(rogue.center(cell)) >= q.len * 0.5 + (int(rogue.surge.radius) + 3) * Game.CELL, "The surge keeps clear of Anomalies")
+	render_frame()
+	for i in 21:
+		rogue.update(0.1)
+	assert(float(rogue.surge.telegraph) == 0.0 and float(rogue.surge.window) < rogue.SURGE_WINDOW, "The telegraph gives way to the window")
+	render_frame()
+	await shot("surge-active")
+	rogue.surge.cell = lo + Vector2i(7, 7)
+	cut_column(lo.x + 12)
+	assert(rogue.surge.is_empty() and rogue.earned_salvage == salvage + 2 and rogue.stall_time == 0.0, "Enclosing the surge pays two salvage")
+	assert(rogue.objective_notice.begins_with("SURGE SECURED"))
+	# Expiry one and two queue a Sparx; later misses speed the Anomaly instead.
+	for expiry in range(1, 4):
+		wait_for_surge()
+		rogue.surge.telegraph = 0.0
+		rogue.surge.window = 0.05
+		rogue.sparx_to_spawn = 0
+		rogue.update(0.1)
+		assert(rogue.surge.is_empty() and rogue.surge_expired == expiry and rogue.stall_time == 0.0)
+		if expiry <= 2:
+			assert(rogue.sparx_to_spawn == 1 and rogue.sparx_spawn_t == 0.0, "A missed surge brings a Sparx")
+			assert(is_equal_approx(rogue.qix_speed(), base_speed))
+		else:
+			assert(rogue.sparx_to_spawn == 0 and is_equal_approx(rogue.surge_pressure, 0.1))
+			assert(is_equal_approx(rogue.qix_speed(), base_speed * 1.1), "Later misses speed the Anomaly")
+		rogue.sparx_to_spawn = 0
+		rogue.sparxes.clear()
+	# Pausing freezes the window.
+	wait_for_surge()
+	rogue.surge.telegraph = 0.0
+	var window: float = rogue.surge.window
+	rogue.pause_run()
+	assert(rogue.phase == "paused")
+	for i in 30:
+		rogue.update(0.1)
+	assert(is_equal_approx(float(rogue.surge.window), window), "Pausing freezes the surge window")
+	rogue.resume_run()
+	rogue.update(0.1)
+	assert(float(rogue.surge.window) < window)
+	# A surge shares a sector with beacons: one cut can secure both, and discs never overlap.
+	force_kind("surveyor", "beacon", 3, 1)
+	bare_field()
+	rogue.freeze_time = 1000
+	var a := lo + Vector2i(7, 7)
+	rogue.zones.assign([zone(a), zone(hi - Vector2i(7, 7))])
+	park_anomalies(Vector2i(hi.x - 2, lo.y + 25))
+	rogue.surge = {"cell": a + Vector2i(0, 16), "radius": rogue.SURGE_RADIUS, "telegraph": 0.0, "window": rogue.SURGE_WINDOW, "spin": 0.0}
+	salvage = rogue.earned_salvage
+	cut_column(a.x + 7)
+	assert(rogue.zones[0].captured and rogue.surge.is_empty() and rogue.earned_salvage == salvage + 3, "A cut can secure a beacon and a surge together")
+	assert(rogue.phase == "run" and not rogue.pending_clear)
+	wait_for_surge()
+	var far_disc: PackedInt32Array = rogue.disc_cells(rogue.zones[1].cell, rogue.zones[1].radius)
+	for i in rogue.disc_cells(rogue.surge.cell, rogue.surge.radius):
+		assert(not far_disc.has(i), "Surges never overlap beacon discs")
+	rogue.freeze_time = 100
+
+## A rival sector on the plain square, with a hand-placed seed so geometry is exact.
+func rival_fixture(ship_id: String) -> Vector2i:
+	force_kind(ship_id, "rival", 3, 1)
+	bare_field()
+	rogue.freeze_time = 1000
+	park_anomalies(Vector2i(hi.x - 3, lo.y + 25))
+	var seed_cell := lo + Vector2i(12, 12)
+	rogue.setup_rival(seed_cell, Sectors.RIVAL_RADIUS)
+	rogue.rng.seed = 9
+	return seed_cell
+
+## Walk the rival straight out of its seed into the void so it carries a live line.
+func rival_line_out(seed_cell: Vector2i, steps: int) -> void:
+	rogue.rival.pos = seed_cell + Vector2i(0, -Sectors.RIVAL_RADIUS)
+	rogue.rival.exposed = false
+	rogue.rival.clear_trail()
+	for i in steps:
+		assert(rogue.rival.step(Vector2i.UP), "The rival can cut into open void")
+	assert(rogue.rival.exposed and rogue.rival.trail.size() == steps)
+
+func check_rival() -> void:
+	var seed_cell := rival_fixture("surveyor")
+	var free_before: int = rogue.free_count
+	var owned_before: int = rogue.rival.owned.size()
+	assert(owned_before == rogue.disc_cells(seed_cell, Sectors.RIVAL_RADIUS).size())
+	# The planner finds a loop, walks it, and the flood grants what the loop walls off.
+	var grew := false
+	for i in 800:
+		rogue.rival.tick(0.1)
+		if rogue.rival.owned.size() > owned_before:
+			grew = true
+			break
+	assert(grew and not rogue.rival.exposed, "The rival plans and completes a claim on its own")
+	assert(rogue.free_count == free_before and rogue.capture_percent == 0.0, "Rival land is still void to the player")
+	for i in rogue.cells.size():
+		if rogue.rival_land[i] == 1: assert(rogue.cells[i] == Game.FREE)
+	assert(rogue.rival_land.count(1) == rogue.rival.owned.size())
+	render_frame()
+	# Anomalies floating over rival land still seed the flood from open void beside them.
+	seed_cell = rival_fixture("surveyor")
+	park_anomalies(seed_cell)
+	owned_before = rogue.rival.owned.size()
+	rogue.rival_capture([])
+	assert(rogue.rival.owned.size() == owned_before, "A seedless loop cannot swallow the arena")
+	assert(rogue.rival_land.count(1) < 0.4 * rogue.base_free)
+	# The rival's line crossing ours costs the line, not a hull; protections still hold.
+	seed_cell = rival_fixture("surveyor")
+	var lives: int = rogue.lives
+	var column := lo.x + 30
+	cut_line_to_row(column, lo.y + 9)
+	var target := Vector2i(column, lo.y + 5)
+	assert(rogue.cells[rogue.idx(target.x, target.y)] == Game.TRAIL)
+	rogue.rival.pos = target + Vector2i.LEFT
+	rogue.rival.exposed = true
+	rogue.rival.anchor = seed_cell
+	assert(rogue.rival.step(Vector2i.RIGHT))
+	assert(not rogue.drawing and rogue.trail.is_empty() and rogue.p == rogue.anchor and rogue.lives == lives, "A rival cut sends the ship home with its hull")
+	assert(rogue.cells.count(Game.TRAIL) == 0 and rogue.invuln > 0.0 and rogue.objective_notice.begins_with("RIVAL CUT YOUR LINE"))
+	assert(rogue.rival.pos == target and rogue.rival.trail.has(target), "The rival keeps cutting through")
+	rogue.invuln = 0.0
+	rogue.rival.clear_trail()
+	rogue.rival.exposed = false
+	rogue.rival.pos = seed_cell
+	cut_line_to_row(column, lo.y + 9)
+	rogue.hardlight_time = 2.0
+	rogue.rival.pos = target + Vector2i.LEFT
+	rogue.rival.exposed = true
+	assert(rogue.rival.step(Vector2i.RIGHT))
+	assert(rogue.drawing and rogue.trail.size() == 10, "Hardlight shrugs the rival off")
+	rogue.hardlight_time = 0.0
+	rogue.lose_trail("TEST")
+	# Crossing the rival's line, by step, by lance, or by beam, fails it back to its land.
+	seed_cell = rival_fixture("surveyor")
+	rival_line_out(seed_cell, 6)
+	var line_cell: Vector2i = rogue.rival.trail[3]
+	rogue.p = Vector2i(lo.x - 1, line_cell.y)
+	rogue.vis = rogue.center(rogue.p)
+	rogue.draw_armed = true
+	for step in line_cell.x - lo.x + 1:
+		assert(rogue.try_step(Vector2i.RIGHT, true, false))
+	assert(rogue.p == line_cell and rogue.rival.trail.is_empty() and not rogue.rival.exposed, "Stepping on the rival's line cuts it")
+	assert(rogue.rival_land[rogue.idx(rogue.rival.pos.x, rogue.rival.pos.y)] == 1, "The rival returns to its land")
+	rogue.lose_trail("TEST")
+	seed_cell = rival_fixture("lancer")
+	rival_line_out(seed_cell, 6)
+	line_cell = rogue.rival.trail[2]
+	rogue.p = Vector2i(lo.x - 1, line_cell.y)
+	rogue.vis = rogue.center(rogue.p)
+	rogue.last_dir = Vector2i.RIGHT
+	rogue.lance_cd = 0
+	rogue.fire_lance()
+	assert(rogue.tether_active and rogue.rival.trail.is_empty(), "A cast tether cuts the rival's line where it crosses")
+	rogue.lose_trail("TEST")
+	seed_cell = rival_fixture("surveyor")
+	rival_line_out(seed_cell, 6)
+	line_cell = rogue.rival.trail[4]
+	rogue.qixes[0].c = rogue.center(line_cell)
+	rogue.qixes[0].len = 1.0
+	rogue.update_rival(0.0)
+	assert(rogue.rival.trail.is_empty() and not rogue.rival.exposed, "An Anomaly beam cuts the rival's line")
+	park_anomalies(Vector2i(hi.x - 3, lo.y + 25))
+	# Land closing over its line fails it; a blast takes the land under it and displaces it.
+	seed_cell = rival_fixture("sapper")
+	rival_line_out(seed_cell, 4)
+	rogue.p = seed_cell + Vector2i(0, -Sectors.RIVAL_RADIUS - 2)
+	rogue.vis = rogue.center(rogue.p)
+	rogue.start_sapper_charge()
+	rogue.sap_charge = 4.0
+	rogue.detonate(4)
+	assert(rogue.rival.trail.is_empty() and not rogue.rival.exposed, "Land over the rival's line cuts it")
+	assert(rogue.rival.alive and rogue.rival.owned.size() < owned_before and rogue.rival.owned.size() > 0, "A blast takes rival land")
+	assert(rogue.rival_land[rogue.idx(rogue.rival.pos.x, rogue.rival.pos.y)] == 1 and rogue.capture_percent > 0.0, "The rival stands on what it has left and the steal counts")
+	# Stasis holds the rival; release lets it move through the real update path.
+	seed_cell = rival_fixture("surveyor")
+	rogue.freeze_time = 100
+	var held: Vector2i = rogue.rival.pos
+	for i in 20:
+		rogue.update(0.1)
+	assert(rogue.rival.pos == held and rogue.rival.trail.is_empty(), "A frozen rival does not move")
+	rogue.freeze_time = 0.0
+	var moved := false
+	for i in 60:
+		rogue.update(0.1)
+		if rogue.rival.pos != held or not rogue.rival.trail.is_empty():
+			moved = true
+			break
+	assert(moved, "The rival runs through the play loop")
+	rogue.freeze_time = 1000
+	# Enclosing the last of its land drives it off and pays; the depth goal still clears.
+	seed_cell = rival_fixture("surveyor")
+	var salvage: int = rogue.earned_salvage
+	cut_column(lo.x + 18)
+	assert(not rogue.rival.alive and rogue.rival_land.count(1) == 0 and rogue.earned_salvage == salvage + 3, "Taking every rival cell drives it off")
+	assert(rogue.objective_notice.begins_with("RIVAL DRIVEN OFF") and rogue.capture_percent > 0.0)
+	render_frame()
+	cut_column(hi.x - 14)
+	assert(rogue.capture_percent >= Sectors.capture_goal(3) and rogue.pending_clear and rogue.phase == "reward", "A rival sector clears on the depth goal")
+	resolve_to_clear()
+	assert(rogue.phase == "sector_clear")
+
+## Cut straight down from the top rail to a row and stop there, still exposed.
+func cut_line_to_row(x: int, y: int) -> void:
+	rogue.p = Vector2i(x, lo.y - 1)
+	rogue.vis = rogue.center(rogue.p)
+	rogue.draw_armed = true
+	for step in y - lo.y + 1:
+		assert(rogue.try_step(Vector2i.DOWN, true, false))
+	assert(rogue.p == Vector2i(x, y) and rogue.drawing)
 
 func check_objective_guidance() -> void:
 	for kind in Sectors.KINDS:
