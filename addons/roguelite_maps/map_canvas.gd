@@ -3,6 +3,12 @@ extends Control
 signal stroke_started
 signal stroke_finished
 signal selection_changed
+const Encounters = preload("res://scripts/map_encounters.gd")
+var encounter := "survey"
+var depth := 1
+var preview := {}
+var pickup_markers: Array = []
+var objective_markers: Array = []
 var map: MapDefinition
 var tool := "select"
 var enemy_kind := "anomaly"
@@ -20,7 +26,7 @@ var last_cell := Vector2i(-1, -1)
 var erasing := false
 var painted := {}
 const COLORS := {"anomaly": Color("e987ec"), "sparx": Color("ff6677"), "turret": Color("ffc56b"), "spawner": Color("a594ff"), "gunner_orb": Color("ff9944"), "ray_orb": Color("6bf1db"), "rotor": Color("fff08a"), "chain_worm": Color("75e7aa"), "brood_carrier": Color("cb8cff"), "sniper": Color("ff7766"), "siege": Color("ffbb55")}
-const GLYPHS := {"anomaly": "A", "sparx": "S", "turret": "T", "spawner": "M", "gunner_orb": "G", "ray_orb": "R", "rotor": "O", "chain_worm": "W", "brood_carrier": "B", "sniper": "N", "siege": "D"}
+const GLYPHS := {"anomaly": "A", "sparx": "S", "turret": "T", "spawner": "M", "gunner_orb": "G", "ray_orb": "R", "rotor": "O", "chain_worm": "W", "brood_carrier": "B", "sniper": "N", "siege": "D", "boss_core": "C", "boss_relay": "R"}
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
@@ -46,8 +52,76 @@ func rebuild() -> void:
 	for i in mask.size(): pixels.encode_u32(i * 4, colors[mask[i]].to_abgr32())
 	terrain = ImageTexture.create_from_image(Image.create_from_data(map.grid_size.x, map.grid_size.y, false, Image.FORMAT_RGBA8, pixels))
 	rebuild_zones()
+	rebuild_preview()
 	painted.clear()
 	queue_redraw()
+
+func set_encounter(value: String, at_depth: int) -> void:
+	encounter = value
+	depth = at_depth
+	selected = -1
+	rebuild_preview()
+	selection_changed.emit()
+
+func rebuild_preview() -> void:
+	if map == null or map.arena().free_cells.is_empty():
+		pickup_markers.clear()
+		objective_markers.clear()
+		queue_redraw()
+		return
+	preview = Encounters.preview(map, depth, encounter)
+	pickup_markers = preview.nodes
+	objective_markers = Encounters.markers(preview.objectives)
+	queue_redraw()
+
+func author_pickups() -> void:
+	if map.override_pickups: return
+	map.pickups.assign(pickup_markers.duplicate(true))
+	map.override_pickups = true
+
+func author_objectives() -> void:
+	if not map.encounters.has(encounter): map.encounters[encounter] = {}
+	if not map.encounters[encounter].has("objectives"):
+		map.encounters[encounter].objectives = objective_markers.duplicate(true)
+
+func selected_record() -> Dictionary:
+	if selected <= -1000:
+		var i := -selected - 1000
+		return objective_markers[i] if i < objective_markers.size() else {}
+	if selected <= -100:
+		var i := -selected - 100
+		return pickup_markers[i] if i < pickup_markers.size() else {}
+	if selected >= 0 and selected < map.enemies.size(): return map.enemies[selected]
+	return {}
+
+func move_selected(cell: Vector2i) -> void:
+	if selected <= -100 and selected_record().get("cell") == cell: return
+	if selected <= -1000:
+		author_objectives()
+		map.encounters[encounter].objectives[-selected - 1000].cell = cell
+	elif selected <= -100:
+		author_pickups()
+		map.pickups[-selected - 100].cell = cell
+	elif selected == -2:
+		map.player_start = cell
+		map.override_start = true
+	elif selected >= 0:
+		map.enemies[selected].cell = cell
+		map.override_enemies = true
+	# Keep dragged markers under the pointer; the full preview rebuild follows release.
+	if selected <= -100: selected_record().cell = cell
+
+func remove_selected() -> void:
+	if selected <= -1000:
+		author_objectives()
+		map.encounters[encounter].objectives.remove_at(-selected - 1000)
+	elif selected <= -100:
+		author_pickups()
+		map.pickups.remove_at(-selected - 100)
+	elif selected >= 0:
+		map.enemies.remove_at(selected)
+		map.override_enemies = true
+	selected = -1
 
 func rebuild_zones() -> void:
 	zone_texture = null
@@ -94,6 +168,21 @@ func _draw() -> void:
 		for x in range(map.grid_size.x + 1): draw_line(origin + Vector2(x * step, 0), origin + Vector2(x * step, map.grid_size.y * step), Color(0.3, 0.4, 0.5, 0.16))
 		for y in range(map.grid_size.y + 1): draw_line(origin + Vector2(0, y * step), origin + Vector2(map.grid_size.x * step, y * step), Color(0.3, 0.4, 0.5, 0.16))
 	var font := ThemeDB.fallback_font
+	for i in pickup_markers.size():
+		var point := screen_cell(pickup_markers[i].cell)
+		draw_circle(point, 7, Color("101924"))
+		draw_arc(point, 7, 0, TAU, 6, Color("ffe16b"), 2, true)
+		draw_string(font, point + Vector2(-3, 4), "$", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("ffe16b"))
+		if selected == -100 - i: draw_circle(point, 12, Color.WHITE, false, 2)
+	for i in objective_markers.size():
+		var marker: Dictionary = objective_markers[i]
+		var point := screen_cell(marker.cell)
+		var color := Color("d794ff") if encounter == "breach" else Color("68e9dc")
+		var radius := maxf(10, float(marker.get("radius", 0)) * step)
+		draw_circle(point, radius, Color(color, 0.08))
+		draw_circle(point, radius, color, false, 1.5)
+		draw_string(font, point + Vector2(-4, 4), {"beacon": "B", "cargo": "C", "breach": "!", "rival": "R"}.get(encounter, "?"), HORIZONTAL_ALIGNMENT_LEFT, -1, 12, color)
+		if selected == -1000 - i: draw_circle(point, radius + 4, Color.WHITE, false, 2)
 	for i in map.enemies.size():
 		var enemy: Dictionary = map.enemies[i]
 		var p := screen_cell(enemy.cell)
@@ -118,6 +207,10 @@ func hit(pos: Vector2) -> int:
 	if screen_cell(map.player_start).distance_to(pos) <= 10: return -2
 	for i in range(map.enemies.size() - 1, -1, -1):
 		if screen_cell(map.enemies[i].cell).distance_to(pos) <= maxf(10, scale_at()): return i
+	for i in range(pickup_markers.size() - 1, -1, -1):
+		if screen_cell(pickup_markers[i].cell).distance_to(pos) <= 10: return -100 - i
+	for i in range(objective_markers.size() - 1, -1, -1):
+		if screen_cell(objective_markers[i].cell).distance_to(pos) <= 10: return -1000 - i
 	return -1
 
 func _gui_input(event: InputEvent) -> void:
@@ -146,16 +239,26 @@ func _gui_input(event: InputEvent) -> void:
 		last_cell = cell
 		if erasing and tool not in ["open", "rock", "shield_zone", "hazard_zone", "erase_zone"]:
 			selected = hit(event.position)
-			if selected >= 0:
-				map.enemies.remove_at(selected)
-				map.override_enemies = true
-			selected = -1
+			remove_selected()
 		elif tool == "select": selected = hit(event.position)
+		elif tool == "salvage":
+			author_pickups()
+			map.pickups.append({"cell": cell, "rare": false})
+			rebuild_preview()
+			selected = -100 - (map.pickups.size() - 1)
+		elif tool == "objective" and encounter in ["beacon", "cargo", "breach", "rival"]:
+			author_objectives()
+			var markers: Array = map.encounters[encounter].objectives
+			if encounter != "beacon": markers.clear()
+			markers.append({"cell": cell, "radius": {"beacon": 5, "cargo": 0, "breach": 4, "rival": 3}[encounter]})
+			rebuild_preview()
+			selected = -1000 - (markers.size() - 1)
 		elif tool == "enemy":
 			map.enemies.append({"kind": enemy_kind, "cell": cell, "axis": enemy_axis})
 			map.override_enemies = true
 			selected = map.enemies.size() - 1
 		elif tool == "start": selected = -2
+		elif tool == "objective": selected = -1
 		apply_at(cell)
 		selection_changed.emit()
 		queue_redraw()
@@ -197,12 +300,7 @@ func apply_at(cell: Vector2i) -> void:
 				painted[c] = solid
 		map.override_terrain = true
 	elif not erasing:
-		if selected == -2:
-			map.player_start = cell
-			map.override_start = true
-		elif selected >= 0:
-			map.enemies[selected].cell = cell
-			map.override_enemies = true
+		move_selected(cell)
 
 func finish_stroke() -> void:
 	if not dragging: return

@@ -45,6 +45,7 @@ func fresh_ship(id: String) -> void:
 	# Legacy Sapper mechanics still exercise the shared disc engine used by Charge and Jump.
 	assert(rogue.progress.select_ship("surveyor" if id == "sapper" else id))
 	rogue.transit_skip = true
+	rogue.sector_limit = 8 # Legacy arena fixtures; act progression has its own suite.
 	rogue.start_run()
 	rogue.launch_destination(0)
 	if id == "sapper": rogue.ship = Ships.get_ship(id)

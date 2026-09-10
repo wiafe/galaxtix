@@ -2,9 +2,11 @@
 class_name MapCatalog
 extends RefCounted
 const ROOT := "res://maps/"
-const ENEMY_KINDS := ["anomaly", "sparx", "turret", "spawner", "gunner_orb", "ray_orb", "rotor", "chain_worm", "brood_carrier", "sniper", "siege"]
+const ENEMY_KINDS := ["anomaly", "sparx", "turret", "spawner", "gunner_orb", "ray_orb", "rotor", "chain_worm", "brood_carrier", "sniper", "siege", "boss_core", "boss_relay"]
 const VOID_ENEMIES := ["anomaly", "gunner_orb", "ray_orb", "rotor", "chain_worm", "brood_carrier", "siege"]
 const ENEMY_HELP := {
+	"boss_core": "Boss arena only. Locked until all three relays are captured, then enclose the core to win. Leave four cells clear around it.",
+	"boss_relay": "Boss arena only. Enclose the whole two-cell disc to disable a weapon or hatchery. Three per boss arena.",
 	"sniper": "Fixed turret. Locks a yellow aim line, then fires a red beam across land. Rock blocks it; enclose the turret to disable it.",
 	"siege": "Slow void enemy. Marks a coastal patch before breaking captured land. Original rails and hardened walls resist it.",
 	"anomaly": "Roaming beam. Keeps its region unclaimed and threatens trails.",
@@ -21,7 +23,7 @@ static var testing := {} # Isolated resource overrides for smoke tests; never se
 
 static func entries() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
-	for sector in range(1, 9):
+	for sector in preload("res://scripts/roguelite_acts.gd").map_order():
 		result.append({"id": "roguelite_%02d" % sector, "sector": sector, "title": "%02d / %s" % [sector, preload("res://scripts/roguelite_sectors.gd").stage(sector).name.capitalize()]})
 	return result
 

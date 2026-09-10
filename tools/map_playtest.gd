@@ -1,4 +1,5 @@
 extends Node
+const Acts = preload("res://scripts/roguelite_acts.gd")
 ## The Maps plugin supplies --nosave before autoloads start. Direct F6 is also isolated
 ## before the first frame and before Main/Roguelite can read or write their profiles.
 var main: Node
@@ -12,8 +13,8 @@ func _enter_tree() -> void:
 func _ready() -> void:
 	var config := ConfigFile.new()
 	config.load("res://.godot/map_playtest.cfg")
-	var stage := clampi(int(config.get_value("playtest", "stage", 1)), 1, 8)
-	var depth := clampi(int(config.get_value("playtest", "depth", stage)), 1, 8)
+	var stage := clampi(int(config.get_value("playtest", "stage", 1)), 1, Acts.LAST_MAP)
+	var depth := clampi(int(config.get_value("playtest", "depth", Acts.map_depth(stage))), 1, Acts.LENGTH)
 	var encounter := String(config.get_value("playtest", "encounter", "survey"))
 	var ship := String(config.get_value("playtest", "ship", "surveyor"))
 	if encounter not in preload("res://scripts/roguelite_sectors.gd").KINDS: encounter = "survey"
@@ -29,7 +30,10 @@ func _ready() -> void:
 	rogue.chart_depth = depth
 	rogue.route_path.resize(depth - 1)
 	rogue.route_path.fill(0)
-	rogue.route[depth - 1] = [{"depth": depth, "stage": stage, "kind": encounter}]
+	var map := MapCatalog.read(stage)
+	if map != null and not map.boss_id.is_empty(): encounter = "boss"
+	elif encounter == "boss": encounter = "survey"
+	rogue.route[depth - 1] = [{"depth": depth, "stage": stage, "kind": encounter, "boss": map.boss_id if map != null else ""}]
 	rogue.open_chart()
 	rogue.transit_skip = true
 	rogue.launch_destination(0)

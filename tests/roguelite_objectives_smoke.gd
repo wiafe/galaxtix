@@ -122,9 +122,9 @@ func check_table_and_routes() -> void:
 	for seed_value in 200:
 		var random := RandomNumberGenerator.new()
 		random.seed = seed_value
-		var route: Array = Sectors.make_route(random)
+		var route: Array = Sectors.make_route(random, 8)
 		random.seed = seed_value
-		assert(route == Sectors.make_route(random), "A seed reproduces encounter kinds and positions")
+		assert(route == Sectors.make_route(random, 8), "A seed reproduces encounter kinds and positions")
 		var previous := ""
 		var contest_counts := {"race": 0, "rival": 0}
 		assert(route.size() == 8)
@@ -220,7 +220,7 @@ func check_placement() -> void:
 	# Survey stays survey: the label, scale and goal are untouched.
 	force_kind("surveyor", "survey", 3, 1)
 	assert(rogue.zones.is_empty() and rogue.cargo.is_empty() and rogue.breach.is_empty())
-	assert(is_equal_approx(rogue.capture_target(), 0.7) and rogue.bar_scale() == 70.0 and rogue.objective_label() == "CAPTURE 70%")
+	assert(is_equal_approx(rogue.capture_target(), 0.65) and rogue.bar_scale() == 65.0 and rogue.objective_label() == "CAPTURE 65%")
 	for kind in Sectors.KINDS:
 		rogue.draw_chart_symbol(kind, Vector2(100, 100), Palette.CYAN)
 
@@ -485,7 +485,7 @@ func check_breach() -> void:
 	assert(is_equal_approx(rogue.capture_target(), 2.0))
 	cut_column(b.x + 6)
 	assert(rogue.breach.sealed and rogue.earned_salvage == salvage + 3, "Enclosing the breach seals it")
-	assert(is_equal_approx(rogue.capture_target(), 0.8) and rogue.phase == "run" and not rogue.pending_clear)
+	assert(is_equal_approx(rogue.capture_target(), 0.7) and rogue.phase == "run" and not rogue.pending_clear)
 	for i in disc:
 		assert(rogue.corruption[i] == 0)
 	infect_share(0.05)
@@ -970,6 +970,7 @@ func check_sector_briefings() -> void:
 	rogue.transit_skip = false
 	var depth := 0
 	for kind in Sectors.KINDS:
+		if kind == "boss": continue # Boss briefings use their authored arenas in the acts suite.
 		depth += 1
 		rogue.chart_depth = depth
 		rogue.route[depth - 1] = [{"depth": depth, "stage": mini(depth, 6), "kind": kind}]

@@ -13,8 +13,10 @@ func check() -> void:
 	main.set_process(false)
 	main.game.start_roguelite()
 	rogue = main.game.roguelite
+	rogue.sector_limit = 8
 	for entry in MapCatalog.entries():
-		var map := MapCatalog.read(entry.sector)
+		if entry.sector >= 9: continue # Authored act terrain is checked by the acts suite.
+		var map := load(MapCatalog.default_path(entry.id)) as MapDefinition # Stable fixture, independent of the player's edits.
 		assert(map != null and map.problems().is_empty())
 		var expected := SectorArena.build(entry.sector, 0, "roguelite", rogue.Sectors.holes(entry.sector, map.grid_size), map.grid_size)
 		assert(map.arena().mask == expected.mask and map.arena().base_free == expected.base_free, "Every editor terrain matches the built-in arena")
@@ -25,6 +27,7 @@ func check() -> void:
 		assert(draft.problems().is_empty(), "%s: %s" % [entry.id, draft.problems()])
 		MapCatalog.testing[entry.id] = draft
 		for kind in rogue.Sectors.KINDS:
+			if kind in ["race", "boss"]: continue # These transform arenas; their dedicated suites cover spawning.
 			rogue.start_run()
 			rogue.active_destination = {"depth": 5, "stage": entry.sector, "kind": kind}
 			rogue.level = 5
@@ -37,7 +40,7 @@ func check() -> void:
 			for enemy in draft.enemies:
 				match enemy.kind:
 					"anomaly":
-						assert(rogue.to_cell(rogue.qixes[anomalies].c) == enemy.cell)
+						assert(rogue.to_cell(rogue.qixes[anomalies].c) == enemy.cell, "%s %s anomaly %s expected %s" % [entry.id, kind, rogue.to_cell(rogue.qixes[anomalies].c), enemy.cell])
 						anomalies += 1
 					"turret":
 						assert(rogue.turrets[turrets].cell == enemy.cell)
@@ -55,6 +58,41 @@ func check() -> void:
 	add_child(panel)
 	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	await get_tree().process_frame
+	assert(panel.current_id == "roguelite_09" and panel.act_picker.get_selected_id() == 1)
+	for act in range(1, 4):
+		panel.act_picker.select(panel.act_picker.get_item_index(act))
+		panel.act_picker.item_selected.emit(panel.act_picker.selected)
+		assert(panel.visible_maps.size() == 8 and panel.picker.item_count == 8)
+		for entry in panel.visible_maps: assert(panel.map_act(entry.id) == act)
+		panel.picker.item_selected.emit(7)
+		assert(panel.current_id == "roguelite_%02d" % (8 + act * 5))
+		assert(panel.picker.get_item_text(7).contains("[Boss]"))
+		assert(panel.depth_input.value == act * 8, "Boss playtest uses the act's final depth")
+		panel.select_act(0)
+		assert(panel.picker.item_count == 8)
+		panel.select_act(act)
+		assert(panel.current_id == "roguelite_%02d" % (8 + act * 5), "Returning to an act remembers its selected map")
+	for stage in [13, 18, 23]:
+		panel.open_map("roguelite_%02d" % stage)
+		assert(panel.canvas.map.enemies.filter(func(e): return e.kind == "boss_relay").size() == 3)
+		assert(panel.encounter_input.get_item_text(panel.encounter_input.selected).to_lower() == "boss")
+		var boss_fingerprint: int = panel.fingerprint(panel.canvas.map)
+		panel.begin_change()
+		panel.canvas.map.enemies = panel.canvas.map.enemies.filter(func(e): return e.kind != "boss_relay")
+		panel.finish_change()
+		assert(panel.save_button.disabled and panel.play_button.disabled)
+		var act: int = panel.map_act(panel.current_id)
+		panel.select_act(0)
+		assert(panel.act_picker.get_item_text(panel.act_picker.get_item_index(act)).ends_with("*"))
+		panel.select_act(act)
+		assert(panel.save_button.disabled, "Unsaved edits and validation survive act switching")
+		panel.undo()
+		assert(panel.fingerprint(panel.canvas.map) == boss_fingerprint and not panel.save_button.disabled)
+		var boss_path := "res://.godot/boss-roundtrip.tres"
+		assert(ResourceSaver.save(panel.canvas.map, boss_path) == OK)
+		var boss_map := ResourceLoader.load(boss_path, "", ResourceLoader.CACHE_MODE_IGNORE) as MapDefinition
+		assert(panel.fingerprint(boss_map) == boss_fingerprint)
+	panel.open_map("roguelite_01")
 	var original: int = panel.fingerprint(panel.canvas.map)
 	var cell := Vector2i(80, 50)
 	var index := cell.y * 160 + cell.x
@@ -130,6 +168,7 @@ func check() -> void:
 	assert(DirAccess.remove_absolute(temporary_path) == OK)
 	panel.restore_default()
 	main.hide()
+	panel.select_act(2)
 	if not shot_dir.is_empty():
 		await RenderingServer.frame_post_draw
 		get_viewport().get_texture().get_image().save_png(shot_dir.path_join("maps-editor.png"))

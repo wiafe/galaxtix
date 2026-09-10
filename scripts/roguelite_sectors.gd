@@ -1,11 +1,12 @@
 @tool
 extends RefCounted
 ## Jump silhouettes fitted into Roguelite's wider viewport; cell size never changes.
-const CORRUPTION_SECTOR := 8
-const LENGTH := 8
+const Acts = preload("res://scripts/roguelite_acts.gd")
+const CORRUPTION_SECTOR := 17
+const LENGTH := Acts.LENGTH
 
 static func capture_goal(depth: int) -> int:
-	return clampi(60 + (depth - 1) * 5, 60, 90)
+	return mini(90, 60 + (Acts.act_at(depth) - 1) * 5 + ((Acts.step_at(depth) - 1) / 2) * 5)
 
 ## Encounter kinds are one table: where a kind may appear and what its node promises.
 ## Forks pair Survey with another kind in random order; the middle merge rolls its kind too.
@@ -18,6 +19,7 @@ const KINDS := {
 	"breach": {"min_depth": 5, "reward": "+3 SALVAGE ON SEAL"},
 	"rival": {"min_depth": 3, "reward": "+3 SALVAGE ON WIN"},
 	"race": {"min_depth": 3, "reward": "+3 SALVAGE ON WIN"},
+	"boss": {"min_depth": 5, "reward": "BOSS SALVAGE + 1 HULL"},
 }
 const RACE_GOAL := 60
 const RIVAL_SECONDS := 45.0
@@ -41,13 +43,14 @@ static func objective_count(kind: String, depth: int) -> int:
 
 ## Beacon and cargo sectors clear on their objective alone; the others keep the depth goal.
 static func territory_goal(kind: String) -> bool:
-	return kind not in ["beacon", "cargo", "rival", "race"]
+	return kind not in ["beacon", "cargo", "rival", "race", "boss"]
 
 static func reward_copy(kind: String) -> String:
 	return String(KINDS.get(kind, {}).get("reward", ""))
 
 static func objective_copy(kind: String, depth: int) -> String:
 	match kind:
+		"boss": return "CAPTURE THE THREE INSTALLATIONS, THEN ENCLOSE THE CORE."
 		"race":
 			return "FIRST TO %d%% WINS. SEPARATE ARENAS. LOSE: -1 HULL AND RETRY." % RACE_GOAL
 		"beacon":
@@ -67,7 +70,7 @@ static func objective_copy(kind: String, depth: int) -> String:
 static func alternate_kinds(depth: int) -> Array[String]:
 	var kinds: Array[String] = []
 	for kind: String in KINDS:
-		if kind != "survey" and int(KINDS[kind].min_depth) <= depth:
+		if kind not in ["survey", "boss"] and int(KINDS[kind].min_depth) <= depth:
 			kinds.append(kind)
 	return kinds
 
@@ -83,6 +86,8 @@ const LIST := [
 ]
 
 static func stage(level: int) -> Dictionary:
+	if level >= Acts.FIRST_MAP:
+		return {"name": Acts.MAP_NAMES[clampi(level - Acts.FIRST_MAP, 0, Acts.MAP_NAMES.size() - 1)], "source": "belt", "level": 1, "source_half": Vector2(40, 40), "half": Vector2(40, 30)}
 	return LIST[clampi(level - 1, 0, LIST.size() - 1)]
 
 static func holes(level: int, size: Vector2i) -> Array:
@@ -109,6 +114,7 @@ static func anomaly_count(depth: int, shape_id: int) -> int:
 ## Shape IDs are independent of encounter depth; only depth controls enemy progression.
 ## Special encounters avoid repeating the previous special kind, including at the middle merge.
 static func make_route(random: RandomNumberGenerator, length := LENGTH) -> Array:
+	if length == Acts.LENGTH: return Acts.route(random)
 	var route: Array = []
 	# During playtesting, reserve one slot for each contest. Keeping these kinds
 	# out of the remaining rolls prevents duplicates and consecutive special repeats.

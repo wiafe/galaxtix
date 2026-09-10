@@ -44,6 +44,7 @@ func open_chart() -> void:
 	pass # Arcade advances through arenas in order.
 
 func start_run(_retry_sector := 0) -> void:
+	sector_limit = MAP_GOALS.size()
 	super.start_run()
 	lives = 0 # Game counts spare hulls; zero means one remaining life.
 	opening_draft_pending = false

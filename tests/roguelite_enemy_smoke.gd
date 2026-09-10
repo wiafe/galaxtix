@@ -39,6 +39,7 @@ func check() -> void:
 		assert(panel.canvas.enemy_kind == kind and panel.enemy_help.text == MapCatalog.ENEMY_HELP[kind])
 	panel.free()
 	for entry in MapCatalog.entries():
+		if entry.sector >= 9: continue # Act maps intentionally distribute these enemies.
 		var map := load(MapCatalog.default_path(entry.id)) as MapDefinition
 		for enemy in map.enemies:
 			assert(enemy.kind not in ["gunner_orb", "ray_orb", "rotor", "chain_worm", "brood_carrier"], "New enemies are opt-in editor content")

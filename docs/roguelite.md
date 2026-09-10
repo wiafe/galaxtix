@@ -6,24 +6,21 @@ Choose **Roguelite** from the main menu. Surveyor is free; Lancer and Bulwark ea
 
 ## Expedition
 
-A run has eight encounters, selected one jump at a time on a branching star chart. Launch from the hangar opens the chart; meet the arena's territory goal, then choose Star Chart after the sector-clear fanfare. Goals rise by encounter depth: **60%, 65%, 70%, 75%, 80%, 85%, 90%, 90%**, capped at 90%. Alternate routes at the same depth share the goal. The map preview, HUD, and progress bar display that destination's target. Hull and the three installed systems carry forward; ability cooldowns refresh. The last sector completes the expedition.
+A run has **three acts of eight encounters**: seven regular sectors, then a boss. Each act has its own eight-sector chart, route shape, palette and backdrop. Defeating its boss reveals the next act. The void keeps the same color throughout. Hull and installed systems carry forward; ability cooldowns refresh.
 
-Survey destinations retain the original arena progression below. Other destinations use a different arena shape at forks, while the shared middle encounter uses arena 4. Enemy difficulty follows encounter depth.
-
-| Sector | Arena outline | Introduction |
+| Act | Layouts and roster | Boss |
 | --- | --- | --- |
-| 1 | Square, 52 × 52 cells | Small opening; one Anomaly, no turret or blockers. |
-| 2 | Square, 60 × 60 cells | Two interior pylons with walkable rails. |
-| 3 | Notched square, 68 × 68 cells | Opposing edge notches, two pylons, two Anomalies covering opposite sides. |
-| 4 | Square, 68 × 68 cells | Four interior pillars. |
-| 5 | Square, 68 × 68 cells | Two deep slices entering from the top edge. |
-| 6 | Notches, 80 × 68 cells | Two pylons inside a notched outline; three Anomalies. |
-| 7 | Bridge, 80 × 68 cells | Two lobes, one pylon each, connected through a narrow crossing. |
-| 8 | Island, 80 × 68 cells | A 24 × 24 rock core with a walkable rail; corruption begins. |
+| Foundry | Machinery islands and channels; Sparx, Turret, Rotor, Gunner Orb | The Foreman: capture weapons to stop its volleys. |
+| Infestation | Rounded chambers, roots and pockets; Spawner, Brood Carrier, Chain Worm | Brood Queen: capture hatcheries to stop mites. |
+| Reactor | Bridges, rings, shield pockets and hazards; Sniper, Ray Orb, Siege | Reactor Heart: disable beam, land-breaking and volley relays. |
 
-The chart has shared opening, fourth, and final encounters, with two destinations at every other depth. Routes stay in their lane between forks and merges, without diagonal cross-links. Routes are generated once per expedition and stay fixed while selecting. Each fork pairs Survey with another eligible encounter, randomly assigning them to the upper and lower branches. The shared sector-4 node randomly rolls Survey or an eligible encounter, including Rival. Special encounters avoid repeating the previous special kind. The opening and finale remain Survey. The selected destination previews its actual arena coast, threats, and reward. Hull, carried salvage, installed systems, and the traveled route remain visible. Nodes use symbols for each kind and the finale; only the focused destination gets a label. The expanded map has a compact status row above and an arena/threat/bonus strip below. Empty system slots and baseline reward copy are omitted. The focused reachable incoming route lights up, while completed nodes show checkmarks. Click any node to inspect its arena, threats, and reward, including locked or past destinations. Left/Right browses columns and Up/Down switches nodes. Only a connected destination in the next column can launch with Jump or Enter; other previews show Locked or Cleared. Escape banks and exits from the chart.
+Anomalies remain shared. Every boss requires capturing three installations, then enclosing its exposed core. Boss victories grant 5/7/10 salvage and one hull, capped at the normal hull limit. The final boss completes the expedition. Each act has an exclusive boss pool, currently with one boss; more bosses can be added without changing route generation.
 
-### Encounter kinds
+Territory goals for the seven regular sectors are **60/60/65/65/70/70/75%**, **65/65/70/70/75/75/80%**, and **70/70/75/75/80/80/85%** by act. Objective encounters retain their own win conditions. One Race and one Rival appear somewhere in each full route, on either branch or a shared junction. Chart selection stays within the current act.
+
+See [act content and boss editing](roguelite-acts.md). Maps 09–32 provide the new act arenas. The original eight maps remain available in the editor and Arcade.
+
+## Encounter kinds
 
 The kind table lives in `scripts/roguelite_sectors.gd` and drives the chart symbol, the threat strip, the reward line, arena placement, and the clear rule. Enemy difficulty always follows encounter depth.
 
@@ -50,7 +47,7 @@ Beacon and cargo sectors keep their area milestones, so cards still come from te
 
 **Cargo.** Move within two cells of cargo while exposed to pick it up, then return to safe land to deliver it. Surveyor and Bulwark reach it while drawing; Lancer must ride to it. Casting a tether over cargo or enclosing it alone does not collect it. Pickup cannot reach through rock or land. While carrying, every Anomaly hunts the ship. Losing a hull or an Anchor recovery drops the cargo. Cargo enclosed without pickup relocates to open void, with a HUD notice. Each delivery places the next cargo.
 
-**Breach.** Corruption is active at any depth in a breach sector, seeded only from the breach disc, and the open disc re-infects itself every spread tick so it cannot be cleansed, only sealed by enclosure. The label shows the infected share of the arena in magenta once it passes 15%; at 25% the ship takes a hit and the infection collapses back to the disc, then grows again. Sealing pays, stops the spread for good, and restores the depth goal; remaining infection still cleanses under captures. Corruption cards join that sector's draft pool. Reaching the breach does not unlock the Containment upgrade track; that still needs sector 8. The guard range, hunt rate, and breach limit are playtest values.
+**Breach.** Corruption is active at any depth in a breach sector, seeded only from the breach disc, and the open disc re-infects itself every spread tick so it cannot be cleansed, only sealed by enclosure. The label shows the infected share of the arena in magenta once it passes 15%; at 25% the ship takes a hit and the infection collapses back to the disc, then grows again. Sealing pays, stops the spread for good, and restores the depth goal; remaining infection still cleanses under captures. Corruption cards join that sector's draft pool. Reaching the breach does not unlock the Containment upgrade track; that still needs sector 17. The guard range, hunt rate, and breach limit are playtest values.
 
 **Rival.** Own more territory when the 45-second clock expires. The HUD shows both scores; a frozen-board tally compares live territory, excluding starting rails, the Rival home, rock, and unfinished trails. Winning awards 3 salvage and opens the next chart choice. Losing costs one hull and retries the same destination with a fresh board; the last hull ends the expedition. A tie retries for free. Retrying restores the entry build and salvage, so failed attempts cannot farm drafts or loot. Briefings, pauses, drafts, and death animations pause the clock; Stasis freezes the rival while time continues. Reaching the usual capture goal does not end the contest early.
 
@@ -101,11 +98,11 @@ Every track has ten ranks, costing 2 salvage initially and 1 more for each follo
 | Extractor | +2% salvage yield. | One extra pickup per sector. | Two extra pickups per sector. |
 | Containment | 3% less corruption exposure accumulated per second. | Captures cleanse 2 cells beyond their border. | Cleansing extends 4 cells. |
 
-Containment becomes purchasable after reaching sector 8. Hull no longer mixes its shield benefit with corruption resistance. At Containment rank 10, overload takes about 5.7 seconds of continuous exposure instead of 4. Engines' milestone and Slipstream share the same boost; the card can improve its strength without stacking a second copy.
+Containment becomes purchasable after reaching sector 17. Hull no longer mixes its shield benefit with corruption resistance. At Containment rank 10, overload takes about 5.7 seconds of continuous exposure instead of 4. Engines' milestone and Slipstream share the same boost; the card can improve its strength without stacking a second copy.
 
 The first earned draft always presents Charge, Leap, and Dash at rank I. It cannot be rescanned and does not spend a Scanner charge. Subsequent drafts offer passive systems or one E-bound active system; the installed movement module can appear as a rank upgrade once the three slots are full. Unselected movement modules stay out of later drafts. Space retains the selected ship's native action; a successful Lancer activation no longer displays a redundant center-screen announcement.
 
-Scanner rescans replace offers while slots remain open without consuming a capture reward. Once slots are full, the guaranteed choices cannot be rescanned and no rescan charge is spent. Installed rank-III systems cannot be offered as upgrades. Corruption cards enter the pool in sector 8 and in breach encounters; Void Harvest becomes eligible when turrets are present.
+Scanner rescans replace offers while slots remain open without consuming a capture reward. Once slots are full, the guaranteed choices cannot be rescanned and no rescan charge is spent. Installed rank-III systems cannot be offered as upgrades. Corruption cards enter the pool in sector 17 and in breach encounters; Void Harvest becomes eligible when turrets are present.
 
 Salvage comes from enclosing board pickups using the shared Flux hexagon, collection effects, and enclosure logic. A normal pickup pays 1, or 1.25 on a Surveyor slow cut, before Extractor. Three baseline pickups give 3 salvage per sector. Captured turrets/nests grant 0.25; Void Harvest adds 1.25 at rank I. Territory and victory alone award no currency. Extractor's fractional rewards accumulate and persist between runs so early +2% purchases are not lost to rounding. Hazard enclosure rewards, objective rewards, surge captures, and Void Harvest feed the same award path.
 
@@ -139,7 +136,7 @@ Sector briefings show only the objective and a Start button above a dark, softly
 
 ## Saves and verification
 
-Profile version 6 lives in `user://galaxtix_roguelite.json`, separate from Jump's currencies, ownership, upgrades, and records. Version 1–5 profiles retain their ranks, ships, and unlocks. Existing salvage balances and fractional remainders convert at 4 old units to 1 new unit, matching the price reduction; conversion remainders are preserved. Version 6 profiles do not convert again. The profile stores highest reached sector, fractional salvage, and Containment access. Existing profiles that reached the old corruption sector retain that unlock. Unknown or unowned ship selections fall back to Surveyor.
+Profile version 8 lives in `user://galaxtix_roguelite.json`, separate from Jump's currencies, ownership, upgrades, and records. Version 1–5 profiles retain their ranks, ships, and unlocks. Existing salvage balances and fractional remainders convert at 4 old units to 1 new unit, matching the price reduction; conversion remainders are preserved. Version 6 and newer profiles do not convert again. The profile stores highest reached sector, fractional salvage, and Containment access. Existing profiles that reached the old corruption sector retain that unlock. Unknown or unowned ship selections fall back to Surveyor.
 
 Existing Sapper ownership and selection transfer to Bulwark without another purchase. Salvage and permanent ranks are preserved.
 
@@ -178,4 +175,4 @@ The objectives suite covers the kind table and two hundred generated routes, dis
 
 The optimization suite compares geometry and texture output with frozen reference algorithms across arenas, random cell states, empty/full fields, and all galaxy patterns. It checks corruption growth and visual cache invalidation after captures, cleansing, hardening, Anchor recovery, and restart.
 
-This slice follows the brainstorming document's numerical upgrades, milestones, distinct ships, and changing run builds. Further galaxies, permanent card-family unlocks, and equipment/loadouts remain future work. Values and corruption's introduction in sector 8 need player balance feedback before extending the campaign further.
+This slice follows the brainstorming document's numerical upgrades, milestones, distinct ships, and changing run builds. Additional bosses for each act pool, permanent card-family unlocks, and equipment/loadouts remain future work. Boss attack timing, rewards and act difficulty need player balance feedback.

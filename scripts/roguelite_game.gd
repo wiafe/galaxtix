@@ -23,6 +23,9 @@ const DRAFT_REVEAL := 0.85
 const VICTORY_REVEAL := 2.2
 const Sectors = preload("res://scripts/roguelite_sectors.gd")
 const EXPEDITION_SECTORS := Sectors.LENGTH
+const Encounters = preload("res://scripts/map_encounters.gd")
+const Acts = preload("res://scripts/roguelite_acts.gd")
+var boss = preload("res://scripts/roguelite_boss.gd").new()
 const MAX_CARD_RANK := 3
 const CHART_JUMP := Rect2(1240, 718, 260, 60)
 const BRIEFING_PANEL := Rect2(380, 320, 840, 250)
@@ -107,6 +110,7 @@ var rival = null
 var rival_land := PackedByteArray()
 var rival_home := PackedByteArray() # Permanent starting territory, excluded from either score.
 var rival_home_cell := Vector2i.ZERO
+var rival_home_radius := 3
 var rival_segments := PackedVector2Array()
 var rival_visual_dirty := true
 var rival_remaining := 0.0
@@ -239,95 +243,13 @@ func sector_layout(g: Dictionary, lvl: int, rim: int) -> Dictionary:
 		layout.start = layout.arena.start
 	if map != null and map.override_start:
 		layout.start = MapCatalog.nearest(layout.arena.mask, map.grid_size, map.player_start, 1)
-	var placement := RandomNumberGenerator.new()
-	placement.seed = hash("roguelite-pickups:%d" % lvl)
-	var occupied: Array = [layout.start]
-	if map != null and map.override_enemies:
-		for enemy in map.enemies: occupied.append(enemy.cell)
-	layout.nodes.clear()
-	for i in 3 + progress.rank_of("extractor") / 5 + (2 if encounter_kind(lvl) == "salvage" else 0):
-		var cell := layout_pick(placement, 10, occupied, 24.0, layout.shape, layout.arena)
-		layout.nodes.append({"cell": cell, "rare": false})
-		occupied.append(cell)
-	layout.turrets.clear()
-	layout.spawners.clear()
-	for i in Sectors.turret_count(encounter_kind(lvl), lvl):
-		var cell := layout_pick(placement, 10, occupied, 28.0, layout.shape, layout.arena)
-		layout.turrets.append({"cell": cell, "axis": Vector2i.DOWN})
-		occupied.append(cell)
-	if map != null and map.override_enemies:
-		layout.turrets.clear()
-		for enemy in map.enemies:
-			if enemy.kind == "turret": layout.turrets.append({"cell": enemy.cell, "axis": enemy.get("axis", Vector2i.DOWN)})
-			elif enemy.kind == "spawner": layout.spawners.append({"cell": enemy.cell})
-	# Objectives draw after pickups and turrets so existing kinds keep their placements.
-	place_objectives(layout, lvl, placement, occupied)
+	last_objectives = Encounters.populate(layout, map, lvl, encounter_kind(lvl), progress.rank_of("extractor"))
 	return layout
 
 func sector_shape(_g: Dictionary, lvl: int, _rng: RandomNumberGenerator) -> Array:
 	return Sectors.holes(lvl, Vector2i(grid_width, grid_height))
 
 # ------------------------------------------------------------------ objective encounters
-func place_objectives(layout: Dictionary, lvl: int, placement: RandomNumberGenerator, occupied: Array) -> void:
-	var kind := encounter_kind(lvl)
-	last_objectives = {"kind": kind, "zones": [], "pod": Vector2i(-1, -1), "breach": {}}
-	match kind:
-		"beacon":
-			for i in Sectors.objective_count(kind, lvl):
-				var disc := pick_disc(placement, Sectors.BEACON_RADIUS, occupied, layout.arena)
-				last_objectives.zones.append(disc)
-				occupied.append(disc.cell)
-		"cargo":
-			last_objectives.pod = layout_pick(placement, 10, occupied, 40.0, layout.shape, layout.arena)
-		"breach":
-			last_objectives.breach = pick_disc(placement, Sectors.BREACH_RADIUS, occupied, layout.arena)
-		"rival":
-			last_objectives.rival = pick_disc(placement, Sectors.RIVAL_RADIUS, occupied, layout.arena)
-
-## A disc centre whose every cell is playable void, clear of pickups, turrets and the start.
-## Rails are mask 1 and begin claimed, so a disc touching one would start half captured.
-## Candidates come straight from the arena's free cells; the shared arena is never mutated.
-func pick_disc(placement: RandomNumberGenerator, radius: int, avoid: Array, arena: Dictionary) -> Dictionary:
-	var free: Array = arena.get("free_cells", [])
-	if free.is_empty():
-		return {"cell": layout_pick(placement, 10, avoid, 30.0), "radius": radius}
-	var fallback := Vector2i(-1, -1)
-	var fallback_d := -1.0
-	for r in range(radius, 0, -1):
-		var best := Vector2i(-1, -1)
-		var best_d := -1.0
-		for tries in 80:
-			var c: Vector2i = free[placement.randi_range(0, free.size() - 1)]
-			if not disc_free(c, r, arena.mask):
-				continue
-			var d := 1e9
-			for a in avoid:
-				d = minf(d, Vector2(c - (a as Vector2i)).length())
-			if d > fallback_d:
-				fallback_d = d
-				fallback = c
-			if d < r + 4:
-				continue
-			if d > best_d:
-				best_d = d
-				best = c
-			if d > 30.0:
-				break
-		if best.x >= 0:
-			return {"cell": best, "radius": r}
-	if fallback.x >= 0:
-		return {"cell": fallback, "radius": 1}
-	return {"cell": free[placement.randi_range(0, free.size() - 1)], "radius": 1}
-
-func disc_free(c: Vector2i, radius: int, mask: PackedByteArray) -> bool:
-	for dy in range(-radius, radius + 1):
-		for dx in range(-radius, radius + 1):
-			if dx * dx + dy * dy > radius * radius:
-				continue
-			var q := c + Vector2i(dx, dy)
-			if not in_bounds(q) or mask[idx(q.x, q.y)] != 2:
-				return false
-	return true
 
 func disc_cells(c: Vector2i, radius: int) -> PackedInt32Array:
 	var out := PackedInt32Array()
@@ -363,14 +285,27 @@ func setup_objectives() -> void:
 			for disc in found.zones:
 				zones.append({"cell": disc.cell, "radius": disc.radius, "captured": false, "spin": 0.0})
 		"cargo":
-			cargo = {"cell": found.pod, "carrying": false, "delivered": 0, "runs": Sectors.objective_count("cargo", level), "done": false}
+			cargo = {"cell": found.pod, "carrying": false, "delivered": 0, "runs": Encounters.runs(authored_map, "cargo", level), "done": false}
 		"breach":
 			breach = {"cell": found.breach.cell, "radius": found.breach.radius, "sealed": false, "pressure": 0.0, "spin": 0.0}
 		"rival":
 			setup_rival(found.rival.cell, int(found.rival.radius))
 
+func encounter_goal() -> int:
+	return Encounters.goal(authored_map, encounter_kind(level), level)
+
+func encounter_copy(map, kind: String, depth: int) -> String:
+	var copy := Sectors.objective_copy(kind, depth)
+	if kind == "race": copy = copy.replace(str(Sectors.RACE_GOAL) + "%", str(Encounters.goal(map, kind, depth)) + "%")
+	else: copy = copy.replace(str(Sectors.capture_goal(depth)) + "%", str(Encounters.goal(map, kind, depth)) + "%")
+	if kind == "rival": copy = copy.replace(str(int(Sectors.RIVAL_SECONDS)), str(int(Encounters.seconds(map, kind))))
+	if kind == "beacon" and Encounters.settings(map, kind).has("objectives"):
+		copy = copy.replace(str(Sectors.objective_count(kind, depth)) + " BEACON", str(Encounters.settings(map, kind).objectives.size()) + " BEACON")
+	return copy
+
 func objective_complete() -> bool:
 	match encounter_kind(level):
+		"boss": return boss.active() and boss.defeated
 		"rival", "race": return false # Contests settle after both competitors advance.
 		"beacon":
 			for zone in zones:
@@ -380,13 +315,14 @@ func objective_complete() -> bool:
 		"cargo":
 			return not cargo.is_empty() and int(cargo.delivered) >= int(cargo.runs)
 		"breach":
-			return not breach.is_empty() and bool(breach.sealed) and capture_percent >= Sectors.capture_goal(level)
-	return capture_percent >= Sectors.capture_goal(level)
+			return not breach.is_empty() and bool(breach.sealed) and capture_percent >= encounter_goal()
+	return capture_percent >= encounter_goal()
 
 ## Advances every objective from the current board and returns a note for the HUD.
 func check_objectives() -> String:
 	var note := ""
 	match encounter_kind(level):
+		"boss": boss.observe(self)
 		"beacon": note = update_zones()
 		"cargo": note = update_cargo()
 		"breach": note = update_breach_seal()
@@ -575,7 +511,7 @@ func update_breach_pressure() -> void:
 
 func objective_label() -> String:
 	match encounter_kind(level):
-		"race": return "RACE / FIRST TO %d%%" % Sectors.RACE_GOAL
+		"race": return "RACE / FIRST TO %d%%" % encounter_goal()
 		"rival": return "RIVAL  %02d:%02d" % [ceili(rival_remaining) / 60, ceili(rival_remaining) % 60]
 		"beacon":
 			var secured := 0
@@ -585,7 +521,7 @@ func objective_label() -> String:
 			return "BEACONS %d/%d" % [secured, zones.size()]
 		"cargo":
 			return "CARGO %d/%d" % [int(cargo.get("delivered", 0)), int(cargo.get("runs", 0))]
-	return "CAPTURE %d%%" % Sectors.capture_goal(level)
+	return "CAPTURE %d%%" % encounter_goal()
 
 func show_objective_notice(text: String) -> void:
 	objective_notice = text
@@ -593,17 +529,18 @@ func show_objective_notice(text: String) -> void:
 	stall_time = 0.0 # Objective events count as progress against the surge clock.
 
 func objective_instruction() -> String:
+	if boss.active(): return boss.instruction()
 	if encounter_kind(level) == "cargo" and not cargo.is_empty():
 		if bool(cargo.done):
 			return "ALL CARGO RUNS COMPLETE."
 		if bool(cargo.carrying):
 			return "CARGO ABOARD - RETURN TO SAFE LAND TO DELIVER. ANOMALIES ARE CHASING YOU."
 	if encounter_kind(level) == "breach" and not breach.is_empty() and bool(breach.sealed):
-		return "BREACH SEALED - REACH %d%% TERRITORY TO CLEAR." % Sectors.capture_goal(level)
-	return Sectors.objective_copy(encounter_kind(level), level)
+		return "BREACH SEALED - REACH %d%% TERRITORY TO CLEAR." % encounter_goal()
+	return encounter_copy(authored_map, encounter_kind(level), level)
 
 func bar_scale() -> float:
-	return 100.0 if not Sectors.territory_goal(encounter_kind(level)) else float(Sectors.capture_goal(level))
+	return 100.0 if not Sectors.territory_goal(encounter_kind(level)) else float(encounter_goal())
 
 func advance_objective_visuals(dt: float) -> void:
 	for zone in zones:
@@ -714,6 +651,7 @@ func steer_anomaly(q: QixBody, dt: float, speed: float) -> void:
 # ------------------------------------------------------------------ surge
 ## The stall clock only runs while no surge is up; the surge itself telegraphs, then counts down.
 func update_surge_clock(dt: float) -> void:
+	if encounter_kind(level) == "boss": return
 	if encounter_kind(level) == "race": return
 	if surge.is_empty():
 		stall_time += dt
@@ -819,13 +757,14 @@ func clear_rival() -> void:
 	rival_visual_dirty = true
 
 func setup_rival(seed_cell: Vector2i, radius: int) -> void:
+	rival_home_radius = radius
 	# Test/playtest setups can relocate the home on the same board.
 	for i in rival_home.size():
 		if rival_home[i] == 1:
 			cells[i] = FREE
 			base_free += 1
 			free_count += 1
-	rival_remaining = Sectors.RIVAL_SECONDS
+	rival_remaining = Encounters.seconds(authored_map, "rival")
 	rival_land.resize(grid_width * grid_height)
 	rival_land.fill(0)
 	rival_home.resize(cells.size())
@@ -1103,8 +1042,8 @@ func race_scores() -> Vector2i:
 func check_race_finish() -> void:
 	if race_opponent == null or not rival_tally.is_empty(): return
 	var scores := race_scores()
-	var player_done := scores.x * 100 >= base_free * Sectors.RACE_GOAL
-	var racer_done := scores.y * 100 >= base_free * Sectors.RACE_GOAL
+	var player_done := scores.x * 100 >= base_free * encounter_goal()
+	var racer_done := scores.y * 100 >= base_free * encounter_goal()
 	if not player_done and not racer_done: return
 	rival_tally = {"player": scores.x, "rival": scores.y, "outcome": "tie" if player_done and racer_done else ("win" if player_done else "loss")}
 	show_contest_tally()
@@ -1138,16 +1077,16 @@ func draw_race_meter() -> void:
 		var x := bar.position.x
 		var color := Palette.CYAN if side == 0 else RACE_COLOR
 		var percent := scores[side] * 100.0 / maxi(1, base_free)
-		hud_label("%s  %.1f%% / %d%%" % ["YOU" if side == 0 else "RACER", percent, Sectors.RACE_GOAL], Vector2(x, 104), 16, color)
+		hud_label("%s  %.1f%% / %d%%" % ["YOU" if side == 0 else "RACER", percent, encounter_goal()], Vector2(x, 104), 16, color)
 		lines.rect(bar, Palette.DIM)
-		lines.seg(bar.position + Vector2(0, 5), bar.position + Vector2(bar.size.x * clampf(percent / Sectors.RACE_GOAL, 0, 1), 5), color, 0, 0, 3)
+		lines.seg(bar.position + Vector2(0, 5), bar.position + Vector2(bar.size.x * clampf(percent / encounter_goal(), 0, 1), 5), color, 0, 0, 3)
 
 func draw_race() -> void:
 	draw_race_board(self, race_bounds, race_viewport(0))
 	draw_race_board(race_opponent, race_bounds, race_viewport(1))
 	lines.seg(Vector2(800, 180), Vector2(800, 740), Palette.DIM)
 	draw_hud()
-	label("FIRST TO %d%%" % Sectors.RACE_GOAL, Vector2(800, 161), 13, Palette.WHITE, 1)
+	label("FIRST TO %d%%" % encounter_goal(), Vector2(800, 161), 13, Palette.WHITE, 1)
 	if race_opponent.state == State.DYING:
 		label("RACER RECOVERING", Vector2(1135, 710), 13, RACE_COLOR, 1)
 	if phase in ["briefing", "rival_tally"]:
@@ -1279,7 +1218,7 @@ func draw_rival() -> void:
 	if rival == null or not rival.alive or rival_land.size() != cells.size():
 		return
 	var home_pos := center(rival_home_cell)
-	lines.circle(home_pos, (Sectors.RIVAL_RADIUS + 0.7) * CELL, RIVAL_COLOR, 24, 0.0, 0.0, 1.2)
+	lines.circle(home_pos, (rival_home_radius + 0.7) * CELL, RIVAL_COLOR, 24, 0.0, 0.0, 1.2)
 	# A small shield marks the permanent home without covering the cutter.
 	lines.polyline(PackedVector2Array([home_pos + Vector2(-6, -5), home_pos + Vector2(6, -5), home_pos + Vector2(5, 3), home_pos + Vector2(0, 8), home_pos + Vector2(-5, 3)]), true, Color(RIVAL_COLOR, 0.5))
 	if rival_visual_dirty:
@@ -1312,6 +1251,9 @@ func coast_color() -> Color:
 func fill_color() -> Color:
 	# Race stores its background/territory contrast in the texture alpha.
 	return RACE_COLOR if uses_race_palette() else super.fill_color()
+
+func current_theme() -> int:
+	return authored_map.act_theme if authored_map != null else 0
 
 func update_race_fill() -> void:
 	var pixels := PackedByteArray()
@@ -1360,12 +1302,14 @@ func update_fill() -> void:
 			if claimed:
 				pixels.encode_u32(i * 4, mine_on if on else mine_off)
 			else:
-				pixels.encode_u32(i * 4, theirs_on if on else theirs_off)
+				# Keep the rival's checkerboard identity across all acts.
+				pixels.encode_u32(i * 4, theirs_on if ((x + y) & 1) == 0 else theirs_off)
 	fill_img.set_data(grid_width, grid_height, false, Image.FORMAT_RGBA8, pixels)
 	fill_tex.update(fill_img)
 	fill.modulate = Color.WHITE
 
 func start_level() -> void:
+	boss.id = ""
 	rival_entry.clear()
 	if encounter_kind(level) in ["rival", "race"]:
 		for key in RIVAL_RETRY_FIELDS:
@@ -1374,6 +1318,8 @@ func start_level() -> void:
 	authored_behaviors.clear()
 	brood_eggs.clear()
 	authored_map = MapCatalog.read(arena_stage(level))
+	var territory: Dictionary = Acts.TERRITORY[clampi(current_theme() - 1, 0, Acts.TERRITORY.size() - 1)]
+	for key in territory: gal[key] = territory[key]
 	reset_movement_module()
 	corruption_active = level >= Sectors.CORRUPTION_SECTOR or encounter_kind(level) == "breach"
 	if level >= Sectors.CORRUPTION_SECTOR: progress.containment_unlocked = true
@@ -1415,6 +1361,7 @@ func start_level() -> void:
 	if authored_map != null and authored_map.override_enemies:
 		apply_authored_enemies()
 	field_features.reset(self)
+	boss.reset(self)
 	if encounter_kind(level) == "race": setup_race()
 
 func apply_authored_enemies() -> void:
@@ -1483,7 +1430,7 @@ func spawn_qix() -> void:
 		q.c = point
 
 func spawn_boss() -> void:
-	pass # Sector eight is the expedition finale, not Jump's galaxy boss encounter.
+	pass # Act bosses are initialized after authored terrain and hazards are ready.
 
 func seed_corruption() -> void:
 	corruption_visual_dirty = true
@@ -1508,7 +1455,7 @@ func capture_target() -> float:
 	var kind := encounter_kind(level)
 	if not Sectors.territory_goal(kind) or (kind == "breach" and not bool(breach.get("sealed", false))):
 		return 2.0
-	return Sectors.capture_goal(level) / 100.0
+	return encounter_goal() / 100.0
 
 func run_extra_lives() -> int:
 	return progress.rank_of("hull") / 5
@@ -1680,6 +1627,13 @@ func reroll_draft() -> void:
 
 func update(dt: float) -> void:
 	ui_time += dt
+	if phase == "boss_clear":
+		time += dt
+		sparks.update(dt)
+		if ui_time >= 1.8:
+			boss.presented = true
+			finish_sector()
+		return
 	if phase == "run" and state == State.PLAYING and encounter_kind(level) == "rival" and rival_remaining <= 0.0:
 		finish_rival_contest()
 		return
@@ -1794,6 +1748,8 @@ func update_encounter_play(dt: float) -> void:
 	field_features.remember_walls(self, trail)
 	if state != State.PLAYING or phase != "run" or pending_clear:
 		return
+	boss.update(self, dt)
+	if state != State.PLAYING or phase != "run": return
 	if not drawing and not sap_live and cells[idx(p.x, p.y)] == CLAIMED:
 		if p != old_p or move_acc > 0.0:
 			safe_motion += dt
@@ -2441,10 +2397,17 @@ func hud_label(text: String, pos: Vector2, size := 16.0, color := Palette.WHITE)
 	VectorFont.draw(lines, text, pos, size, color, 0.0, 0.0)
 
 func draw_draft_meter() -> void:
+	if boss.active():
+		hud_label(Acts.BOSSES[boss.id].name + " / " + boss.instruction(), Vector2(CAPTURE_BAR.position.x, 104), 15, Palette.YELLOW)
+		for i in 3:
+			var rect := Rect2(CAPTURE_BAR.position + Vector2(i * (CAPTURE_BAR.size.x / 3), 0), Vector2(CAPTURE_BAR.size.x / 3 - 10, CAPTURE_BAR.size.y))
+			lines.rect(rect, Palette.GREEN if boss.relays[i].captured else Palette.DIM)
+			if boss.relays[i].captured: lines.seg(rect.position + Vector2(2, 5), rect.end - Vector2(2, 5), Palette.GREEN, 0, 0, 3)
+		return
 	if race_opponent != null:
 		draw_race_meter()
 		return
-	var goal := Sectors.capture_goal(level)
+	var goal := encounter_goal()
 	var kind := encounter_kind(level)
 	var color := Palette.GREEN if Sectors.territory_goal(kind) and displayed_capture >= goal else Palette.CYAN
 	hud_label(objective_label(), Vector2(CAPTURE_BAR.position.x, 104), 13, Palette.DIM)
@@ -2564,6 +2527,7 @@ func finish_draft() -> void:
 		ui_time = 0.0
 
 func level_clear() -> void:
+	if encounter_kind(level) == "boss" and not boss.defeated: return
 	pending_clear = true
 	run_victory = level >= sector_limit
 	run_sectors = level
@@ -2572,6 +2536,16 @@ func level_clear() -> void:
 
 func finish_sector() -> void:
 	if settled or phase in ["sector_clear", "chart"]: return
+	if boss.active() and boss.defeated:
+		if not boss.rewarded:
+			boss.rewarded = true
+			award_flux(Acts.BOSSES[boss.id].reward)
+			lives = mini(lives + 1, 2 + run_extra_lives())
+		if not boss.presented:
+			phase = "boss_clear"
+			state = State.REPORT
+			ui_time = 0
+			return
 	if encounter_kind(level) == "repair":
 		lives = mini(lives + 1, 2 + run_extra_lives())
 	if level >= sector_limit:
@@ -2621,7 +2595,8 @@ func chart_reachable(depth: int, branch: int) -> bool:
 	return depth == 1 or chart_connected(depth - 1, route_path[depth - 2], branch)
 
 func move_chart_focus(direction: Vector2i) -> void:
-	chart_focus_depth = clampi(chart_focus_depth + direction.x, 1, route.size())
+	var bounds := chart_bounds()
+	chart_focus_depth = clampi(chart_focus_depth + direction.x, bounds.x, bounds.y)
 	selection = clampi(selection + direction.y, 0, route[chart_focus_depth - 1].size() - 1)
 
 func update_chart_input() -> void:
@@ -2873,7 +2848,8 @@ func _input(event: InputEvent) -> void:
 			if CHART_JUMP.has_point(event.position):
 				launch_destination(selection)
 			else:
-				for depth in range(1, route.size() + 1):
+				var bounds := chart_bounds()
+				for depth in range(bounds.x, bounds.y + 1):
 					for i in route[depth - 1].size():
 						if chart_position(depth, i).distance_to(event.position) < 42:
 							chart_focus_depth = depth
@@ -2926,6 +2902,10 @@ func draw_arena() -> void:
 	super.draw()
 
 func draw() -> void:
+	if phase == "boss_clear":
+		super.draw()
+		label("CORE CAPTURED", Vector2(800, 210), 30, Palette.GREEN, 1)
+		return
 	battle_fill.visible = false
 	if race_opponent != null:
 		race_opponent.fill.visible = false
@@ -3004,14 +2984,17 @@ func draw_corruption_help(pos: Vector2, width: float, size: float, row_height: f
 func draw_briefing() -> void:
 	var kind := encounter_kind(level)
 	lines.rect(BRIEFING_PANEL, Palette.CYAN, 0.0, 0.0, 1.2)
-	var goal := "CAPTURE %d%%" % Sectors.capture_goal(level)
+	var goal := "CAPTURE %d%%" % encounter_goal()
 	match kind:
-		"race": goal = "RACE: FIRST TO %d%%" % Sectors.RACE_GOAL
-		"rival": goal = "OWN MORE TERRITORY IN %d SECONDS" % int(Sectors.RIVAL_SECONDS)
+		"boss": goal = boss.instruction()
+		"race": goal = "RACE: FIRST TO %d%%" % encounter_goal()
+		"rival": goal = "OWN MORE TERRITORY IN %d SECONDS" % int(Encounters.seconds(authored_map, "rival"))
 		"cargo": goal = "DELIVER CARGO TO SAFE LAND (%d)" % int(cargo.get("runs", 0))
 		"beacon": goal = "ENCLOSE %d BEACONS" % zones.size()
 		"breach": goal = "SEAL BREACH + " + goal
 	var rows := paragraph_lines(goal, 740, 26)
+	if kind == "boss" and boss.active():
+		label(Acts.BOSSES[boss.id].name, Vector2(800, 340), 18, Acts.ACTS[Acts.BOSSES[boss.id].act - 1].color, 1)
 	for i in rows.size():
 		label(rows[i], Vector2(800, 365 + i * 36), 26, Palette.WHITE, 1)
 	button(0, "START")
@@ -3551,13 +3534,13 @@ func draw_victory() -> void:
 		for j in 32:
 			var direction := Vector2.from_angle(j * TAU / 32.0)
 			lines.seg(crest + direction * (145 + pulse * 270), crest + direction * (175 + pulse * 350), Color(Palette.YELLOW, (1.0 - pulse) * 0.7), 0.0, 0.0, 1.4)
-	label("SECTOR CLEAR" if phase == "sector_clear" else "EXPEDITION COMPLETE", Vector2(800, 116), 42, color, 1)
+	label(("ACT CLEAR" if boss.defeated else "SECTOR CLEAR") if phase == "sector_clear" else "EXPEDITION COMPLETE", Vector2(800, 116), 42, color, 1)
 	if ui_time >= 0.5:
 		draw_salvage("+%d" % victory_salvage_shown(), Vector2(800, 533), 58, 1)
 	if ui_time >= 1.8 and phase != "sector_clear":
 		label("%d SECTORS SECURED" % run_sectors, Vector2(800, 630), 16, Palette.DIM, 1)
 	if ui_time >= VICTORY_REVEAL:
-		button(0, "STAR CHART" if phase == "sector_clear" else ("RETRY SAVE" if save_failed else "HANGAR"))
+		button(0, ("NEXT ACT" if boss.defeated else "STAR CHART") if phase == "sector_clear" else ("RETRY SAVE" if save_failed else "HANGAR"))
 		if phase == "sector_clear": label(Controls.hint("ESC: BANK AND EXIT"), Vector2(800, 810), 13, Palette.DIM, 1)
 		if save_failed:
 			label("SAVE FAILED - PROGRESS IS HELD IN MEMORY", Vector2(800, 818), 16, Palette.YELLOW, 1)
@@ -3575,7 +3558,8 @@ func run_card_rect(index: int) -> Rect2:
 	return Rect2(800 - (maxi(1, owned_cards.size()) * 100 - 32) * 0.5 + index * 100, 758, 68, 68)
 
 func draw_hud() -> void:
-	hud_label("%s / %02d-%02d" % [ship.name, level, sector_limit], Vector2(FIELD_X, 61), 18)
+	var stage_name := "ACT %d / %s" % [Acts.act_at(level), Acts.ACTS[Acts.act_at(level) - 1].name] if current_theme() > 0 else "%s / %02d-%02d" % [ship.name, level, sector_limit]
+	hud_label(stage_name, Vector2(FIELD_X, 61), 18)
 	draw_hull_icons(Vector2(1254, 70), maxi(0, lives + 1))
 	draw_dock_currency(Vector2(1374, 70), str(earned_salvage), false)
 	draw_draft_meter()
@@ -3670,15 +3654,52 @@ func draw_play() -> void:
 			lines.seg(origin + corruption_strokes[i], origin + corruption_strokes[i + 1], color, 0.4, 0.1, 1.3)
 	draw_objectives()
 	super.draw_play()
+	boss.draw(self)
 	if sap_live and has_card("charge"):
 		lines.circle(center(sap_cell), sap_radius() * CELL, Color(Palette.YELLOW, 0.3), 32)
 		lines.circle(center(sap_cell), sap_charge * CELL, Palette.YELLOW, 32, 0.3, 0.05, 1.2)
 	if drawing and (hardlight_time > 0.0 or (has_card("phase") and cut_time < 1.5 * card_power("phase"))):
 		lines.polyline(trail_points(), false, Palette.CYAN, 0.3, 0.1, 2.0)
 
+func chart_bounds() -> Vector2i:
+	if route.size() != Acts.LENGTH: return Vector2i(1, route.size())
+	var first := (Acts.act_at(chart_depth) - 1) * Acts.ACT_LENGTH + 1
+	return Vector2i(first, first + Acts.ACT_LENGTH - 1)
+
 func chart_position(depth: int, branch: int) -> Vector2:
 	var count: int = route[depth - 1].size()
-	return Vector2(170 + (depth - 1) * 180, 355 + (branch - (count - 1) * 0.5) * 320)
+	var bounds := chart_bounds()
+	var pos := Vector2(180 + (depth - bounds.x) * (1240.0 / maxi(1, bounds.y - bounds.x)), 370 + (branch - (count - 1) * 0.5) * 210)
+	if route.size() == Acts.LENGTH:
+		var step := depth - bounds.x
+		match Acts.act_at(chart_depth):
+			2: pos.y += sin(step * PI * 0.5) * 55.0
+			3: pos.y += sin(step * PI * 0.5) * 35.0
+	return pos
+
+func draw_act_chart_backdrop(act: int) -> void:
+	var tint: Color = Acts.ACTS[act - 1].color
+	var backdrop := Color(tint * 0.28, 0.10)
+	# Each galaxy repeats its arena motif at a much larger scale.
+	match act:
+		1:
+			for x in range(100, 1510, 95):
+				for y in range(205, 645, 72):
+					lines.polyline(PackedVector2Array([Vector2(x, y + 12), Vector2(x, y), Vector2(x + 22, y)]), false, backdrop)
+		2:
+			for strand in 7:
+				var points := PackedVector2Array()
+				for x in range(85, 1520, 24):
+					points.append(Vector2(x, 248 + strand * 52 + sin(x * 0.006 + strand * 0.8) * 34))
+				lines.polyline(points, false, backdrop)
+		3:
+			for radius in range(110, 710, 70):
+				var points := PackedVector2Array()
+				for i in 65:
+					var angle := i * TAU / 64.0
+					points.append(Vector2(800, 405) + Vector2(cos(angle) * radius, sin(angle) * radius * 0.31))
+				lines.polyline(points, true, backdrop)
+	label("ACT %d / %s" % [act, Acts.ACTS[act - 1].name], Vector2(800, 145), 26, tint, 1)
 
 func draw_chart_symbol(kind: String, pos: Vector2, color: Color) -> void:
 	match kind:
@@ -3695,7 +3716,7 @@ func draw_chart_symbol(kind: String, pos: Vector2, color: Color) -> void:
 		"salvage":
 			lines.circle(pos, 10, color, 6)
 			lines.circle(pos, 2.5, color, 6)
-		"finale":
+		"finale", "boss":
 			lines.polyline(PackedVector2Array([pos + Vector2(0, -14), pos + Vector2(7, 0), pos + Vector2(0, 14), pos + Vector2(-7, 0)]), true, color)
 			lines.circle(pos, 6, color, 4)
 		"beacon":
@@ -3715,8 +3736,11 @@ func draw_chart_symbol(kind: String, pos: Vector2, color: Color) -> void:
 			lines.circle(pos, 4, color, 12)
 
 func draw_chart() -> void:
+	var bounds := chart_bounds()
+	if route.size() == Acts.LENGTH:
+		draw_act_chart_backdrop(Acts.act_at(chart_depth))
 	# A quiet status row leaves the route as the main visual element.
-	label("%02d / %02d" % [chart_depth, route.size()], Vector2(80, 76), 18, Palette.DIM)
+	label("SECTOR %02d / %02d" % [chart_depth - bounds.x + 1, bounds.y - bounds.x + 1], Vector2(80, 76), 18, Palette.DIM)
 	for i in owned_cards.size():
 		var card := card_definition(owned_cards[i])
 		var pos := Vector2(380 + i * 265, 71)
@@ -3724,7 +3748,7 @@ func draw_chart() -> void:
 		label("%s %s" % [card.name, ["I", "II", "III"][card_rank(owned_cards[i]) - 1]], pos + Vector2(25, 4), 11, Palette.DIM)
 	draw_hull_icons(Vector2(1240, 70), maxi(0, lives + 1))
 	draw_salvage(str(earned_salvage), Vector2(1400, 70), 15)
-	for depth in range(1, route.size()):
+	for depth in range(bounds.x, bounds.y):
 		for a in route[depth - 1].size():
 			for b in route[depth].size():
 				if not chart_connected(depth, a, b): continue
@@ -3735,7 +3759,7 @@ func draw_chart() -> void:
 				var end := chart_position(depth + 1, b)
 				var direction := start.direction_to(end)
 				lines.seg(start + direction * 34, end - direction * 34, color)
-	for depth in range(1, route.size() + 1):
+	for depth in range(bounds.x, bounds.y + 1):
 		for branch in route[depth - 1].size():
 			var pos := chart_position(depth, branch)
 			var visited: bool = route_path.size() >= depth and route_path[depth - 1] == branch
@@ -3749,11 +3773,14 @@ func draw_chart() -> void:
 			else:
 				draw_chart_symbol("finale" if depth == route.size() else route[depth - 1][branch].kind, pos, color)
 	# The ship marks the last completed jump; only the focused node needs a label.
-	var ship_pos := Vector2(95, 355) if route_path.is_empty() else chart_position(route_path.size(), route_path.back()) + Vector2(0, -55)
+	var ship_pos := Vector2(95, 370) if route_path.size() < bounds.x else chart_position(route_path.size(), route_path.back()) + Vector2(0, -55)
 	for path in Hulls.paths(ship.id, ship_pos, 16.0, 0.0, 0.0):
 		lines.polyline(path, false, Palette.WHITE)
 	var node: Dictionary = route[chart_focus_depth - 1][selection]
-	label("FINALE" if chart_focus_depth == route.size() else String(node.kind).to_upper(), chart_position(chart_focus_depth, selection) + Vector2(0, 65), 13, Palette.CYAN, 1)
+	label("BOSS" if node.kind == "boss" else String(node.kind).to_upper(), chart_position(chart_focus_depth, selection) + Vector2(0, 65), 13, Palette.CYAN, 1)
+	if route.size() == Acts.LENGTH:
+		var finale: Dictionary = route[bounds.y - 1][0]
+		label(Acts.BOSSES[finale.boss].name, chart_position(bounds.y, 0) + Vector2(0, 100), 14, Acts.ACTS[Acts.act_at(chart_depth) - 1].color, 1)
 	# One compact inspector, without a surrounding card competing with the map.
 	lines.seg(Vector2(80, 680), Vector2(1500, 680), Palette.DIM * 0.6)
 	var shape_id := int(node.stage)
@@ -3763,7 +3790,7 @@ func draw_chart() -> void:
 	var outline: PackedVector2Array = arena.outline
 	for i in range(0, outline.size(), 2):
 		lines.seg(Vector2(195, 750) + (outline[i] - Vector2(grid_width, grid_height) * 0.5) * 1.2, Vector2(195, 750) + (outline[i + 1] - Vector2(grid_width, grid_height) * 0.5) * 1.2, Palette.CYAN)
-	label("%02d / %s" % [chart_focus_depth, Sectors.stage(shape_id).name], Vector2(350, 733), 21)
+	label(Acts.BOSSES[node.boss].name if node.kind == "boss" else "%02d / %s" % [chart_focus_depth, Sectors.stage(shape_id).name], Vector2(350, 733), 21)
 	var kind := String(node.kind)
 	var turrets := Sectors.turret_count(kind, chart_focus_depth)
 	var anomaly_count := Sectors.anomaly_count(chart_focus_depth, shape_id)
@@ -3773,17 +3800,18 @@ func draw_chart() -> void:
 		for enemy in map.enemies:
 			if enemy.kind in ["turret", "sniper"]: turrets += 1
 			elif enemy.kind in MapCatalog.VOID_ENEMIES: anomaly_count += 1
-	var threats := "CAPTURE %d%%" % Sectors.capture_goal(chart_focus_depth)
-	if kind == "race": threats = "RACE TO %d%%" % Sectors.RACE_GOAL
-	elif kind == "beacon": threats = "BEACONS %d" % Sectors.objective_count(kind, chart_focus_depth)
-	elif kind == "cargo": threats = "CARGO %d" % Sectors.objective_count(kind, chart_focus_depth)
+	var threats := "CAPTURE %d%%" % Encounters.goal(map, kind, chart_focus_depth)
+	if kind == "race": threats = "RACE TO %d%%" % Encounters.goal(map, kind, chart_focus_depth)
+	elif kind == "beacon": threats = "BEACONS %d" % Encounters.runs(map, kind, chart_focus_depth)
+	elif kind == "cargo": threats = "CARGO %d" % Encounters.runs(map, kind, chart_focus_depth)
 	threats += " / %d %s" % [anomaly_count, ("VOID ENEMIES" if map != null and map.override_enemies else ("ANOMALY" if anomaly_count == 1 else "ANOMALIES"))]
 	if turrets > 0: threats += " / %d TURRET%s" % [turrets, "" if turrets == 1 else "S"]
 	if kind == "breach": threats += " / BREACH"
 	if kind == "rival": threats += " / RIVAL"
 	if chart_focus_depth >= Sectors.CORRUPTION_SECTOR: threats += " / CORRUPTION"
+	if kind == "boss": threats = "CAPTURE 3 %s / ENCLOSE THE CORE" % Acts.BOSSES[node.boss].targets
 	label(threats, Vector2(350, 772), 13, Palette.YELLOW)
-	label("OBJECTIVE: " + Sectors.objective_copy(kind, chart_focus_depth), Vector2(350, 805), 12, Palette.CYAN)
+	label("OBJECTIVE: " + encounter_copy(map, kind, chart_focus_depth), Vector2(350, 805), 12, Palette.CYAN)
 	var reward := Sectors.reward_copy(kind)
 	if not reward.is_empty():
 		# Right-aligned beside the Jump button, clear of the longest threat strings.

@@ -28,10 +28,10 @@ func read_profile() -> void:
 
 func apply_profile(data: Dictionary) -> void:
 	var saved_sector = data.get("best_sector", 1)
-	best_sector = clampi(int(saved_sector), 1, Sectors.LIST.size()) if saved_sector is float or saved_sector is int else 1
+	best_sector = clampi(int(saved_sector), 1, Sectors.LENGTH) if saved_sector is float or saved_sector is int else 1
 	# Preserve access earned in the earlier three-sector prototype.
 	var legacy: bool = data.get("version", 1) in [1, 2, 3]
-	containment_unlocked = data.get("containment_unlocked", false) == true or best_sector >= Sectors.CORRUPTION_SECTOR or (legacy and best_sector >= 3) or (data.get("version", 1) == 4 and best_sector >= 6)
+	containment_unlocked = data.get("containment_unlocked", false) == true or best_sector >= Sectors.CORRUPTION_SECTOR or (legacy and best_sector >= 3) or (data.get("version", 1) == 4 and best_sector >= 6) or (data.get("version", 1) in [5, 6] and best_sector >= 8) or (data.get("version", 1) == 7 and best_sector >= 11)
 	var saved_fraction = data.get("salvage_fraction", 0.0)
 	salvage_fraction = clampf(float(saved_fraction), 0.0, 0.999999) if saved_fraction is float or saved_fraction is int else 0.0
 	ships = {"surveyor": true}
@@ -69,7 +69,7 @@ func write_profile() -> bool:
 	var file := FileAccess.open(PATH + ".tmp", FileAccess.WRITE)
 	if file == null:
 		return false
-	file.store_string(JSON.stringify({"version": 6, "salvage": salvage, "salvage_fraction": salvage_fraction, "best_sector": best_sector, "containment_unlocked": containment_unlocked, "runs": runs, "wins": wins, "ranks": ranks, "ships": ships, "selected_ship": selected_ship}))
+	file.store_string(JSON.stringify({"version": 8, "salvage": salvage, "salvage_fraction": salvage_fraction, "best_sector": best_sector, "containment_unlocked": containment_unlocked, "runs": runs, "wins": wins, "ranks": ranks, "ships": ships, "selected_ship": selected_ship}))
 	file.flush()
 	var error := file.get_error()
 	file.close()

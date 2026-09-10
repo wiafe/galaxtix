@@ -144,6 +144,7 @@ func remember_walls(g, wall: Array) -> void:
 		if g.cells[i] == g.HARD: fortified[i] = true
 
 func breakable(g, cell: Vector2i) -> bool:
+	if g.boss.protected_cell(cell): return false
 	if not g.in_bounds(cell): return false
 	var i: int = g.idx(cell.x, cell.y)
 	if g.cells[i] != g.CLAIMED or g.field_arena.mask[i] != 2 or fortified.has(i): return false

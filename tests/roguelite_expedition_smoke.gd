@@ -95,6 +95,7 @@ func check() -> void:
 	var campaign: Dictionary = Save.data.duplicate(true)
 	main.game.start_roguelite()
 	rogue = main.game.roguelite
+	rogue.sector_limit = 8 # Legacy geometry fixture; acts have their own suite.
 	var profile = rogue.progress
 	profile.apply_profile({"version": 2, "salvage": 160, "ranks": {"engines": 3, "hull": 2, "reactor": 1}})
 	assert(profile.rank_of("engines") == 3 and profile.rank_of("scanner") == 0)
@@ -147,8 +148,8 @@ func check() -> void:
 		assert(rogue.drafts_taken == 0 and rogue.first_claims == 0 and rogue.rerolls_left == 1)
 		assert(rogue.spawners.is_empty())
 		assert(rogue.turrets.size() == (0 if sector == 1 else 1))
-		assert(rogue.corruption_active == (sector == 8))
-		if sector == 8: assert(rogue.corruption.count(1) > 0)
+		assert(rogue.corruption_active == (sector >= rogue.Sectors.CORRUPTION_SECTOR))
+		if sector >= rogue.Sectors.CORRUPTION_SECTOR: assert(rogue.corruption.count(1) > 0)
 		await shot("sector-%d" % sector)
 		capture_sector()
 		resolve_rewards()
@@ -175,7 +176,8 @@ func check() -> void:
 	assert(rogue.phase == "result" and rogue.run_victory and rogue.settled)
 	assert(profile.runs == 1 and profile.wins == 1 and profile.best_sector == 8)
 	assert(profile.salvage == starting_salvage + rogue.earned_salvage)
-	assert(profile.track_available("containment"))
+	assert(not profile.track_available("containment"), "Containment now opens in Act 3")
+	profile.containment_unlocked = true # Exercise its upgrade UI below.
 	var banked: int = profile.salvage
 	rogue.end_run()
 	assert(profile.salvage == banked)
@@ -277,6 +279,7 @@ func check_system_effects() -> void:
 	rogue.start_level()
 	rogue.state = Game.State.PLAYING
 	profile.ranks.containment = 10
+	rogue.corruption_active = true
 	rogue.p = rogue.field_arena.start
 	rogue.draw_armed = true
 	assert(rogue.try_step(Vector2i.DOWN, true, false) and rogue.drawing)
@@ -432,7 +435,7 @@ func check_routes() -> void:
 	for seed_value in 20:
 		var random := RandomNumberGenerator.new()
 		random.seed = seed_value
-		var route: Array = rogue.Sectors.make_route(random)
+		var route: Array = rogue.Sectors.make_route(random, 8)
 		assert(route.size() == 8)
 		for depth in range(1, 9):
 			assert(route[depth - 1].size() == (1 if depth in [1, 4, 8] else 2))
@@ -482,7 +485,7 @@ func check_routes() -> void:
 		assert(rogue.nodes.size() == 3 + rogue.progress.rank_of("extractor") / 5 + (2 if kind == "salvage" else 0))
 		assert(rogue.corruption_active == (kind == "breach"), "Only a breach brings corruption forward")
 		assert(rogue.zones.size() == (2 if kind == "beacon" else 0) and rogue.cargo.is_empty() != (kind == "cargo") and rogue.breach.is_empty() != (kind == "breach"))
-		assert(is_equal_approx(rogue.capture_target(), 0.65) == (kind in ["salvage", "repair"]), "Objective kinds hold the territory clear back")
+		assert(is_equal_approx(rogue.capture_target(), 0.60) == (kind in ["salvage", "repair"]), "Objective kinds hold the territory clear back")
 		assert((rogue.rival != null and rogue.rival.alive) == (kind == "rival"))
 		rogue.level_clear()
 		assert(rogue.lives == (1 if kind == "repair" else 0))

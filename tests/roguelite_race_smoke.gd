@@ -141,7 +141,7 @@ func check_routes() -> void:
 		for row in route:
 			for side in row.size():
 				if row[side].kind == "race":
-					assert(row[side].depth >= 3 and row[side].depth < 8)
+					assert(row[side].depth >= 3 and row[side].depth < Sectors.LENGTH)
 					positions["middle" if row.size() == 1 else str(side)] = true
 	assert(positions.size() == 3, "Race appears on upper/lower routes and the shared middle")
 
