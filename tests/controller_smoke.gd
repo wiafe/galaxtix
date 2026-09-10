@@ -266,7 +266,7 @@ func check_jump_ships(game: Game) -> void:
 func check_roguelite_ships(game: Game) -> void:
 	game.start_roguelite()
 	var rogue = game.roguelite
-	for id in ["surveyor", "lancer", "sapper"]:
+	for id in ["surveyor", "lancer", "bulwark"]:
 		await get_tree().process_frame
 		rogue.progress.ships[id] = true
 		rogue.progress.selected_ship = id
@@ -283,12 +283,12 @@ func check_roguelite_ships(game: Game) -> void:
 		rogue.card_ranks = {"leap": 1, "afterburner": 1}
 		await get_tree().process_frame
 		button(JOY_BUTTON_A)
-		if id == "surveyor": button(JOY_BUTTON_DPAD_DOWN)
+		if id in ["surveyor", "bulwark"]: button(JOY_BUTTON_DPAD_DOWN)
 		for step in 5: rogue.update(0.05)
 		match id:
 			"surveyor": assert(rogue.drawing, "Controller draws with roguelite Surveyor")
 			"lancer": assert(rogue.tether_active, "Controller fires roguelite Lancer")
-			"sapper": assert(rogue.sap_live, "Controller charges roguelite Sapper")
+			"bulwark": assert(rogue.drawing, "Controller draws with roguelite Bulwark")
 		button(JOY_BUTTON_A, false)
 		button(JOY_BUTTON_DPAD_DOWN, false)
 		rogue.update(0.05)
@@ -307,6 +307,16 @@ func check_roguelite_ships(game: Game) -> void:
 		rogue.update(0.016)
 		button(JOY_BUTTON_RIGHT_SHOULDER, false)
 		assert(rogue.boost_time > 0, "Controller activates the secondary ability on " + id)
+		rogue.start_level()
+		prepare_coast(rogue)
+		rogue.owned_cards.assign(["charge"])
+		await get_tree().process_frame
+		button(JOY_BUTTON_Y)
+		for step in 15: rogue.update(0.1)
+		assert(rogue.sap_live and not rogue.drawing and not rogue.tether_active)
+		button(JOY_BUTTON_Y, false)
+		rogue.update(0.05)
+		assert(not rogue.sap_live and rogue.capture_percent > 0 and rogue.cooldowns.charge > 0, "Controller charge releases into capture on " + id)
 	print("CONTROLLER ROGUELITE: chart launch, all three ships and ability separation PASS")
 
 func check_royale_round(game: Game) -> void:

@@ -17,13 +17,14 @@ func _ready() -> void:
 	var encounter := String(config.get_value("playtest", "encounter", "survey"))
 	var ship := String(config.get_value("playtest", "ship", "surveyor"))
 	if encounter not in preload("res://scripts/roguelite_sectors.gd").KINDS: encounter = "survey"
-	if ship not in ["surveyor", "lancer", "sapper"]: ship = "surveyor"
+	if ship == "sapper": ship = "bulwark"
+	if ship not in ["surveyor", "lancer", "bulwark"]: ship = "surveyor"
 	MapCatalog.read(stage, true)
 	main = load("res://scenes/main.tscn").instantiate()
 	add_child(main)
 	main.game.start_roguelite()
 	var rogue = main.game.roguelite
-	rogue.progress.apply_profile({"version": 6, "ships": {"surveyor": true, "lancer": true, "sapper": true}, "selected_ship": ship})
+	rogue.progress.apply_profile({"version": 6, "ships": {"surveyor": true, "lancer": true, "bulwark": true}, "selected_ship": ship})
 	rogue.start_run()
 	rogue.chart_depth = depth
 	rogue.route_path.resize(depth - 1)

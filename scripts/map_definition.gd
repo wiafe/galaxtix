@@ -14,6 +14,8 @@ const EDITABLE := Rect2i(0, 18, 160, 68) # Keep the gameplay HUD bands clear.
 @export var override_enemies := false
 ## kind, cell, axis. Sparx markers spawn immediately and replace the timed wave.
 @export var enemies: Array[Dictionary] = []
+## Optional cell overlay: 0 = none, 1 = shield pocket, 2 = pulsing hazard.
+@export var field_zones := PackedByteArray()
 var _arena_cache := {}
 
 func arena(rim := 0) -> Dictionary:
@@ -68,6 +70,14 @@ func problems() -> PackedStringArray:
 		return errors
 	var built := arena()
 	var mask: PackedByteArray = built.mask
+	if not field_zones.is_empty():
+		if field_zones.size() != mask.size():
+			errors.append("Zone painting must match the terrain dimensions.")
+		else:
+			for i in field_zones.size():
+				if field_zones[i] > 2 or (field_zones[i] != 0 and (mask[i] == 0 or not EDITABLE.has_point(Vector2i(i % grid_size.x, i / grid_size.x)))):
+					errors.append("Paint shield and hazard zones on playable cells only.")
+					break
 	if override_terrain:
 		for i in rock.size():
 			if rock[i] == 0 and not EDITABLE.has_point(Vector2i(i % grid_size.x, i / grid_size.x)):
@@ -88,5 +98,5 @@ func problems() -> PackedStringArray:
 				errors.append("%s at %s needs %s." % [kind.capitalize(), cell, "a safe rail" if kind == "sparx" else "open space"])
 			if cell in occupied: errors.append("Two enemies share cell %s." % [cell])
 			occupied.append(cell)
-		if anomalies == 0: errors.append("Keep at least one void enemy (Anomaly, Gunner Orb, Ray Orb or Rotor) so territory captures work.")
+		if anomalies == 0: errors.append("Keep at least one void enemy, such as an Anomaly, Chain Worm or Brood Carrier, so territory captures work.")
 	return errors

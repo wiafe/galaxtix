@@ -1,13 +1,13 @@
 extends RefCounted
 ## Shared effects, described for each ship's capture mechanic. One installed copy, up to rank III.
-const OPENING := ["hardening", "leap", "dash"]
+const OPENING := ["charge", "leap", "dash"]
 const SECONDARY := ["afterburner", "hardlight"]
 const LIST := [
-	{"id": "hardening", "name": "HARDENING", "kind": "Q", "desc": "Turn your trail into a solid wall.", "stats": "10 CELLS/S / 3S", "detail": "12S RECHARGE"},
-	{"id": "leap", "name": "LEAP", "kind": "HOLD Q", "desc": "Aim, release, then split a wall from your landing.", "stats": "COAST LAUNCH / AIM + RELEASE", "detail": "16S RECHARGE"},
+	{"id": "charge", "name": "CHARGE", "kind": "HOLD Q", "desc": "Hold to grow a capture disc. Release to detonate.", "stats": "8 CELL RADIUS / 3S CHARGE", "detail": "COAST OR MID-CUT / 12S RECHARGE"},
+	{"id": "leap", "name": "LEAP", "kind": "HOLD Q", "desc": "Aim, release, then split a wall from your landing.", "stats": "COAST OR MID-CUT / AIM + RELEASE", "detail": "16S RECHARGE"},
 	{"id": "dash", "name": "DASH", "kind": "Q", "desc": "Burst forward. Rock still blocks you.", "stats": "3X SPEED / 0.3S", "detail": "8S RECHARGE"},
 	{"id": "afterburner", "name": "AFTERBURNER", "kind": "E", "desc": "Draw faster.", "stats": "+80% SPEED / 3S", "detail": "14S RECHARGE"},
-	{"id": "hardlight", "name": "HARDLIGHT", "kind": "E", "desc": "Shield your trail.", "stats": "2S PROTECTION", "detail": "18S RECHARGE"},
+	{"id": "hardlight", "name": "HARDLIGHT", "kind": "E", "desc": "Shield this cut, or arm the next.", "stats": "2S PROTECTION", "detail": "18S RECHARGE"},
 	{"id": "anchor", "name": "ANCHOR", "kind": "AUTO", "desc": "Survive a lethal trail hit.", "stats": "RETURN TO COAST", "detail": "24S RECHARGE"},
 	{"id": "ion", "name": "ION THREAD", "kind": "AUTO", "desc": "Trail contact repels enemies.", "stats": "1.5S GLOBAL FREEZE", "detail": "10S RECHARGE"},
 	{"id": "clean", "name": "CLEAN SWEEP", "kind": "PASSIVE", "desc": "Captures cleanse corruption.", "stats": "6 CELL REACH", "detail": ""},
@@ -56,6 +56,7 @@ static func definition(id: String, ship_id := "surveyor", rank := 1) -> Dictiona
 			var power: float = 1.0 + 0.25 * (result.rank - 1)
 			if result.rank > 1:
 				match id:
+					"charge": result.stats = "%d CELL RADIUS / 3S CHARGE" % roundi(8 * power)
 					"hardening": result.stats = ("1 DISC HIT / %.2fS" if ship_id == "sapper" else "10 CELLS/S / %.2fS") % (3 * power)
 					"leap": result.stats = "+%d%% AIM + WALL SPEED" % roundi((power - 1) * 100)
 					"dash": result.stats = "3X SPEED / %.2fS" % (0.3 * power)

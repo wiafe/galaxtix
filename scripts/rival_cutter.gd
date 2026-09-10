@@ -28,6 +28,9 @@ var acc := 0.0
 var think := 0.0
 var alive := true
 var speed_scale := 1.0
+var aggression := 0.0 # Encounter depth raises pace, planning effort, and contested-cut preference.
+var loop_scale := 1.0 # Separate-board Race can attempt larger loops without stealing enemy land.
+var travel_cost := 0.0
 
 func setup(grid: Vector2i, random: RandomNumberGenerator, callbacks: Dictionary) -> void:
 	size = grid
@@ -71,7 +74,7 @@ func fail() -> void:
 	pos = nearest_owned(anchor)
 	exposed = false
 	plan.clear()
-	think = 0.5
+	think = lerpf(0.5, 0.2, aggression)
 	on_fail.call()
 
 func tick(dt: float) -> void:
@@ -84,7 +87,7 @@ func tick(dt: float) -> void:
 		acc -= 1.0
 		if plan.is_empty() and think <= 0.0:
 			plan_route()
-			think = rng.randf_range(0.4, 1.0)
+			think = rng.randf_range(0.4, 1.0) * lerpf(1.0, 0.4, aggression)
 		if plan.is_empty():
 			return
 		var target: Vector2i = plan.pop_front()
@@ -135,7 +138,7 @@ func plan_route() -> void:
 	var parent := bfs_owned()
 	var best_value := -1.0
 	var best: Array[Vector2i] = []
-	for attempt in ATTEMPTS:
+	for attempt in ATTEMPTS + roundi(32 * aggression):
 		var start_cell: Vector2i = owned[rng.randi_range(0, owned.size() - 1)]
 		if parent[index(start_cell)] < 0:
 			continue # Another island: unreachable on foot.
@@ -143,8 +146,8 @@ func plan_route() -> void:
 		if owner_of.call(start_cell + outward) != 0:
 			continue # Must face open void.
 		var tangent := Vector2i(-outward.y, outward.x) * (1 if rng.randf() < 0.5 else -1)
-		var depth := rng.randi_range(4, 14)
-		var width := rng.randi_range(3, 10)
+		var depth := rng.randi_range(4, roundi(lerpf(10, 18, aggression) * loop_scale))
+		var width := rng.randi_range(3, roundi(lerpf(7, 11, aggression) * loop_scale))
 		if owner_of.call(start_cell + tangent * width) != 1:
 			continue # The landing edge must be mine.
 		var path: Array[Vector2i] = []
@@ -165,9 +168,13 @@ func plan_route() -> void:
 				if owner_of.call(start_cell + outward * a + tangent * b) == 0:
 					value += 1.0
 		value *= rng.randf_range(0.7, 1.3)
+		for cell in path:
+			if player_trail_at.call(cell): value += lerpf(3.0, 12.0, aggression)
+		var approach := walk_back(parent, start_cell)
+		value /= 1.0 + approach.size() * travel_cost / maxf(1.0, path.size())
 		if value > best_value:
 			best_value = value
-			best = walk_back(parent, start_cell)
+			best = approach
 			best.append_array(path)
 	plan = best
 

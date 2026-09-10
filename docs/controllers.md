@@ -1,6 +1,8 @@
 # Controller support
 
-Connect a gamepad before launch or while playing. D-pad and left stick work in the title, dock, options, roguelite menus and all three game modes. On-screen hints follow the last keyboard, mouse or controller input. Recognized PlayStation and Nintendo controller names use their corresponding button labels; other pads use Xbox labels.
+Connect a gamepad before launch or while playing. D-pad and left stick work in the title, dock, options, roguelite menus and all four game modes. On-screen hints follow the last keyboard, mouse or controller input. Recognized PlayStation and Nintendo controller names use their corresponding button labels; other pads use Xbox labels.
+
+Arcade uses normal drawing on Space / A. Capture ability pickups, activate the selected ability with Q / Y, and cycle captured abilities with E / X (or RB). Enter / A confirms the final territory tally; Escape / B (or Start) pauses. See [Arcade](arcade.md) for the round and pickup rules.
 
 | Action | Xbox layout | PlayStation layout |
 | --- | --- | --- |
@@ -34,7 +36,7 @@ Run `godot --headless --path . tests/controller_smoke.tscn -- --nosave --no-stea
 The controller smoke test injects joypad events on device 3 through Godot's InputMap. It checks title/dock/options navigation, toggles, confirmation cancellation, stick drift and held motion, both trigger releases, roguelite pause/resume and draft rescan, and prompt switching. It also runs each mode's actual update loop:
 
 - Jump: all five ships' native actions, Leaper/Sapper/Bulwark release behavior, ending a run, and returning from results to upgrades.
-- Roguelite: chart launch, Surveyor/Lancer/Sapper native actions, held opening abilities and release, and secondary abilities without triggering the native action.
+- Roguelite: chart launch, Surveyor/Lancer/Bulwark native actions, held Charge and Leap with release, and secondary abilities without triggering the native action.
 - Battle Royale: starting a round, moving the player, applying both abilities, skipping standings, continuing/restarting, and leaving the mode.
 
 Hardware-specific mappings and ergonomics still need a physical controller playthrough. Online transport and Steam overlay interaction are not exercised by this local test.

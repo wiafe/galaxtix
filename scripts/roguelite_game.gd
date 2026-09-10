@@ -1,4 +1,6 @@
 extends "res://scripts/game.gd"
+const FieldFeatures = preload("res://scripts/roguelite_field_features.gd")
+var field_features := FieldFeatures.new()
 ## Shape expedition built on Jump's simulation. Only run flow, progression,
 ## card effects and corruption live here; controls and flood-fill remain in Game.
 signal exited
@@ -7,6 +9,7 @@ const Cards = preload("res://scripts/roguelite_cards.gd")
 var draft_capture: Array[int] = [35]
 var opening_draft_pending := true
 var leap_input_frame := false
+var charge_input_frame := false
 var hardening_time := 0.0
 var disc_braced := false
 var dash_time := 0.0
@@ -29,6 +32,7 @@ var route_path: Array[int] = []
 var active_destination := {}
 var authored_map: MapDefinition
 var authored_behaviors := {} # QixBody -> attack state; also participates in capture flood seeds.
+var brood_eggs: Array[Dictionary] = []
 var chart_depth := 1
 var chart_focus_depth := 1
 var sector_limit := EXPEDITION_SECTORS # Also supports isolated one-sector test fixtures.
@@ -101,8 +105,21 @@ const RivalCutter = preload("res://scripts/rival_cutter.gd")
 const RIVAL_COLOR := Palette.ORANGE
 var rival = null
 var rival_land := PackedByteArray()
+var rival_home := PackedByteArray() # Permanent starting territory, excluded from either score.
+var rival_home_cell := Vector2i.ZERO
 var rival_segments := PackedVector2Array()
 var rival_visual_dirty := true
+var rival_remaining := 0.0
+var rival_tally := {}
+var rival_entry := {}
+var race_opponent: Game
+const RACE_COLOR := Color(0.08, 0.76, 0.59)
+var race_elapsed := 0.0
+var race_claimed := 0
+var race_bounds := Rect2()
+var race_map_bounds := Rect2()
+var race_pending_salvage := 0.0
+const RIVAL_RETRY_FIELDS := ["owned_cards", "card_ranks", "opening_draft_pending", "draft_speed_stacks", "draft_shield_stacks", "earned_salvage", "salvage_fraction", "bonus_salvage", "capture_count", "small_chain", "cooldowns"]
 var spread_clock := SPREAD_SECONDS
 var containment_time := 0.0
 var exposure := 0.0
@@ -113,7 +130,8 @@ var small_chain := 0
 var freeze_time := 0.0
 var boost_time := 0.0
 var hardlight_time := 0.0
-var cooldowns := {"hardening": 0.0, "leap": 0.0, "dash": 0.0, "afterburner": 0.0, "hardlight": 0.0, "anchor": 0.0, "ion": 0.0}
+var hardlight_armed := false
+var cooldowns := {"charge": 0.0, "hardening": 0.0, "leap": 0.0, "dash": 0.0, "afterburner": 0.0, "hardlight": 0.0, "anchor": 0.0, "ion": 0.0}
 var last_result := ""
 var hangar_page := "upgrades"
 var viewed_ship := 0
@@ -353,6 +371,7 @@ func setup_objectives() -> void:
 
 func objective_complete() -> bool:
 	match encounter_kind(level):
+		"rival", "race": return false # Contests settle after both competitors advance.
 		"beacon":
 			for zone in zones:
 				if not zone.captured:
@@ -426,22 +445,34 @@ func update_cargo() -> String:
 		# Enclosed without contact: the pod is unreachable on land, so it drifts elsewhere.
 		# A Lancer's exposed tether is still reachable when the rider gets here.
 		relocate_pod()
-		var note := "POD RELOCATED - TOUCH IT BEFORE RETURNING TO LAND"
+		var note := "CARGO RELOCATED - PICK IT UP BEFORE RETURNING TO LAND"
 		show_objective_notice(note)
 		return note
 	return ""
 
-## Pickup is contact by the ship itself: the trail head, a ridden lance cell, or the Sapper.
-## A lance ray marks the cell early, but the run starts only when the ride reaches it.
+## Pickup follows the ship, with a two-cell reach. Casting a lance alone is not contact.
 func check_cargo_contact() -> void:
 	if cargo.is_empty() or bool(cargo.carrying) or bool(cargo.done):
 		return
-	if exposed() and p == cargo.cell:
+	if exposed() and cargo_in_reach():
 		cargo.carrying = true
 		show_objective_notice("CARGO ABOARD - RETURN TO SAFE LAND")
 		set_msg("CARGO ABOARD", 1.0)
 		sparks.ripple(center(cargo.cell), 4.0, 240.0, 0.4, Palette.YELLOW)
 		lines.spike(1.0, 0.2)
+
+func cargo_in_reach() -> bool:
+	var cell: Vector2i = cargo.cell
+	if Vector2(p - cell).length_squared() > Sectors.CARGO_PICKUP_RADIUS * Sectors.CARGO_PICKUP_RADIUS:
+		return false
+	# Reach across open space, never through a rail, rock or already enclosed cargo.
+	var from := center(p)
+	var to := center(cell)
+	var steps := maxi(1, ceili(from.distance_to(to) / (CELL * 0.5)))
+	for step in range(1, steps + 1):
+		var sample := to_cell(from.lerp(to, float(step) / steps))
+		if not in_bounds(sample) or cells[idx(sample.x, sample.y)] not in [FREE, TRAIL]: return false
+	return true
 
 func deliver_cargo() -> String:
 	cargo.carrying = false
@@ -462,7 +493,7 @@ func drop_cargo() -> void:
 		return
 	if bool(cargo.carrying):
 		cargo.carrying = false
-		show_objective_notice("CARGO DROPPED - PICK THE POD UP AGAIN")
+		show_objective_notice("CARGO DROPPED - PICK IT UP AGAIN")
 		set_msg("CARGO LOST", 1.2)
 	var cell: Vector2i = cargo.cell
 	if cells[idx(cell.x, cell.y)] != FREE:
@@ -544,6 +575,8 @@ func update_breach_pressure() -> void:
 
 func objective_label() -> String:
 	match encounter_kind(level):
+		"race": return "RACE / FIRST TO %d%%" % Sectors.RACE_GOAL
+		"rival": return "RIVAL  %02d:%02d" % [ceili(rival_remaining) / 60, ceili(rival_remaining) % 60]
 		"beacon":
 			var secured := 0
 			for zone in zones:
@@ -608,10 +641,11 @@ func draw_objectives() -> void:
 			lines.circle(center(anchor), 8.0 + 3.0 * pulse, Palette.YELLOW, 8, 0.8, 0.3, 1.0)
 		else:
 			var c := center(cargo.cell)
+			lines.circle(c, Sectors.CARGO_PICKUP_RADIUS * CELL, Color(Palette.YELLOW, 0.25), 24, 0.0, 0.0, 0.6)
 			draw_pod(c, 9.0, pulse)
 			var label_color := Palette.YELLOW
 			label_color.a = 0.5 + 0.4 * pulse
-			VectorFont.draw(lines, "CARGO", c + Vector2(13, -6), 10, label_color, 0.5, 0.3)
+			VectorFont.draw(lines, "CARGO", c + Vector2(21, -6), 10, label_color, 0.5, 0.3)
 	if not breach.is_empty():
 		var c := center(breach.cell)
 		var radius := (float(breach.radius) + 0.5) * CELL
@@ -680,6 +714,7 @@ func steer_anomaly(q: QixBody, dt: float, speed: float) -> void:
 # ------------------------------------------------------------------ surge
 ## The stall clock only runs while no surge is up; the surge itself telegraphs, then counts down.
 func update_surge_clock(dt: float) -> void:
+	if encounter_kind(level) == "race": return
 	if surge.is_empty():
 		stall_time += dt
 		if stall_time >= SURGE_AFTER:
@@ -774,17 +809,35 @@ func qix_speed() -> float:
 
 # ------------------------------------------------------------------ rival cutter
 func clear_rival() -> void:
+	clear_race()
+	rival_remaining = 0.0
+	rival_tally.clear()
 	rival = null
 	rival_land.resize(0)
+	rival_home.resize(0)
 	rival_segments.clear()
 	rival_visual_dirty = true
 
 func setup_rival(seed_cell: Vector2i, radius: int) -> void:
+	# Test/playtest setups can relocate the home on the same board.
+	for i in rival_home.size():
+		if rival_home[i] == 1:
+			cells[i] = FREE
+			base_free += 1
+			free_count += 1
+	rival_remaining = Sectors.RIVAL_SECONDS
 	rival_land.resize(grid_width * grid_height)
 	rival_land.fill(0)
+	rival_home.resize(cells.size())
+	rival_home.fill(0)
+	rival_home_cell = seed_cell
 	for i in disc_cells(seed_cell, radius):
 		if cells[i] == FREE:
 			rival_land[i] = 1
+			rival_home[i] = 1
+			cells[i] = ROCK # Solid to player movement, beams, blasts, and claim floods.
+			base_free -= 1
+			free_count -= 1
 	rival = RivalCutter.new()
 	rival.setup(Vector2i(grid_width, grid_height), rng, {
 		"owner_of": rival_owner_of,
@@ -796,8 +849,12 @@ func setup_rival(seed_cell: Vector2i, radius: int) -> void:
 	})
 	rival.pos = seed_cell
 	rival.anchor = seed_cell
-	rival.speed_scale = 1.0 + 0.03 * level
+	rival.aggression = clampf((level - 3) / 4.0, 0.0, 1.0)
+	rival.speed_scale = lerpf(1.0, 1.48, rival.aggression)
 	refresh_rival_owned()
+	# setup follows the base field's opaque white texture. Bake both territory
+	# tints now, before draw switches off the sprite's shared tint for Rival.
+	update_fill()
 
 func rival_active() -> bool:
 	return rival != null and rival.alive and rival_land.size() == cells.size()
@@ -812,6 +869,7 @@ func rival_owner_of(c: Vector2i) -> int:
 	return 0 if cells[i] == FREE or cells[i] == TRAIL else -1
 
 func rival_is_solid(c: Vector2i) -> bool:
+	if in_bounds(c) and rival_home.size() == cells.size() and rival_home[idx(c.x, c.y)] == 1: return false
 	return not in_bounds(c) or (cells[idx(c.x, c.y)] != FREE and cells[idx(c.x, c.y)] != TRAIL)
 
 func rival_player_trail_at(c: Vector2i) -> bool:
@@ -927,6 +985,7 @@ func sweep_rival() -> void:
 	var changed := false
 	var line_cut := false
 	for i in grid_width * grid_height:
+		if rival_home.size() == cells.size() and rival_home[i] == 1: continue
 		var v := cells[i]
 		if v != FREE and v != TRAIL:
 			if rival_land[i] == 1:
@@ -959,11 +1018,10 @@ func eliminate_rival() -> void:
 	rival.alive = false
 	rival.clear_trail()
 	rival_land.fill(0)
-	award_flux(3.0)
 	sparks.burst(center(rival.pos), 60, 240.0, 1.5, 0.8, RIVAL_COLOR)
 	sparks.ripple(center(rival.pos), 6.0, 360.0, 0.7, Palette.GREEN)
 	set_msg("RIVAL DRIVEN OFF", 1.4)
-	show_objective_notice("RIVAL DRIVEN OFF - SALVAGE AWARDED")
+	show_objective_notice("RIVAL DRIVEN OFF - HOLD UNTIL TIME")
 	rival_visual_dirty = true
 	update_fill()
 
@@ -984,6 +1042,191 @@ func update_rival(dt: float) -> void:
 			break
 	if freeze_time <= 0.0:
 		rival.tick(dt)
+
+func rival_scores() -> Vector2i:
+	var scores := Vector2i.ZERO
+	for i in cells.size():
+		if field_arena.mask[i] != 2: continue # Rock and starting rails do not score.
+		if rival_home.size() == cells.size() and rival_home[i] == 1: continue
+		if cells[i] == CLAIMED: scores.x += 1
+		elif rival_land.size() == cells.size() and rival_land[i] == 1: scores.y += 1
+	return scores
+
+func clear_race() -> void:
+	if race_opponent != null:
+		race_opponent.fill.visible = false
+		race_opponent.queue_free()
+		race_opponent = null
+	race_elapsed = 0.0
+	race_pending_salvage = 0.0
+	if fill != null:
+		fill.position = Vector2(FX, FY)
+		fill.scale = Vector2(CELL, CELL)
+
+func setup_race() -> void:
+	# Load at runtime because the isolated simulator inherits this ruleset.
+	race_opponent = load("res://scripts/race_opponent.gd").new()
+	add_child(race_opponent)
+	var quiet_lines := ScopeLines.new()
+	quiet_lines.visible = false
+	race_opponent.add_child(quiet_lines)
+	var opponent_fill := Sprite2D.new()
+	fill.get_parent().add_child(opponent_fill) # Inside the same HDR/blur viewport as the player.
+	race_opponent.setup(quiet_lines, Sparks.new(), opponent_fill)
+	race_opponent.take_starting_board(self)
+	var first := true
+	for i in cells.size():
+		if field_arena.mask[i] == 0: continue
+		var cell_rect := Rect2(Vector2(FX + (i % grid_width) * CELL, FY + (i / grid_width) * CELL), Vector2.ONE * CELL)
+		if first:
+			race_map_bounds = cell_rect
+			first = false
+		else: race_map_bounds = race_map_bounds.merge(cell_rect)
+	race_bounds = race_map_bounds.grow(CELL * 2)
+
+func race_viewport(side: int) -> Rect2:
+	return Rect2(170 + side * 670, 186, 590, 540)
+
+func race_map_rect(side: int) -> Rect2:
+	var viewport := race_viewport(side)
+	var scale_at := minf(viewport.size.x / race_bounds.size.x, viewport.size.y / race_bounds.size.y)
+	var origin := viewport.get_center() - race_bounds.get_center() * scale_at
+	return Rect2(race_map_bounds.position * scale_at + origin, race_map_bounds.size * scale_at)
+
+func race_bar_rect(side: int) -> Rect2:
+	var map_rect := race_map_rect(side)
+	return Rect2(map_rect.position.x, 134, map_rect.size.x, 10)
+
+func race_scores() -> Vector2i:
+	return Vector2i(race_claimed, race_opponent.race_claimed) if race_opponent != null else Vector2i.ZERO
+
+func check_race_finish() -> void:
+	if race_opponent == null or not rival_tally.is_empty(): return
+	var scores := race_scores()
+	var player_done := scores.x * 100 >= base_free * Sectors.RACE_GOAL
+	var racer_done := scores.y * 100 >= base_free * Sectors.RACE_GOAL
+	if not player_done and not racer_done: return
+	rival_tally = {"player": scores.x, "rival": scores.y, "outcome": "tie" if player_done and racer_done else ("win" if player_done else "loss")}
+	show_contest_tally()
+
+func draw_race_board(board: Game, bounds: Rect2, viewport: Rect2) -> void:
+	var scale_at := minf(viewport.size.x / bounds.size.x, viewport.size.y / bounds.size.y)
+	var origin := viewport.get_center() - bounds.get_center() * scale_at
+	lines.zoom_center = Vector2.ZERO
+	lines.zoom = Vector2.ONE * scale_at
+	lines.offset = origin / scale_at
+	board.fill.visible = true
+	board.fill.modulate = board.fill_color()
+	board.fill.position = Vector2(board.FX, FY) * scale_at + origin
+	board.fill.scale = Vector2.ONE * CELL * scale_at
+	var own_lines := board.lines
+	board.lines = lines
+	for i in range(0, board.coast.size(), 2):
+		lines.seg(board.coast[i], board.coast[i + 1], board.coast_color(), 0.3, 0.05)
+	board.draw_play()
+	for q in board.qixes: board.draw_qix(q)
+	board.sparks.draw(lines)
+	board.lines = own_lines
+	lines.zoom = Vector2.ONE
+	lines.offset = Vector2.ZERO
+	lines.zoom_center = Vector2(800, 450)
+
+func draw_race_meter() -> void:
+	var scores := race_scores()
+	for side in 2:
+		var bar := race_bar_rect(side)
+		var x := bar.position.x
+		var color := Palette.CYAN if side == 0 else RACE_COLOR
+		var percent := scores[side] * 100.0 / maxi(1, base_free)
+		hud_label("%s  %.1f%% / %d%%" % ["YOU" if side == 0 else "RACER", percent, Sectors.RACE_GOAL], Vector2(x, 104), 16, color)
+		lines.rect(bar, Palette.DIM)
+		lines.seg(bar.position + Vector2(0, 5), bar.position + Vector2(bar.size.x * clampf(percent / Sectors.RACE_GOAL, 0, 1), 5), color, 0, 0, 3)
+
+func draw_race() -> void:
+	draw_race_board(self, race_bounds, race_viewport(0))
+	draw_race_board(race_opponent, race_bounds, race_viewport(1))
+	lines.seg(Vector2(800, 180), Vector2(800, 740), Palette.DIM)
+	draw_hud()
+	label("FIRST TO %d%%" % Sectors.RACE_GOAL, Vector2(800, 161), 13, Palette.WHITE, 1)
+	if race_opponent.state == State.DYING:
+		label("RACER RECOVERING", Vector2(1135, 710), 13, RACE_COLOR, 1)
+	if phase in ["briefing", "rival_tally"]:
+		lines.modal_start = lines.count
+		if phase == "briefing": draw_briefing()
+		else: draw_rival_tally()
+
+func finish_rival_contest() -> void:
+	if not rival_tally.is_empty() or encounter_kind(level) != "rival": return
+	var scores := rival_scores() # Live land only: unfinished trails, erosion and stolen land matter.
+	rival_tally = {"player": scores.x, "rival": scores.y, "outcome": "win" if scores.x > scores.y else ("loss" if scores.x < scores.y else "tie")}
+	rival_remaining = 0.0
+	show_contest_tally()
+
+func show_contest_tally() -> void:
+	phase = "rival_tally"
+	state = State.PLAYING # Keep the frozen board visible under the modal.
+	selection = 0
+	ui_time = 0.0
+	msg_t = 0.0
+	capture_flights.clear()
+	displayed_capture = capture_percent
+	if rival_tally.outcome == "win":
+		if encounter_kind(level) == "race":
+			award_flux(race_pending_salvage)
+			race_pending_salvage = 0.0
+		award_flux(3.0)
+		reward_audio.stream = victory_cue
+		reward_audio.play()
+
+func accept_rival_tally() -> void:
+	if phase != "rival_tally" or ui_time < 1.5: return
+	var outcome: String = rival_tally.outcome
+	if outcome == "win":
+		if encounter_kind(level) == "race" and draft_ready():
+			pending_clear = true
+			begin_draft_reward()
+			return
+		level_clear()
+		if phase == "sector_clear":
+			ui_time = VICTORY_REVEAL
+			continue_expedition()
+		return
+	if outcome == "loss": lives -= 1
+	# Roll back this attempt's loot and drafts, retaining the hull damage it cost.
+	for key in RIVAL_RETRY_FIELDS:
+		var value = rival_entry[key]
+		set(key, value.duplicate(true) if value is Array or value is Dictionary else value)
+	if lives < 0:
+		end_run()
+		return
+	start_level()
+	phase = "briefing"
+	state = State.PLAYING
+	briefing_ready = false
+	ui_time = 0.0
+	boost_time = 0.0
+	hardlight_time = 0.0
+	freeze_time = 0.0
+	safe_motion = 0.0
+	hot_entry = false
+	draw_armed = false
+	containment_time = 0.0
+
+func draw_rival_tally() -> void:
+	lines.rect(Rect2(340, 230, 920, 420), Palette.CYAN, 0.0, 0.0, 1.2)
+	var outcome: String = rival_tally.outcome
+	var opponent_name := "RACER" if encounter_kind(level) == "race" else "RIVAL"
+	label("YOU WIN" if outcome == "win" else (opponent_name + " WINS" if outcome == "loss" else "DRAW"), Vector2(800, 280), 30, Palette.GREEN if outcome == "win" else Palette.YELLOW, 1)
+	var reveal := clampf(ui_time / 1.0, 0.0, 1.0)
+	label("YOU", Vector2(570, 355), 18, Palette.CYAN, 1)
+	label(opponent_name, Vector2(1030, 355), 18, RACE_COLOR if encounter_kind(level) == "race" else RIVAL_COLOR, 1)
+	label("%.1f%%" % (100.0 * rival_tally.player / maxi(1, base_free) * reveal), Vector2(570, 395), 34, Palette.WHITE, 1)
+	label("%.1f%%" % (100.0 * rival_tally.rival / maxi(1, base_free) * reveal), Vector2(1030, 395), 34, Palette.WHITE, 1)
+	label("%d CELLS" % roundi(rival_tally.player * reveal), Vector2(570, 446), 13, Palette.DIM, 1)
+	label("%d CELLS" % roundi(rival_tally.rival * reveal), Vector2(1030, 446), 13, Palette.DIM, 1)
+	label("+3 SALVAGE" if outcome == "win" else ("-1 HULL" if outcome == "loss" else "NO HULL LOST"), Vector2(800, 493), 17, Palette.YELLOW, 1)
+	if ui_time >= 1.5:
+		button(0, "STAR CHART" if outcome == "win" else ("END EXPEDITION" if outcome == "loss" and lives == 0 else "RETRY"))
 
 func rival_touched(c: Vector2i) -> void:
 	if rival_active() and rival.exposed and rival.trail_at(c):
@@ -1035,6 +1278,10 @@ func rebuild_rival_segments() -> void:
 func draw_rival() -> void:
 	if rival == null or not rival.alive or rival_land.size() != cells.size():
 		return
+	var home_pos := center(rival_home_cell)
+	lines.circle(home_pos, (Sectors.RIVAL_RADIUS + 0.7) * CELL, RIVAL_COLOR, 24, 0.0, 0.0, 1.2)
+	# A small shield marks the permanent home without covering the cutter.
+	lines.polyline(PackedVector2Array([home_pos + Vector2(-6, -5), home_pos + Vector2(6, -5), home_pos + Vector2(5, 3), home_pos + Vector2(0, 8), home_pos + Vector2(-5, 3)]), true, Color(RIVAL_COLOR, 0.5))
 	if rival_visual_dirty:
 		rebuild_rival_segments()
 	var coast := RIVAL_COLOR
@@ -1056,7 +1303,36 @@ func draw_rival() -> void:
 
 ## In a rival sector both colours are baked into the one fill texture and it is drawn
 ## unmodulated; everywhere else Game's byte-identical dither and modulate tint stay in use.
+func uses_race_palette() -> bool:
+	return false # The opposing pilot opts in; the player keeps their normal territory.
+
+func coast_color() -> Color:
+	return RACE_COLOR if uses_race_palette() else super.coast_color()
+
+func fill_color() -> Color:
+	# Race stores its background/territory contrast in the texture alpha.
+	return RACE_COLOR if uses_race_palette() else super.fill_color()
+
+func update_race_fill() -> void:
+	var pixels := PackedByteArray()
+	pixels.resize(grid_width * grid_height * 4)
+	for y in grid_height:
+		for x in grid_width:
+			var i := idx(x, y)
+			if cells[i] == ROCK: continue # Keep cutouts and the outside of either arena empty.
+			var chevron := posmod(y - absi(x % 16 - 8), 12) == 0
+			var opacity := 0.022 if chevron else 0.008
+			if cells[i] == CLAIMED:
+				opacity = 0.18 if chevron else 0.065
+			pixels.encode_u32(i * 4, Color(1.0, 1.0, 1.0, opacity).to_abgr32())
+	fill_img.set_data(grid_width, grid_height, false, Image.FORMAT_RGBA8, pixels)
+	fill_tex.update(fill_img)
+	fill.modulate = fill_color()
+
 func update_fill() -> void:
+	if uses_race_palette():
+		update_race_fill()
+		return
 	if rival_land.size() != cells.size():
 		super.update_fill()
 		return
@@ -1090,7 +1366,13 @@ func update_fill() -> void:
 	fill.modulate = Color.WHITE
 
 func start_level() -> void:
+	rival_entry.clear()
+	if encounter_kind(level) in ["rival", "race"]:
+		for key in RIVAL_RETRY_FIELDS:
+			var value = get(key)
+			rival_entry[key] = value.duplicate(true) if value is Array or value is Dictionary else value
 	authored_behaviors.clear()
+	brood_eggs.clear()
 	authored_map = MapCatalog.read(arena_stage(level))
 	reset_movement_module()
 	corruption_active = level >= Sectors.CORRUPTION_SECTOR or encounter_kind(level) == "breach"
@@ -1132,6 +1414,8 @@ func start_level() -> void:
 	anchor = p
 	if authored_map != null and authored_map.override_enemies:
 		apply_authored_enemies()
+	field_features.reset(self)
+	if encounter_kind(level) == "race": setup_race()
 
 func apply_authored_enemies() -> void:
 	qixes.clear()
@@ -1152,6 +1436,20 @@ func apply_authored_enemies() -> void:
 				q.len = 80.0 if enemy.kind == "rotor" else 12.0
 				while q.len > 2.0 and qix_blocked(q.c, q.theta, q.len): q.len *= 0.8
 				authored_behaviors[q] = {"kind": enemy.kind, "phase": "roam", "clock": 2.4, "aim": q.theta}
+				if enemy.kind == "chain_worm":
+					var links: Array[QixBody] = []
+					for i in 6:
+						var link := QixBody.new()
+						link.c = q.c
+						link.len = 2.0
+						qixes.append(link)
+						links.append(link)
+						authored_behaviors[link] = {"kind": "worm_link"}
+					authored_behaviors[q].links = links
+					authored_behaviors[q].path = [q.c]
+				if enemy.kind == "brood_carrier":
+					# A home tracks hatched mites without adding an automatic spawner.
+					authored_behaviors[q].home = Spawner.new()
 		elif enemy.kind == "sparx":
 			var s := SparxBody.new()
 			s.c = MapCatalog.nearest(field_arena.mask, authored_map.grid_size, cell, 1)
@@ -1236,9 +1534,13 @@ func sap_rate() -> float:
 	if hot_entry and cut_time < (3.0 if progress.rank_of("engines") >= 10 else 2.0):
 		mult *= 1.0 + 0.3 * (card_power("slipstream") if has_card("slipstream") else 1.0)
 	mult *= 1.0 + small_chain * 0.15 * card_power("compression")
-	return super.sap_rate() * mult
+	return super.sap_rate() * mult * (card_power("charge") if has_card("charge") else 1.0)
+
+func sap_radius() -> int:
+	return roundi(super.sap_radius() * (card_power("charge") if has_card("charge") else 1.0))
 
 func begin_attack() -> void:
+	if hardlight_armed and (drawing or sap_live): start_hardlight()
 	cut_time = 0.0
 	hot_entry = safe_motion >= 2.0 and (has_card("slipstream") or progress.rank_of("engines") >= 5)
 	safe_motion = 0.0
@@ -1257,13 +1559,14 @@ func start_sapper_charge() -> void:
 	begin_attack()
 
 func wire_hit() -> bool:
+	if field_features.shielded(self): return false
 	if ship.id == "sapper" and sap_live and disc_braced and hardening_time > 0.0:
 		disc_braced = false
 		hardening_time = 0.0
 		# Let the absorbed contact separate before the next collision check.
 		hardlight_time = maxf(hardlight_time, 0.25)
 		return false
-	if ship.id == "sapper" and sap_live and not tether_hit(sap_cell):
+	if sap_live and not tether_hit(sap_cell):
 		return false
 	return super.wire_hit()
 
@@ -1283,6 +1586,9 @@ func hazard_capture_value() -> float:
 	return 0.25
 
 func award_flux(amount: float) -> void:
+	if race_rewards_locked():
+		race_pending_salvage += amount
+		return
 	# Shared enclosure rewards are banked only in the Roguelite profile.
 	salvage_fraction += amount * (1.0 + 0.02 * progress.rank_of("extractor"))
 	var whole := floori(salvage_fraction + 0.000001)
@@ -1374,6 +1680,9 @@ func reroll_draft() -> void:
 
 func update(dt: float) -> void:
 	ui_time += dt
+	if phase == "run" and state == State.PLAYING and encounter_kind(level) == "rival" and rival_remaining <= 0.0:
+		finish_rival_contest()
+		return
 	if phase == "briefing":
 		# A held launch/skip button must be released before accepting a new press.
 		if not briefing_ready:
@@ -1404,7 +1713,7 @@ func update(dt: float) -> void:
 		if capture_flights.is_empty():
 			reward_hold += dt
 			if reward_hold >= REWARD_HOLD:
-				if drafts_taken < draft_capture.size() and capture_percent >= draft_capture[drafts_taken]:
+				if draft_ready():
 					open_draft()
 				elif pending_clear:
 					finish_sector()
@@ -1418,16 +1727,47 @@ func update(dt: float) -> void:
 		return
 	super.update(dt)
 	if phase == "run" and state == State.PLAYING:
-		if drafts_taken < draft_capture.size() and capture_percent >= draft_capture[drafts_taken]:
+		if encounter_kind(level) == "rival" and rival_remaining <= 0.0:
+			finish_rival_contest()
+			return
+		if draft_ready():
 			begin_draft_reward()
 		elif pending_clear:
 			finish_sector()
 
 func update_play(dt: float) -> void:
+	if race_opponent == null:
+		update_encounter_play(dt)
+		return
+	# Both boards receive the same small slice, including the slice of a finishing cut.
+	# Drafts, briefings, pause and player death stop both boards between slices.
+	var remaining := dt
+	while remaining > 0.000001 and phase == "run" and state == State.PLAYING:
+		if pending_clear or (draft_ready()): return
+		var step := minf(remaining, 1.0 / 60.0)
+		update_encounter_play(step)
+		race_opponent.simulate(step)
+		race_elapsed += step
+		check_race_finish()
+		remaining -= step
+
+func accepts_player_input() -> bool:
+	return true
+
+func update_encounter_play(dt: float) -> void:
 	# A capture may queue several drafts, including the final cut. No simulation
 	# advances between that capture, its choices and settlement.
-	if pending_clear or (drafts_taken < draft_capture.size() and capture_percent >= draft_capture[drafts_taken]):
+	if pending_clear or (draft_ready()):
 		return
+	if encounter_kind(level) == "rival":
+		if rival_remaining <= 0.0:
+			finish_rival_contest()
+			return
+		dt = minf(dt, rival_remaining)
+		rival_remaining = maxf(0.0, rival_remaining - dt)
+	if freeze_time <= 0.0: field_features.zone_time += dt
+	field_features.zone_contact(self)
+	if state != State.PLAYING or phase != "run": return
 	objective_notice_time = maxf(0.0, objective_notice_time - dt)
 	for key in cooldowns:
 		cooldowns[key] = maxf(0.0, float(cooldowns[key]) - dt * (1.0 + 0.03 * progress.rank_of("reactor")))
@@ -1437,11 +1777,13 @@ func update_play(dt: float) -> void:
 	containment_time = maxf(0.0, containment_time - dt)
 	advance_objective_visuals(dt)
 	update_surge_clock(dt)
-	if Input.is_action_just_pressed("br_harden"):
+	if accepts_player_input() and Input.is_action_just_pressed("br_harden"):
 		activate_ability(movement_module())
-	if Input.is_action_just_pressed("special"):
+	if accepts_player_input() and Input.is_action_just_pressed("special"):
 		activate_ability(secondary_ability())
+	charge_input_frame = sap_live and has_card("charge")
 	update_movement_module(dt)
+	if phase != "run" or state != State.PLAYING: return
 	leap_input_frame = leap_building or wall_building
 	var old_p := p
 	if drawing or sap_live:
@@ -1449,6 +1791,7 @@ func update_play(dt: float) -> void:
 	if ship.id == "lancer":
 		lance_cd = maxf(0.0, lance_cd - dt * 0.03 * progress.rank_of("reactor"))
 	super.update_play(dt)
+	field_features.remember_walls(self, trail)
 	if state != State.PLAYING or phase != "run" or pending_clear:
 		return
 	if not drawing and not sap_live and cells[idx(p.x, p.y)] == CLAIMED:
@@ -1480,29 +1823,37 @@ func try_step(dir: Vector2i, draw_line: bool, slow: bool) -> bool:
 		begin_attack()
 	check_cargo_contact() # Per step, so a fast frame cannot skip the pod's cell.
 	rival_touched(p)
+	field_features.zone_contact(self)
 	return moved
 
 func ride_step() -> void:
 	super.ride_step()
 	check_cargo_contact()
 	rival_touched(p)
+	field_features.zone_contact(self)
 
 func activate_ability(id: String) -> void:
 	if phase != "run" or state != State.PLAYING or not has_card(id) or float(cooldowns.get(id, 1.0)) > 0.0:
 		return
-	if id == "hardening":
+	if id == "charge":
+		if sap_live or leap_building or wall_building: return
+		if not drawing and (cells[idx(p.x, p.y)] != CLAIMED or border[idx(p.x, p.y)] == 0): return
+		stop_module_tether()
+		if not drawing: anchor = p
+		start_sapper_charge()
+	elif id == "hardening":
 		if wall_building or leap_building or not (drawing or sap_live): return
 		hardening_time = 3.0 * card_power(id)
 		disc_braced = sap_live
 		cooldowns[id] = 12.0
 	elif id == "leap":
-		if drawing or sap_live or leap_building or wall_building or cells[idx(p.x, p.y)] != CLAIMED: return
+		if sap_live or leap_building or wall_building: return
+		stop_module_tether()
 		start_leap()
 		if not leap_building: return
 		begin_attack()
 	elif id == "dash":
 		if leap_building or wall_building or sap_live or last_dir == Vector2i.ZERO: return
-		if ship.id == "surveyor" and not drawing: draw_armed = true
 		dash_direction = tether_dir if tether_active else last_dir
 		dash_time = 0.3 * card_power(id)
 		cooldowns[id] = 8.0
@@ -1510,11 +1861,34 @@ func activate_ability(id: String) -> void:
 		boost_time = 3.0
 		cooldowns[id] = 14.0
 	elif id == "hardlight":
-		hardlight_time = 2.0 * card_power("hardlight")
-		cooldowns[id] = 18.0
+		if hardlight_armed: return
+		if drawing or sap_live or wall_building:
+			start_hardlight()
+		else:
+			hardlight_armed = true
 	sparks.ripple(vis, 5.0, 260.0, 0.6, Palette.CYAN)
 
+func start_hardlight() -> void:
+	hardlight_armed = false
+	hardlight_time = 2.0 * card_power("hardlight")
+	cooldowns.hardlight = 18.0
+
+## Changing modules mid-ride keeps the travelled wire and drops the unused tether.
+func stop_module_tether() -> void:
+	if not tether_active: return
+	for i in range(tether_i + 1, trail.size()):
+		var c := trail[i]
+		if cells[idx(c.x, c.y)] in [TRAIL, HARD]: cells[idx(c.x, c.y)] = FREE
+	trail.resize(tether_i + 1)
+	tether_active = false
+	tether_i = -1
+	move_acc = 0.0
+
+func can_start_leap() -> bool:
+	return drawing or super.can_start_leap()
+
 func tether_hit(c: Vector2i) -> bool:
+	if field_features.shielded(self) or field_features.zone_at(self, c) == 1: return false
 	if hardlight_time > 0.0 or (has_card("phase") and cut_time < 1.5 * card_power("phase")):
 		return false
 	if has_card("ion") and float(cooldowns.ion) <= 0.0:
@@ -1561,6 +1935,16 @@ func move_authored_orb(q: QixBody, dt: float, speed: float) -> void:
 
 func update_authored_enemy(q: QixBody, dt: float, speed: float) -> void:
 	var behavior: Dictionary = authored_behaviors[q]
+	if behavior.kind == "siege":
+		if state == State.PLAYING and phase == "run": field_features.update_siege(self, q, dt, speed)
+		return
+	if behavior.kind == "worm_link": return
+	if behavior.kind == "chain_worm":
+		if state == State.PLAYING and phase == "run": update_chain_worm(q, dt, speed)
+		return
+	if behavior.kind == "brood_carrier":
+		if state == State.PLAYING and phase == "run": update_brood_carrier(q, dt, speed)
+		return
 	if behavior.kind == "rotor":
 		q.len = enemy_beam_length(q, q.len)
 		var next_angle := q.theta + q.omega * dt * 0.65
@@ -1602,11 +1986,108 @@ func update_authored_enemy(q: QixBody, dt: float, speed: float) -> void:
 				behavior.phase = "roam"
 				behavior.clock = 3.6
 
+func worm_path_point(path: Array, distance: float) -> Vector2:
+	for i in range(1, path.size()):
+		var length: float = path[i - 1].distance_to(path[i])
+		if length >= distance: return path[i - 1].lerp(path[i], distance / maxf(length, 0.001))
+		distance -= length
+	return path.back()
+
+func update_chain_worm(q: QixBody, dt: float, speed: float) -> void:
+	var behavior: Dictionary = authored_behaviors[q]
+	var path: Array = behavior.path
+	var steps := maxi(1, ceili(speed * 0.65 * dt / 2.0))
+	for step in steps:
+		move_authored_orb(q, dt / steps, speed * 0.65)
+		if q.c.distance_to(path[0]) > 0.25: path.push_front(q.c)
+	# Keep a short spatial history; the tail follows turns instead of swinging through walls.
+	var length := 0.0
+	for i in range(1, path.size()):
+		length += path[i - 1].distance_to(path[i])
+		if length > 100.0:
+			path.resize(i + 1)
+			break
+	var front := q.c
+	for i in behavior.links.size():
+		var back := worm_path_point(path, (i + 1) * 14.0)
+		var link: QixBody = behavior.links[i]
+		link.c = (front + back) * 0.5
+		link.theta = (front - back).angle()
+		link.len = maxf(2.0, front.distance_to(back))
+		if qix_blocked(link.c, link.theta, link.len):
+			link.c = back
+			link.len = 2.0
+		front = back
+
+func update_brood_carrier(q: QixBody, dt: float, speed: float) -> void:
+	var behavior: Dictionary = authored_behaviors[q]
+	behavior.clock -= dt
+	if behavior.phase == "roam":
+		move_authored_orb(q, dt, speed * 0.4)
+		if behavior.clock <= 0:
+			behavior.phase = "warn"
+			behavior.clock = 0.9
+	elif behavior.clock <= 0:
+		var home: Spawner = behavior.home
+		var count := home.alive
+		for egg in brood_eggs:
+			if egg.home == home: count += 1
+		var cell := to_cell(q.c)
+		var occupied := brood_eggs.any(func(egg: Dictionary) -> bool: return egg.cell == cell)
+		if count < 4 and not occupied and in_bounds(cell) and cells[idx(cell.x, cell.y)] == FREE:
+			brood_eggs.append({"cell": cell, "clock": 6.0, "home": home})
+		behavior.phase = "roam"
+		behavior.clock = 4.0
+
+func update_brood_eggs(dt: float) -> void:
+	for i in range(brood_eggs.size() - 1, -1, -1):
+		var egg := brood_eggs[i]
+		var cell: Vector2i = egg.cell
+		if cells[idx(cell.x, cell.y)] == CLAIMED:
+			award_flux(0.25)
+			sparks.burst(center(cell), 16, 120, 1.0, 0.4, Palette.GREEN)
+			brood_eggs.remove_at(i)
+			continue
+		egg.clock -= dt
+		# A live trail can still close over an egg at the last moment.
+		if dt > 0.0 and egg.clock <= 0 and cells[idx(cell.x, cell.y)] == FREE:
+			var mite := Mite.new()
+			mite.pos = center(cell)
+			mite.vel = (vis - mite.pos).normalized() * 40.0
+			mite.home = egg.home
+			mite.home.alive += 1
+			mites.append(mite)
+			brood_eggs.remove_at(i)
+			sparks.ripple(mite.pos, 4, 120, 0.4, Palette.PURPLE)
+
+func draw_hazards() -> void:
+	super.draw_hazards()
+	field_features.draw(self)
+	for egg in brood_eggs:
+		var pos := center(egg.cell)
+		var color := Palette.YELLOW if egg.clock < 2.0 else Palette.PURPLE
+		lines.circle(pos, 5, color, 8)
+		arc(pos, 9, -PI / 2, -PI / 2 + TAU * clampf(egg.clock / 6.0, 0.01, 1.0), color, 1.0)
+
 func draw_qix(q: QixBody) -> void:
 	if not authored_behaviors.has(q):
 		super.draw_qix(q)
 		return
 	var behavior: Dictionary = authored_behaviors[q]
+	if behavior.kind == "siege":
+		field_features.draw_siege(self, q)
+		return
+	if behavior.kind in ["chain_worm", "worm_link"]:
+		var ends := qix_ends(q.c, q.theta, q.len)
+		lines.seg(ends[0], ends[1], anomaly_color(q.col_off), 2.0, 0.5, 2.0)
+		draw_anomaly_ring(q.c, 6 if behavior.kind == "chain_worm" else 3, 6, q.col_off)
+		if behavior.kind == "chain_worm": lines.circle(q.c, 2, Palette.WHITE, 4)
+		return
+	if behavior.kind == "brood_carrier":
+		draw_anomaly_ring(q.c, 9, 6, q.col_off, 1.5)
+		for side in [-1, 1]: draw_anomaly_ring(q.c + Vector2(side * 11, 0), 4, 6, q.col_off + 3)
+		if behavior.phase == "warn": lines.circle(q.c, 15 + sin(time * 12) * 2, Palette.YELLOW, 12)
+		return
 	var color := Palette.ORANGE if behavior.kind == "gunner_orb" else (Palette.CYAN if behavior.kind == "ray_orb" else Palette.YELLOW)
 	if behavior.kind == "rotor":
 		var ends := qix_ends(q.c, q.theta, q.len)
@@ -1614,11 +2095,11 @@ func draw_qix(q: QixBody) -> void:
 		for end in ends: lines.circle(end, 4, color, 6)
 		lines.circle(q.c, 6, color, 8)
 		return
-	lines.circle(q.c, 7, color, 10, 0.2, 0.05, 1.4)
+	draw_anomaly_ring(q.c, 7, 10, q.col_off, 1.4)
 	if behavior.kind == "gunner_orb":
 		for i in 3:
 			var angle := time * 0.8 + i * TAU / 3.0
-			lines.seg(q.c + Vector2.RIGHT.rotated(angle) * 9, q.c + Vector2.RIGHT.rotated(angle) * 14, color)
+			lines.seg(q.c + Vector2.RIGHT.rotated(angle) * 9, q.c + Vector2.RIGHT.rotated(angle) * 14, anomaly_color(q.col_off + i * 2), 2.0, 0.5)
 	if behavior.phase == "warn":
 		lines.circle(q.c, 12 + sin(time * 20) * 2, color, 16)
 		if behavior.kind == "ray_orb":
@@ -1629,6 +2110,7 @@ func draw_qix(q: QixBody) -> void:
 		lines.seg(ends[0], ends[1], Palette.WHITE, 0.2, 0.05, 2.2)
 
 func qix_contact_reason(q: QixBody) -> String:
+	if authored_behaviors.has(q) and authored_behaviors[q].kind == "worm_link": return "CHAIN WORM CONTACT"
 	if authored_behaviors.has(q): return String(authored_behaviors[q].kind).replace("_", " ").to_upper() + " CONTACT"
 	return super.qix_contact_reason(q)
 
@@ -1639,13 +2121,15 @@ func update_sparx(s: SparxBody, dt: float) -> void:
 func update_hazards(dt: float) -> void:
 	if freeze_time <= 0.0:
 		super.update_hazards(dt)
+		if state == State.PLAYING and phase == "run": update_brood_eggs(dt)
+		field_features.update(self, dt)
 
 func die(reason: String) -> void:
-	if invuln > 0.0:
+	if invuln > 0.0 or field_features.shielded(self):
 		return
 	reset_movement_module()
 	corruption_visual_dirty = true
-	if (drawing or (ship.id == "sapper" and (sap_live or cells[idx(p.x, p.y)] == FREE))) and has_card("anchor") and float(cooldowns.anchor) <= 0.0:
+	if (drawing or sap_live or (ship.id == "sapper" and cells[idx(p.x, p.y)] == FREE)) and has_card("anchor") and float(cooldowns.anchor) <= 0.0:
 		cooldowns.anchor = 24.0 / card_power("anchor")
 		for c in trail:
 			cells[idx(c.x, c.y)] = FREE
@@ -1674,7 +2158,76 @@ func die(reason: String) -> void:
 	safe_motion = 0.0
 	stall_time = 0.0
 
+func complete_claim() -> void:
+	field_features.remember_walls(self, trail)
+	super.complete_claim()
+
+func preserve_live_capture() -> bool:
+	return super.preserve_live_capture() or (not pending_clear and phase in ["reward", "draft", "install", "replace"])
+
+func capture_flood_seeds() -> PackedInt32Array:
+	var seeds := PackedInt32Array()
+	for q in qixes:
+		if authored_behaviors.get(q, {}).get("kind", "") == "rotor": continue
+		var ci := qix_cell_index(q)
+		if ci >= 0: seeds.append(ci)
+	if not seeds.is_empty(): return seeds
+	# Maps containing only capturable hazards still claim the smaller enclosed
+	# regions, rather than giving away the entire board on the first cut.
+	var visited := PackedByteArray()
+	visited.resize(cells.size())
+	var largest := 0
+	var seed_cell := -1
+	for start in cells.size():
+		if cells[start] != FREE or visited[start]: continue
+		var region := PackedInt32Array([start])
+		visited[start] = 1
+		var head := 0
+		while head < region.size():
+			var i := region[head]
+			head += 1
+			var x := i % grid_width
+			var y := i / grid_width
+			for next in [i - 1 if x > 0 else -1, i + 1 if x + 1 < grid_width else -1, i - grid_width if y > 0 else -1, i + grid_width if y + 1 < grid_height else -1]:
+				if next >= 0 and cells[next] == FREE and not visited[next]:
+					visited[next] = 1
+					region.append(next)
+		if region.size() > largest:
+			largest = region.size()
+			seed_cell = start
+	if seed_cell >= 0: seeds.append(seed_cell)
+	return seeds
+
+func capture_extra_hazards() -> int:
+	var caught := super.capture_extra_hazards() + field_features.capture_snipers(self)
+	for i in range(qixes.size() - 1, -1, -1):
+		var q: QixBody = qixes[i]
+		if authored_behaviors.get(q, {}).get("kind", "") != "rotor": continue
+		var cell := to_cell(q.c)
+		if not in_bounds(cell) or cells[idx(cell.x, cell.y)] != CLAIMED: continue
+		sparks.burst(q.c, 40, 180, 1.5, 0.5, Palette.GREEN)
+		sparks.ripple(q.c, 5, 240, 0.4, Palette.GREEN)
+		authored_behaviors.erase(q)
+		qixes.remove_at(i)
+		caught += 1
+	return caught
+
+func lose_seal(seal: Seal) -> void:
+	if seal != null: field_features.remember_walls(self, seal.cells)
+	super.lose_seal(seal)
+
+func race_rewards_locked() -> bool:
+	return encounter_kind(level) == "race" and rival_tally.get("outcome", "") != "win"
+
+func draft_ready() -> bool:
+	return not race_rewards_locked() and drafts_taken < draft_capture.size() and draft_progress() >= draft_capture[drafts_taken]
+
+func draft_progress() -> float:
+	return capture_percent + field_features.lost_land.size() * 100.0 / maxi(1, base_free)
+
 func on_claim(gained: int, caught: int) -> void:
+	update_brood_eggs(0.0)
+	field_features.on_claim(self)
 	var previous_capture := capture_percent
 	var newly_claimed: Array[int] = []
 	var cleansed := 0
@@ -1686,8 +2239,8 @@ func on_claim(gained: int, caught: int) -> void:
 			if corruption[i] != 0:
 				cleansed += 1
 			corruption[i] = 0
-	# First-time territory drives both card milestones and the sector goal.
-	capture_percent = first_claims * 100.0 / maxi(1, base_free)
+	# Erosion reduces the territory goal, while drafts still use first-time captures.
+	capture_percent = (first_claims - field_features.lost_land.size()) * 100.0 / maxi(1, base_free)
 	# Objectives read the board before the early return: a cut that only re-crosses
 	# credited land can still close a beacon, seal a breach or deliver cargo.
 	var note := check_objectives()
@@ -1726,7 +2279,7 @@ func on_claim(gained: int, caught: int) -> void:
 	set_msg("+%d%% CAPTURE%s" % [int(fraction * 100), tags], 1.1)
 	# The reward phase opens first and the clear is queued behind it: level_clear settles
 	# immediately outside a draft phase, and finish_sector must run exactly once.
-	var milestone := drafts_taken < draft_capture.size() and capture_percent >= draft_capture[drafts_taken]
+	var milestone := draft_ready()
 	var done := objective_complete()
 	if milestone or done:
 		begin_draft_reward()
@@ -1818,11 +2371,14 @@ func draft_exclusions() -> Array[String]:
 	for turret in turrets:
 		if not turret.captured:
 			has_capture_target = true
+	for sniper in field_features.snipers:
+		if not sniper.captured: has_capture_target = true
 	if not has_capture_target:
 		excluded.append("harvest")
 	return excluded
 
 func begin_draft_reward() -> void:
+	if race_rewards_locked(): return
 	phase = "reward"
 	state = State.LEVEL_CLEAR # Freeze immediately, keeping the arena visible for particle delivery.
 	reward_hold = 0.0
@@ -1885,17 +2441,23 @@ func hud_label(text: String, pos: Vector2, size := 16.0, color := Palette.WHITE)
 	VectorFont.draw(lines, text, pos, size, color, 0.0, 0.0)
 
 func draw_draft_meter() -> void:
+	if race_opponent != null:
+		draw_race_meter()
+		return
 	var goal := Sectors.capture_goal(level)
 	var kind := encounter_kind(level)
 	var color := Palette.GREEN if Sectors.territory_goal(kind) and displayed_capture >= goal else Palette.CYAN
 	hud_label(objective_label(), Vector2(CAPTURE_BAR.position.x, 104), 13, Palette.DIM)
-	if objective_notice_time > 0.0:
+	if objective_notice_time > 0.0 and kind != "rival":
 		hud_label(objective_notice, Vector2(CAPTURE_BAR.position.x + 400, 104), 12, Palette.YELLOW)
 	if kind == "breach" and not breach.is_empty():
 		var pressure := int(round(100.0 * float(breach.pressure)))
 		var hot := not bool(breach.sealed) and float(breach.pressure) >= 0.15
 		hud_label("BREACH SEALED" if bool(breach.sealed) else "ARENA %d%% / 25%%" % pressure, Vector2(CAPTURE_BAR.position.x + 180, 104), 12, Palette.MAGENTA if hot else Palette.DIM)
 	var area_text := "%.1f%%" % displayed_capture
+	if kind == "rival":
+		var scores := rival_scores()
+		hud_label("YOU %.1f%%  /  RIVAL %.1f%%" % [scores.x * 100.0 / maxi(1, base_free), scores.y * 100.0 / maxi(1, base_free)], Vector2(CAPTURE_BAR.position.x + 250, 104), 13, Palette.CYAN)
 	if not Sectors.territory_goal(kind): area_text = "TERRITORY " + area_text
 	VectorFont.draw(lines, area_text, Vector2(CAPTURE_BAR.end.x, 102), 18, color, 0.0, 0.0, 2)
 	var left := capture_bar_point(0)
@@ -1972,7 +2534,9 @@ func choose_card(index: int) -> void:
 		if Cards.OPENING.has(replace_id): reset_movement_module()
 		if replace_id == "compression": small_chain = 0
 		if replace_id == "afterburner": boost_time = 0.0
-		if replace_id == "hardlight": hardlight_time = 0.0
+		if replace_id == "hardlight":
+			hardlight_time = 0.0
+			hardlight_armed = false
 		if replace_id == "slipstream" and progress.rank_of("engines") < 5: hot_entry = false
 		replace_id = ""
 	elif not has_card(id):
@@ -1989,7 +2553,7 @@ func finish_draft() -> void:
 	opening_draft_pending = false
 	drafts_taken += 1
 	offers.clear()
-	if drafts_taken < draft_capture.size() and capture_percent >= draft_capture[drafts_taken]:
+	if draft_ready():
 		open_draft()
 	elif pending_clear:
 		finish_sector()
@@ -2034,6 +2598,7 @@ func encounter_kind(depth: int) -> String:
 	return String(active_destination.kind) if active_destination.get("depth", 0) == depth else "survey"
 
 func open_chart() -> void:
+	clear_race()
 	sparks.ripples.clear()
 	sparks.dur.fill(0.0)
 	phase = "chart"
@@ -2152,6 +2717,7 @@ func resume_run() -> void:
 		draw_armed = false
 
 func choice_delay() -> float:
+	if phase == "rival_tally": return 1.5
 	if phase == "draft":
 		return DRAFT_REVEAL
 	if phase == "result" and run_victory:
@@ -2190,7 +2756,9 @@ func update_choices() -> void:
 			activate_choice(0)
 
 func activate_choice(index: int) -> void:
-	if phase == "briefing":
+	if phase == "rival_tally":
+		accept_rival_tally()
+	elif phase == "briefing":
 		begin_sector()
 	elif phase == "chart":
 		launch_destination(index)
@@ -2255,6 +2823,7 @@ func leave_mode() -> void:
 	exited.emit()
 
 func choice_rect(index: int) -> Rect2:
+	if phase == "rival_tally": return Rect2(580, 560, 440, 64)
 	if phase == "briefing":
 		return Rect2(580, 452, 440, 64)
 	if phase == "paused":
@@ -2353,9 +2922,24 @@ func button(index: int, text: String) -> void:
 	lines.rect(r, Palette.CYAN if selection == index else Palette.DIM, 0.2, 0.05, 1.0)
 	label(("> " if selection == index else "") + text, r.get_center() - Vector2(0, 9), 18, Palette.WHITE if selection == index else Palette.DIM, 1)
 
+func draw_arena() -> void:
+	super.draw()
+
 func draw() -> void:
 	battle_fill.visible = false
+	if race_opponent != null:
+		race_opponent.fill.visible = false
+		if phase in ["run", "reward", "briefing", "rival_tally"]:
+			draw_race()
+			return
 	fill.modulate = Color.WHITE if rival_land.size() == cells.size() else fill_color() # See update_fill.
+	if phase == "rival_tally":
+		super.draw()
+		lines.modal_start = lines.count
+		lines.offset = Vector2.ZERO
+		lines.zoom = Vector2.ONE
+		draw_rival_tally()
+		return
 	if phase == "briefing":
 		super.draw()
 		lines.modal_start = lines.count
@@ -2422,7 +3006,9 @@ func draw_briefing() -> void:
 	lines.rect(BRIEFING_PANEL, Palette.CYAN, 0.0, 0.0, 1.2)
 	var goal := "CAPTURE %d%%" % Sectors.capture_goal(level)
 	match kind:
-		"cargo": goal = "BRING %d PODS TO SAFE LAND" % int(cargo.get("runs", 0))
+		"race": goal = "RACE: FIRST TO %d%%" % Sectors.RACE_GOAL
+		"rival": goal = "OWN MORE TERRITORY IN %d SECONDS" % int(Sectors.RIVAL_SECONDS)
+		"cargo": goal = "DELIVER CARGO TO SAFE LAND (%d)" % int(cargo.get("runs", 0))
 		"beacon": goal = "ENCLOSE %d BEACONS" % zones.size()
 		"breach": goal = "SEAL BREACH + " + goal
 	var rows := paragraph_lines(goal, 740, 26)
@@ -2471,6 +3057,7 @@ func draw_hangar() -> void:
 func ship_controls(id: String) -> String:
 	match id:
 		"lancer": return Controls.hint("ARROWS / WASD: AIM\nSPACE: LANCE + RIDE")
+		"bulwark": return Controls.hint("ARROWS / WASD: MOVE\nHOLD SPACE: DRAW + HARDEN\nRELEASE: BRACE")
 		"sapper": return Controls.hint("ARROWS / WASD: MOVE\nHOLD SPACE: CHARGE\nRELEASE: DETONATE")
 	return Controls.hint("ARROWS / WASD: MOVE\nSPACE: DRAW\nSHIFT: SLOW DRAW")
 
@@ -2515,7 +3102,7 @@ func draw_ship_shop() -> void:
 		label("ACTIVE" if active else ("OWNED" if owned else "LOCKED"), r.position + Vector2(30, 75), 12, Palette.GREEN if active else color)
 		for path in Hulls.paths(id, r.position + Vector2(225, 225), 77.0, 0.0, 0.4):
 			lines.polyline(path, false, color, 0.3, 0.05, 1.2)
-		label(["DRAW AND ENCLOSE", "FIRE A LINE. RIDE IT.", "CHARGE. DETONATE."][i], r.position + Vector2(225, 357), 17, Palette.WHITE, 1)
+		label(["DRAW AND ENCLOSE", "FIRE A LINE. RIDE IT.", "DRAW. HARDEN. CAPTURE."][i], r.position + Vector2(225, 357), 17, Palette.WHITE, 1)
 		var action := ship_action_rect(i)
 		var affordable: bool = progress.salvage >= Progress.SHIP_PRICE
 		lines.rect(action, Palette.GREEN if active else (Palette.CYAN if owned else (Palette.YELLOW if affordable else Palette.RED)))
@@ -2794,6 +3381,10 @@ func draw_card_icon(id: String, center_at: Vector2, color: Color, scale_at := 1.
 	id = {"draft_speed": "slipstream", "draft_shield": "hardlight", "draft_salvage": "harvest"}.get(id, id)
 	var paths: Array = []
 	match id:
+		"charge":
+			lines.circle(center_at, 42 * scale_at, color, 24)
+			lines.circle(center_at, 22 * scale_at, color, 16)
+			paths = [[-12, 0, 12, 0], [0, -12, 0, 12]]
 		"hardening": paths = [[-42, -36, -42, 36, 42, 36, 42, -36, -42, -36], [-42, 0, 42, 0], [0, -36, 0, 0], [-20, 0, -20, 36], [20, 0, 20, 36]]
 		"leap": paths = [[-48, 28, -25, -15, 0, -36, 25, -15, 48, 28], [18, 22, 48, 28, 45, -3], [-48, 42, -30, 42], [30, 42, 48, 42]]
 		"dash": paths = [[-12, -32, 34, 0, -12, 32], [-55, -22, -25, -22], [-65, 0, -30, 0], [-55, 22, -25, 22]]
@@ -2867,7 +3458,7 @@ func draw_draft() -> void:
 		draw_card_icon(card.id, center_at, Color(color, opacity), 1.15 + (0.15 * sin(ui_time * PI / 0.45) if installing and selected else 0.0))
 		var kind: String = card.kind
 		if Cards.OPENING.has(card.id):
-			kind = ("HOLD " if card.id == "leap" else "") + Controls.action_label("br_harden", "Q")
+			kind = ("HOLD " if card.id in ["leap", "charge"] else "") + Controls.action_label("br_harden", "Q")
 		elif Cards.SECONDARY.has(card.id):
 			kind = Controls.action_label("special", "E")
 		label(kind, r.position + Vector2(24, 25), 12, Color(color, opacity))
@@ -3004,7 +3595,9 @@ func draw_hud() -> void:
 			lines.rect(r, Color(color, 0.5), 0.0, 0.0, 0.7)
 			var ability_key := Controls.action_label("special", "E") if Cards.SECONDARY.has(id) else Controls.action_label("br_harden", "Q")
 			hud_label(ability_key, r.position + Vector2(0, 80), 9 if ability_key.length() > 2 else 13)
-		if active > 0.0 or cooldown > 0.0:
+		if id == "hardlight" and hardlight_armed:
+			hud_label("ARMED", r.position + Vector2(24, 98 if Controls.using_controller else 80), 12, Palette.GREEN)
+		elif active > 0.0 or cooldown > 0.0:
 			hud_label("%.1fS" % (active if active > 0.0 else cooldown), r.position + Vector2(24, 98 if Controls.using_controller else 80), 12, Palette.GREEN if active > 0.0 else Palette.DIM)
 	if corruption_active:
 		VectorFont.draw(lines, "PERSONAL EXPOSURE %d%%" % int(clampf(exposure / 4.0, 0.0, 1.0) * 100), Vector2(1440, 790), 13, Palette.MAGENTA, 0.0, 0.0, 2)
@@ -3044,6 +3637,10 @@ func draw_pause() -> void:
 func grid_changed() -> void:
 	sweep_rival() # Before the fill rebuild below, so stolen rival land never flashes twice.
 	super.grid_changed()
+	if encounter_kind(level) == "race":
+		race_claimed = 0
+		for i in cells.size():
+			if field_arena.mask[i] == 2 and cells[i] == CLAIMED: race_claimed += 1
 	corruption_visual_dirty = true
 	stall_time = 0.0 # Any land change, including blasts and hardened walls, is progress.
 
@@ -3073,6 +3670,9 @@ func draw_play() -> void:
 			lines.seg(origin + corruption_strokes[i], origin + corruption_strokes[i + 1], color, 0.4, 0.1, 1.3)
 	draw_objectives()
 	super.draw_play()
+	if sap_live and has_card("charge"):
+		lines.circle(center(sap_cell), sap_radius() * CELL, Color(Palette.YELLOW, 0.3), 32)
+		lines.circle(center(sap_cell), sap_charge * CELL, Palette.YELLOW, 32, 0.3, 0.05, 1.2)
 	if drawing and (hardlight_time > 0.0 or (has_card("phase") and cut_time < 1.5 * card_power("phase"))):
 		lines.polyline(trail_points(), false, Palette.CYAN, 0.3, 0.1, 2.0)
 
@@ -3082,6 +3682,13 @@ func chart_position(depth: int, branch: int) -> Vector2:
 
 func draw_chart_symbol(kind: String, pos: Vector2, color: Color) -> void:
 	match kind:
+		"race":
+			lines.seg(pos + Vector2(-8, 13), pos + Vector2(-8, -13), color, 0, 0, 1.5)
+			lines.rect(Rect2(pos + Vector2(-8, -13), Vector2(20, 15)), color)
+			for x in 4:
+				for y in 3:
+					if (x + y) % 2 == 0:
+						lines.seg(pos + Vector2(-6 + x * 5, -11 + y * 5), pos + Vector2(-3 + x * 5, -11 + y * 5), color, 0, 0, 2)
 		"repair":
 			lines.seg(pos - Vector2(9, 0), pos + Vector2(9, 0), color, 0, 0, 1.5)
 			lines.seg(pos - Vector2(0, 9), pos + Vector2(0, 9), color, 0, 0, 1.5)
@@ -3164,10 +3771,11 @@ func draw_chart() -> void:
 		turrets = 0
 		anomaly_count = 0
 		for enemy in map.enemies:
-			if enemy.kind == "turret": turrets += 1
+			if enemy.kind in ["turret", "sniper"]: turrets += 1
 			elif enemy.kind in MapCatalog.VOID_ENEMIES: anomaly_count += 1
 	var threats := "CAPTURE %d%%" % Sectors.capture_goal(chart_focus_depth)
-	if kind == "beacon": threats = "BEACONS %d" % Sectors.objective_count(kind, chart_focus_depth)
+	if kind == "race": threats = "RACE TO %d%%" % Sectors.RACE_GOAL
+	elif kind == "beacon": threats = "BEACONS %d" % Sectors.objective_count(kind, chart_focus_depth)
 	elif kind == "cargo": threats = "CARGO %d" % Sectors.objective_count(kind, chart_focus_depth)
 	threats += " / %d %s" % [anomaly_count, ("VOID ENEMIES" if map != null and map.override_enemies else ("ANOMALY" if anomaly_count == 1 else "ANOMALIES"))]
 	if turrets > 0: threats += " / %d TURRET%s" % [turrets, "" if turrets == 1 else "S"]
@@ -3196,7 +3804,9 @@ func movement_module() -> String:
 	return ""
 
 func reset_movement_module() -> void:
+	hardlight_armed = false
 	leap_input_frame = false
+	charge_input_frame = false
 	hardening_time = 0.0
 	disc_braced = false
 	dash_time = 0.0
@@ -3209,9 +3819,12 @@ func read_input() -> Dictionary:
 	var input := super.read_input()
 	if uses_leap_controls():
 		input.draw = Input.is_action_pressed("br_harden")
+	elif charge_input_frame:
+		input.dir = Vector2i.ZERO
+		input.draw = false
 	elif dash_time > 0.0:
 		input.dir = dash_direction
-		input.draw = ship.id == "surveyor"
+		input.draw = drawing and ship.id in ["surveyor", "bulwark"]
 		input.slow = false
 	return input
 
@@ -3220,9 +3833,22 @@ func leap_rate() -> float:
 
 func finish_leap(on_land: bool) -> void:
 	super.finish_leap(on_land)
-	if wall_building: cooldowns.leap = 16.0
+	if wall_building:
+		cooldowns.leap = 16.0
+		if hardlight_armed: start_hardlight()
 
 func update_movement_module(dt: float) -> void:
+	if sap_live and has_card("charge"):
+		if Input.is_action_pressed("br_harden"):
+			sap_charge = minf(sap_charge + sap_rate() * dt, float(sap_radius()))
+		else:
+			var radius := sap_charge
+			sap_live = false
+			sap_charge = 0.0
+			if radius >= 1.5:
+				cooldowns.charge = 12.0
+				detonate(roundi(radius))
+			return
 	dash_time = maxf(0.0, dash_time - dt)
 	hardening_time = maxf(0.0, hardening_time - dt)
 	if not sap_live: disc_braced = false
@@ -3239,7 +3865,7 @@ func draw_ability_ring() -> void:
 	super.draw_ability_ring()
 	if leap_building:
 		var target := center(leap_target())
-		dashed(center(anchor), target, Palette.YELLOW, 6.0, 6.0)
+		dashed(center(leap_origin), target, Palette.YELLOW, 6.0, 6.0)
 		lines.circle(target, 6, Palette.YELLOW, 4)
 
 func secondary_ability() -> String:

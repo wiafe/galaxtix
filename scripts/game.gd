@@ -29,7 +29,7 @@ const OFFS8 := [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)
 const QIX_COLORS := [Palette.MAGENTA, Palette.PURPLE, Palette.BLUE, Palette.CYAN,
 	Palette.GREEN, Palette.YELLOW, Palette.ORANGE, Palette.RED]
 
-enum State { DOCK, PLAYING, DYING, LEVEL_CLEAR, RUN_OVER, INTRO, REPORT, OUTRO, TITLE, TRANSIT, BATTLE_ROYALE, ROGUELITE }
+enum State { DOCK, PLAYING, DYING, LEVEL_CLEAR, RUN_OVER, INTRO, REPORT, OUTRO, TITLE, TRANSIT, BATTLE_ROYALE, ROGUELITE, ARCADE }
 
 const TRANSIT_LEN := 3.2        # from the dock
 const TRANSIT_SHORT := 2.2      # between sectors
@@ -38,10 +38,12 @@ const TRANSIT_SHORT := 2.2      # between sectors
 ## editor and the lab files are excluded from exports.
 signal options_requested
 
-var TITLE_ITEMS: Array[String] = ["JUMP", "ROGUELITE", "BATTLE ROYALE", "LOG", "OPTIONS", "QUIT"]
-var TITLE_DESCS: Array[String] = ["TO THE DOCK", "DRAFT A BUILD. UPGRADE. LAUNCH AGAIN.", "8 CUTTERS. THREE ROUNDS. ONE WINNER.", "JUMP LOG", "DISPLAY, EFFECTS, AUDIO AND SAVE DATA", "POWER DOWN"]
+var TITLE_ITEMS: Array[String] = ["JUMP", "ROGUELITE", "ARCADE", "BATTLE ROYALE", "LOG", "OPTIONS", "QUIT"]
+var TITLE_DESCS: Array[String] = ["TO THE DOCK", "DRAFT A BUILD. UPGRADE. LAUNCH AGAIN.", "ONE LIFE. BEAT THE TARGET AT THE BUZZER.", "8 CUTTERS. THREE ROUNDS. ONE WINNER.", "JUMP LOG", "DISPLAY, EFFECTS, AUDIO AND SAVE DATA", "POWER DOWN"]
 var roguelite: Game
 var roguelite_fill: Sprite2D
+var arcade: Game
+var arcade_fill: Sprite2D
 
 const INTRO_LEN := 2.6
 const INTRO_QIX_T := 1.4
@@ -223,6 +225,7 @@ var buoy_flights: Array = []   # [from: Vector2, to: Vector2, t: float, cell: Ve
 # leaper: a line builds out ahead while Space is held; release leaps to its tip
 const LEAP_RATE_BASE := 12.0       # cells per second
 var leap_building := false
+var leap_origin := Vector2i.ZERO
 var leap_tip := Vector2i.ZERO
 var leap_dir := Vector2i.DOWN
 var leap_acc := 0.0
@@ -666,6 +669,10 @@ func set_msg(s: String, dur: float) -> void:
 
 # ------------------------------------------------------------------ update
 func update(dt: float) -> void:
+	if state == State.ARCADE:
+		arcade.update(dt)
+		shake_off = arcade.shake_off
+		return
 	if state == State.ROGUELITE:
 		roguelite.update(dt)
 		shake_off = roguelite.shake_off
@@ -828,7 +835,7 @@ func update_play(dt: float) -> void:
 		return
 
 	# --- ship verbs
-	if ship.id == "bulwark" and drawing:
+	if ship.id == "bulwark" and drawing and not wall_building:
 		# the trail hardens from the anchor forward; the cell under the ship stays soft until the
 		# ship is back on the coast (sealing), when the whole trail may harden
 		# braced: hardening sprints at triple rate and may reach the cell under the ship
@@ -910,7 +917,7 @@ func update_play(dt: float) -> void:
 
 	# fuse: standing still while drawing lights it; it then chases you along the trail.
 	# The Sapper has no fuse: its wire is dead until it charges.
-	if drawing and not sealing and ship.id != "sapper" and not uses_leap_controls():
+	if drawing and not sap_live and not sealing and ship.id != "sapper" and not uses_leap_controls():
 		if idle_t > fuse_delay():
 			fuse_on = true
 		if fuse_on:
@@ -1060,6 +1067,26 @@ func qix_cell_index(q: QixBody) -> int:
 	return -1
 
 
+func capture_flood_seeds() -> PackedInt32Array:
+	var seeds := PackedInt32Array()
+	for q in qixes:
+		var ci := qix_cell_index(q)
+		if ci >= 0: seeds.append(ci)
+	return seeds
+
+func capture_extra_hazards() -> int:
+	var caught := 0
+	for i in range(sparxes.size() - 1, -1, -1):
+		var s: SparxBody = sparxes[i]
+		# The border cache still describes the board before this capture.
+		# A Sparx survives only while its own rail cell touches exposed space.
+		if sparx_has_coast(s.c): continue
+		sparks.burst(center(s.c), 40, 180.0, 1.5, 0.5, Palette.ORANGE)
+		sparks.ripple(center(s.c), 5.0, 240.0, 0.4, Palette.GREEN)
+		sparxes.remove_at(i)
+		caught += 1
+	return caught
+
 func complete_claim() -> void:
 	drawing = false
 	fuse_on = false
@@ -1073,8 +1100,7 @@ func complete_claim() -> void:
 	# flood the void from the Anomaly; whatever it cannot reach is ours
 	reach.fill(0)
 	var sp := 0
-	for q in qixes:
-		var ci := qix_cell_index(q)
+	for ci in capture_flood_seeds():
 		if ci >= 0 and reach[ci] == 0:
 			reach[ci] = 1
 			stack[sp] = ci
@@ -1149,6 +1175,7 @@ func complete_claim() -> void:
 			sparks.burst(center(s.cell), 60, 240.0, 1.5, 0.8, Palette.PURPLE)
 			sparks.ripple(center(s.cell), 5.0, 320.0, 0.5, Palette.GREEN)
 	# mites caught in the claim, or orphaned by a captured spawner, pop
+	caught += capture_extra_hazards()
 	var j := mites.size() - 1
 	while j >= 0:
 		var m: Mite = mites[j]
@@ -1403,7 +1430,15 @@ func spawn_sparx() -> void:
 	sparks.burst(s.vis, 40, 180.0, 1.5, 0.5, Palette.RED)
 
 
+func sparx_has_coast(c: Vector2i) -> bool:
+	if not in_bounds(c) or cells[idx(c.x, c.y)] != CLAIMED: return false
+	for o in OFFS8:
+		var n: Vector2i = c + o
+		if in_bounds(n) and cells[idx(n.x, n.y)] not in [CLAIMED, ROCK]: return true
+	return false
+
 func sparx_step(s: SparxBody) -> void:
+	if not sparx_has_coast(s.c): return
 	var cands: Array[Vector2i] = []
 	for o in OFFS8:
 		var n: Vector2i = s.c + o
@@ -1411,17 +1446,10 @@ func sparx_step(s: SparxBody) -> void:
 			cands.append(n)
 	var pick: Vector2i
 	if cands.is_empty():
-		if in_bounds(s.prev) and border[idx(s.prev.x, s.prev.y)] == 1 and s.prev != s.c:
+		if in_bounds(s.prev) and border[idx(s.prev.x, s.prev.y)] == 1 and OFFS8.has(s.prev - s.c):
 			pick = s.prev
 		else:
-			# stranded (the coast moved under it): hop to the nearest coast cell
-			for r in range(1, 6):
-				for o in OFFS8:
-					var n: Vector2i = s.c + o * r
-					if in_bounds(n) and border[idx(n.x, n.y)] == 1:
-						s.prev = s.c
-						s.c = n
-						return
+			# A cut-off rail is a trap; never hop across land to another coast.
 			return
 	else:
 		var cont: Vector2i = s.c + (s.c - s.prev)
@@ -1518,8 +1546,14 @@ func fmt(v: float) -> String:
 
 
 func draw() -> void:
+	if arcade_fill != null: arcade_fill.visible = state == State.ARCADE
 	if roguelite_fill != null:
 		roguelite_fill.visible = state == State.ROGUELITE
+	if state == State.ARCADE:
+		fill.visible = false
+		battle_fill.visible = false
+		arcade.draw()
+		return
 	if state == State.ROGUELITE:
 		fill.visible = false
 		battle_fill.visible = false
@@ -1666,11 +1700,11 @@ func draw_play() -> void:
 	# sparx
 	for s in sparxes:
 		var r := 11.0
-		var col := Palette.RED if (frame / 4) % 2 == 0 else Palette.ORANGE
+		var color := Palette.RED if (frame / 4) % 2 == 0 else Palette.ORANGE
 		for k in 2:
 			var a: float = s.spin + k * PI * 0.5
 			var d := Vector2(cos(a), sin(a)) * r
-			lines.seg(s.vis - d, s.vis + d, col, 2.5, 0.5, 1.3)
+			lines.seg(s.vis - d, s.vis + d, color, 2.0, 0.5, 1.3)
 		lines.circle(s.vis, 3.5, Palette.FULLBRIGHT, 6, 2.0, 0.5, 0.9)
 	# surveyor
 	if (state == State.PLAYING or state == State.LEVEL_CLEAR or state == State.REPORT or state == State.INTRO) and surv_scale > 0.0:
@@ -1706,12 +1740,23 @@ func draw_play() -> void:
 		draw_ability_ring()
 
 
+## Persistent enemies share the Anomaly spectrum and beam shimmer.
+func anomaly_color(offset := 0, age := 0) -> Color:
+	var color: Color = QIX_COLORS[(frame / 3 + offset + age + int(cur_gal().qix_shift)) % QIX_COLORS.size()]
+	color.a = 0.2 + 0.6 * (1.0 - float(age) / QIX_HIST)
+	return color
+
+func draw_anomaly_ring(pos: Vector2, radius: float, segments: int, offset := 0, thickness := 1.0) -> void:
+	for i in segments:
+		var a := pos + Vector2.RIGHT.rotated(TAU * i / segments) * radius
+		var b := pos + Vector2.RIGHT.rotated(TAU * (i + 1) / segments) * radius
+		lines.seg(a, b, anomaly_color(offset + i), 2.0, 0.5, thickness)
+
 func draw_qix(q: QixBody) -> void:
 	var n := q.hist.size()
 	for i in n:
 		var seg: PackedVector2Array = q.hist[i]
-		var col: Color = QIX_COLORS[(frame / 3 + i + q.col_off + int(cur_gal().qix_shift)) % 8]
-		col.a = 0.2 + 0.6 * (1.0 - float(i) / QIX_HIST)
+		var col := anomaly_color(q.col_off, i)
 		lines.seg(seg[0], seg[1], col, 2.0, 0.5, 1.2 if i == 0 else 1.0)
 
 
@@ -2583,7 +2628,7 @@ func draw_ability_ring() -> void:
 				var tgt := center(leap_target())
 				var gc := Palette.YELLOW
 				gc.a = 0.5
-				dashed(center(anchor), tgt, gc, 6.0, 6.0)
+				dashed(center(leap_origin), tgt, gc, 6.0, 6.0)
 				lines.circle(tgt, 4.0 + 1.5 * sin(time * 8.0), Palette.YELLOW, 8, 1.0, 0.4, 1.0)
 				lines.seg(tgt + Vector2(0, -3), tgt + Vector2(0, 3), Palette.FULLBRIGHT, 0.8, 0.4, 1.0)
 				var pd := Vector2(-leap_dir.y, leap_dir.x) * 5.0
@@ -2659,6 +2704,8 @@ func update_title(dt: float) -> void:
 					pane_t = 0.0
 				"ROGUELITE":
 					start_roguelite()
+				"ARCADE":
+					start_arcade()
 				"BATTLE ROYALE":
 					start_battle_royale()
 				"TUBE":
@@ -2838,23 +2885,28 @@ func finish_seal(s: Seal) -> void:
 	claim_cells(s.cells, s.cells[0])
 
 
-## Run the claim logic (flood from the Anomaly, node and hazard capture, awards) for a cell
-## list that isn't the live trail, then put the live trail back.
+## A draft can suspend play without ending the current crossing.
+func preserve_live_capture() -> bool:
+	return state == State.PLAYING
+
+## Claim a detached wall, then restore any live crossing if play will continue.
 func claim_cells(list: Array[Vector2i], anc: Vector2i) -> void:
 	var live_trail := trail.duplicate()
 	var live_drawing := drawing
 	var live_anchor := anchor
 	var live_h := harden_len
 	var live_armed := draw_armed
+	var live_fuse := fuse_on
 	trail = list
 	anchor = anc
 	complete_claim()
-	if state == State.PLAYING:
+	if preserve_live_capture():
 		trail = live_trail
 		drawing = live_drawing
 		anchor = live_anchor
 		harden_len = live_h
 		draw_armed = live_armed
+		fuse_on = live_fuse
 
 
 # ------------------------------------------------------------------ tide (islander upgrade)
@@ -3234,7 +3286,7 @@ func activate_result(index: int) -> void:
 
 func _input(event: InputEvent) -> void:
 	Controls.observe_input(event)
-	if state == State.ROGUELITE:
+	if state in [State.ROGUELITE, State.ARCADE]:
 		return
 	if state == State.TITLE and title_t >= 1.0 and title_exit < 0 and not show_log:
 		if event is InputEventMouseMotion or event is InputEventMouseButton:
@@ -3524,8 +3576,11 @@ func leap_start(dir: Vector2i) -> Vector2i:
 
 ## Start aiming: nothing is built yet, so nothing can be cut. Arrows turn the aim while held.
 ## Only from the coast, and from the cell the ship stands on: no leaping out of the interior.
+func can_start_leap() -> bool:
+	return border[idx(p.x, p.y)] != 0
+
 func start_leap() -> void:
-	if border[idx(p.x, p.y)] == 0:
+	if not can_start_leap():
 		set_msg("COAST ONLY", 0.5)
 		lines.spike(1.0, 0.2)
 		return
@@ -3540,29 +3595,30 @@ func start_leap() -> void:
 		set_msg("NO ROOM", 0.5)
 		lines.spike(1.0, 0.2)
 		return
-	anchor = p
+	if not drawing: anchor = p
+	leap_origin = p
 	leap_dir = dir
 	leap_len = 0.0
 	leap_building = true
-	sparks.ripple(center(anchor), 3.0, 160.0, 0.4, Palette.YELLOW)
+	sparks.ripple(center(leap_origin), 3.0, 160.0, 0.4, Palette.YELLOW)
 
 
 func leap_aim(dt: float, aim: Vector2i) -> void:
 	if aim != Vector2i.ZERO and aim != leap_dir and ray_len(p, aim) >= 1:
 		leap_dir = aim
 		last_dir = aim
-	leap_len = minf(leap_len + leap_rate() * dt, float(mini(leap_max(), ray_len(anchor, leap_dir))))
+	leap_len = minf(leap_len + leap_rate() * dt, float(mini(leap_max(), ray_len(leap_origin, leap_dir))))
 
 
 ## Held all the way: the aim has touched the far coast, so the ship leaps to the end of it.
 func leap_reached_coast() -> bool:
-	var reach := ray_len(anchor, leap_dir)
+	var reach := ray_len(leap_origin, leap_dir)
 	return reach >= 1 and reach <= leap_max() and leap_len >= float(reach)
 
 
 ## The landing cell for the current aim.
 func leap_target() -> Vector2i:
-	return anchor + leap_dir * maxi(1, int(floor(leap_len)))
+	return leap_origin + leap_dir * maxi(1, int(floor(leap_len)))
 
 
 ## The leap: the ship dashes to the tip of the aim and a wall splits from there along the leap
@@ -3585,7 +3641,7 @@ func finish_leap(_on_land: bool) -> void:
 	lines.spike(2.0, 0.3)
 	shake = maxf(shake, 0.25)
 	cells[idx(leap_tip.x, leap_tip.y)] = TRAIL
-	trail.clear()
+	if not drawing: trail.clear()
 	trail.append(leap_tip)
 	trail_slow = false
 	drawing = true
@@ -3635,7 +3691,7 @@ func wall_harden(s: int) -> void:
 	var n := 0
 	for c in wall_cells[s] + [leap_tip]:
 		var rc: Vector2i = c
-		if cells[idx(rc.x, rc.y)] == TRAIL:
+		if cells[idx(rc.x, rc.y)] in [TRAIL, HARD]:
 			cells[idx(rc.x, rc.y)] = CLAIMED
 			n += 1
 		trail.erase(rc)
@@ -3657,15 +3713,17 @@ func wall_hit(c: Vector2i) -> bool:
 			s = k
 	if s < 0 or not (wall_done[0] or wall_done[1]):
 		return true
-	for cc in wall_cells[s]:
+	# Also remove any unfinished approach trail carried into this leap.
+	for cc in trail:
 		var rc: Vector2i = cc
-		if cells[idx(rc.x, rc.y)] == TRAIL:
+		if cells[idx(rc.x, rc.y)] in [TRAIL, HARD]:
 			cells[idx(rc.x, rc.y)] = FREE
 	wall_cells = [[], []]
 	trail.clear()
 	wall_building = false
 	drawing = false
 	draw_armed = false
+	grid_changed()
 	sparks.burst(center(c), 30, 200.0, 1.5, 0.5, Palette.YELLOW)
 	lines.spike(2.0, 0.3)
 	set_msg("WALL CUT", 0.6)
@@ -4475,6 +4533,21 @@ func start_roguelite() -> void:
 
 func _leave_roguelite() -> void:
 	roguelite_fill.visible = false
+	go_title()
+
+func start_arcade() -> void:
+	if arcade == null:
+		arcade_fill = Sprite2D.new()
+		fill.get_parent().add_child(arcade_fill)
+		arcade = load("res://scripts/arcade_game.gd").new()
+		add_child(arcade)
+		arcade.setup(lines, sparks, arcade_fill)
+		arcade.connect("exited", _leave_arcade)
+	arcade.go_dock()
+	state = State.ARCADE
+
+func _leave_arcade() -> void:
+	arcade_fill.visible = false
 	go_title()
 
 func uses_leap_controls() -> bool:

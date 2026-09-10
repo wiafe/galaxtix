@@ -58,10 +58,10 @@ func _ready() -> void:
 	var middle := VBoxContainer.new()
 	middle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	body.add_child(middle)
-	var tools_row := HBoxContainer.new()
+	var tools_row := HFlowContainer.new()
 	middle.add_child(tools_row)
 	var group := ButtonGroup.new()
-	for entry in [["Select / move", "select"], ["Open space", "open"], ["Rock", "rock"], ["Player", "start"], ["Enemy", "enemy"]]:
+	for entry in [["Select / move", "select"], ["Open space", "open"], ["Rock", "rock"], ["Player", "start"], ["Enemy", "enemy"], ["Shield zone", "shield_zone"], ["Hazard zone", "hazard_zone"], ["Erase zone", "erase_zone"]]:
 		var b := Button.new()
 		b.text = entry[0]
 		b.toggle_mode = true
@@ -95,6 +95,8 @@ func _ready() -> void:
 	brush.value = 1
 	right.add_child(brush)
 	brush.value_changed.connect(func(value: float): canvas.brush_size = int(value))
+	var zone_help := add_label(right, "Green +: protects your ship.\nRed X: 3s safe, 1s warning, 2s live.\nZones persist after capture.")
+	zone_help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	add_label(right, "NEW ENEMY")
 	enemy_input = OptionButton.new()
 	for kind in MapCatalog.ENEMY_KINDS: enemy_input.add_item(kind.capitalize())
@@ -136,7 +138,7 @@ func _ready() -> void:
 	for kind in preload("res://scripts/roguelite_sectors.gd").KINDS: encounter_input.add_item(kind.capitalize())
 	right.add_child(encounter_input)
 	ship_input = OptionButton.new()
-	for ship in ["Surveyor", "Lancer", "Sapper"]: ship_input.add_item(ship)
+	for ship in ["Surveyor", "Lancer", "Bulwark"]: ship_input.add_item(ship)
 	right.add_child(ship_input)
 	add_label(right, "Playtests use a temporary profile.\nYour progress is preserved.")
 	status = Label.new()
@@ -182,7 +184,7 @@ func open_map(id: String) -> void:
 	refresh()
 
 func fingerprint(map: MapDefinition) -> int:
-	return hash([map.rock, map.override_terrain, map.player_start, map.override_start, map.override_enemies, map.enemies])
+	return hash([map.rock, map.override_terrain, map.player_start, map.override_start, map.override_enemies, map.enemies, map.field_zones])
 
 func begin_change() -> void:
 	if canvas.map != null: before = canvas.map.duplicate(true)

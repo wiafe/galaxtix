@@ -93,9 +93,12 @@ func check() -> void:
 	await check_placement()
 	check_beacon()
 	check_cargo()
+	check_cargo_reach()
 	check_breach()
 	await check_surge()
 	check_rival()
+	await check_rival_home()
+	await check_rival_timer()
 	await check_objective_guidance()
 	await check_sector_briefings()
 	await check_corruption_guidance()
@@ -107,32 +110,50 @@ func check() -> void:
 
 func check_table_and_routes() -> void:
 	assert(Sectors.alternate_kinds(2) == ["salvage", "repair", "beacon"])
-	assert(Sectors.alternate_kinds(3) == ["salvage", "repair", "beacon", "cargo", "rival"])
-	assert(Sectors.alternate_kinds(5) == ["salvage", "repair", "beacon", "cargo", "breach", "rival"])
+	assert(Sectors.alternate_kinds(3) == ["salvage", "repair", "beacon", "cargo", "rival", "race"])
+	assert(Sectors.alternate_kinds(5) == ["salvage", "repair", "beacon", "cargo", "breach", "rival", "race"])
 	assert(Sectors.turret_count("salvage", 2) == 2 and Sectors.turret_count("beacon", 2) == 1 and Sectors.turret_count("survey", 1) == 0)
 	assert(Sectors.objective_count("beacon", 3) == 2 and Sectors.objective_count("beacon", 5) == 3)
 	assert(Sectors.objective_count("cargo", 4) == 2 and Sectors.objective_count("cargo", 5) == 3 and Sectors.objective_count("breach", 7) == 1)
 	assert(Sectors.objective_count("survey", 5) == 0 and Sectors.reward_copy("survey") == "")
 	assert(not Sectors.territory_goal("beacon") and not Sectors.territory_goal("cargo") and Sectors.territory_goal("breach") and Sectors.territory_goal("repair"))
 	var seen := {}
+	var rival_positions := {}
 	for seed_value in 200:
 		var random := RandomNumberGenerator.new()
 		random.seed = seed_value
 		var route: Array = Sectors.make_route(random)
+		random.seed = seed_value
+		assert(route == Sectors.make_route(random), "A seed reproduces encounter kinds and positions")
 		var previous := ""
+		var contest_counts := {"race": 0, "rival": 0}
 		assert(route.size() == 8)
 		for depth in range(1, 9):
 			var row: Array = route[depth - 1]
 			assert(row.size() == (1 if depth in [1, 4, 8] else 2))
-			assert(row[0].kind == "survey" and row[0].stage == depth and row[0].depth == depth)
-			if row.size() == 2:
-				var kind: String = row[1].kind
-				assert(Sectors.KINDS.has(kind) and kind != "survey")
+			if depth in [1, 8]: assert(row[0].kind == "survey" and row[0].stage == depth)
+			var survey_count := 0
+			for branch in row.size():
+				var node: Dictionary = row[branch]
+				var kind: String = node.kind
+				if contest_counts.has(kind): contest_counts[kind] += 1
+				assert(node.depth == depth and Sectors.KINDS.has(kind))
 				assert(int(Sectors.KINDS[kind].min_depth) <= depth, "Kinds respect their depth gate")
-				assert(kind != previous, "Consecutive forks never repeat a kind")
-				assert(row[0].stage != row[1].stage)
+				if kind == "survey":
+					survey_count += 1
+					assert(node.stage == depth)
+					continue
+				assert(kind != previous, "Special encounters avoid consecutive repeats")
 				previous = kind
 				seen[kind] = true
+				if kind == "rival": rival_positions["middle" if row.size() == 1 else str(branch)] = true
+			if row.size() == 2:
+				assert(survey_count == 1 and row[0].stage != row[1].stage)
+			else:
+				assert(row[0].stage == depth)
+		assert(contest_counts.race == 1 and contest_counts.rival == 1, "Every full chart guarantees one Race and one Rival")
+	for position in ["0", "1", "middle"]:
+		assert(rival_positions.has(position), "Rival appears in every chart position: " + position)
 	for kind in ["salvage", "repair", "beacon", "cargo", "breach", "rival"]:
 		assert(seen.has(kind), "Every kind appears across seeds: " + kind)
 
@@ -181,12 +202,19 @@ func check_placement() -> void:
 					assert(rogue.rival != null and rogue.rival.alive and rogue.rival_land.size() == rogue.cells.size())
 					var seed_disc: PackedInt32Array = rogue.disc_cells(rogue.rival.pos, Sectors.RIVAL_RADIUS)
 					for i in seed_disc:
-						assert(rogue.cells[i] == Game.FREE and rogue.rival_land[i] == 1, "The rival's seed sits entirely in live void")
+						assert(rogue.cells[i] == Game.ROCK and rogue.rival_land[i] == 1 and rogue.rival_home[i] == 1, "The rival's starting disc is protected")
 					assert(rogue.rival_land.count(1) == seed_disc.size() and rogue.rival.owned.size() == seed_disc.size())
+					var seed_pixel: Color = rogue.fill_img.get_pixel(rogue.rival.pos.x, rogue.rival.pos.y)
+					assert(seed_pixel.a > 0.15 and seed_pixel.a < 0.17, "Rival seed is tinted before the first capture")
+					for i in rogue.cells.size():
+						if rogue.cells[i] == Game.CLAIMED:
+							var rail_pixel: Color = rogue.fill_img.get_pixel(i % rogue.grid_width, i / rogue.grid_width)
+							assert(rail_pixel.a > 0.15 and rail_pixel.a < 0.17, "Starting rails never render as opaque white")
+							break
 					for a in avoid:
 						assert(Vector2(rogue.rival.pos - (a as Vector2i)).length() >= Sectors.RIVAL_RADIUS + 4)
-					assert(is_equal_approx(rogue.capture_target(), Sectors.capture_goal(depth) / 100.0), "A rival sector keeps the territory goal")
-					assert(rogue.objective_label() == "CAPTURE %d%%" % Sectors.capture_goal(depth) and rogue.corruption_active == (depth >= Sectors.CORRUPTION_SECTOR))
+					assert(is_equal_approx(rogue.capture_target(), 2.0) and rogue.rival_remaining == 45.0, "Rival sectors end on the clock")
+					assert(rogue.objective_label() == "RIVAL  00:45" and rogue.corruption_active == (depth >= Sectors.CORRUPTION_SECTOR))
 			render_frame()
 			if stage == 3: await shot("objective-" + kind)
 	# Survey stays survey: the label, scale and goal are untouched.
@@ -275,7 +303,7 @@ func check_cargo() -> void:
 	rogue.draw_armed = true
 	for step in 10:
 		assert(rogue.try_step(Vector2i.DOWN, true, false))
-		assert(not rogue.cargo.carrying, "No pickup before the ship reaches the pod")
+		assert(rogue.cargo.carrying == (Vector2(rogue.p - c).length() <= Sectors.CARGO_PICKUP_RADIUS), "Pickup begins as the ship enters cargo reach")
 	assert(rogue.try_step(Vector2i.DOWN, true, false) and rogue.p == c and rogue.cargo.carrying, "The trail head picks the pod up")
 	assert(rogue.objective_instruction().contains("RETURN TO SAFE LAND") and rogue.objective_notice.begins_with("CARGO ABOARD"))
 	for step in hi.y - c.y + 1:
@@ -300,7 +328,7 @@ func check_cargo() -> void:
 	assert(rogue.cells[rogue.idx(c.x, c.y)] == Game.CLAIMED and rogue.cargo.cell != c and not rogue.cargo.carrying)
 	moved = rogue.cargo.cell
 	assert(rogue.cells[rogue.idx(moved.x, moved.y)] == Game.FREE and int(rogue.cargo.delivered) == 0)
-	assert(rogue.objective_notice.begins_with("POD RELOCATED") and rogue.objective_instruction().contains("ENCLOSING ALONE DOES NOT DELIVER"), "Enclosing without touching explains the missing delivery")
+	assert(rogue.objective_notice.begins_with("CARGO RELOCATED") and rogue.objective_instruction().contains("ENCLOSING ALONE DOES NOT DELIVER"), "Enclosing without touching explains the missing delivery")
 	var notice: String = rogue.objective_notice
 	var notice_time: float = rogue.objective_notice_time
 	rogue.begin_draft_reward()
@@ -365,7 +393,7 @@ func check_cargo() -> void:
 	for step in 200:
 		if rogue.cargo.carrying: break
 		rogue.update(0.016)
-		assert(rogue.cargo.carrying == (rogue.p == c), "Pickup happens exactly when the ride reaches the pod")
+		assert(rogue.cargo.carrying == (Vector2(rogue.p - c).length() <= Sectors.CARGO_PICKUP_RADIUS), "The rider picks up cargo within reach")
 	assert(rogue.cargo.carrying)
 	for step in 200:
 		if not rogue.tether_active: break
@@ -384,6 +412,27 @@ func check_cargo() -> void:
 	assert(not rogue.exposed() and rogue.cargo.carrying)
 	rogue.update(0.016)
 	assert(not rogue.cargo.carrying and int(rogue.cargo.delivered) == 1 and rogue.earned_salvage == salvage + 2, "Reaching land delivers without a claim")
+
+func check_cargo_reach() -> void:
+	for ship_id in ["surveyor", "lancer", "sapper"]:
+		var c := cargo_fixture(ship_id)
+		rogue.drawing = true
+		for offset in [Vector2i(3, 0), Vector2i(2, 1), Vector2i(2, 0), Vector2i(1, 1), Vector2i.ZERO]:
+			rogue.cargo.carrying = false
+			rogue.p = c + offset
+			rogue.check_cargo_contact()
+			assert(rogue.cargo.carrying == (Vector2(offset).length() <= 2.0), "Cargo has the same generous radius for every ship")
+		rogue.cargo.carrying = false
+		rogue.p = c + Vector2i(2, 0)
+		var middle: int = rogue.idx(c.x + 1, c.y)
+		rogue.cells[middle] = Game.CLAIMED
+		rogue.check_cargo_contact()
+		assert(not rogue.cargo.carrying, "The pickup radius does not reach through safe land")
+		rogue.cells[middle] = Game.FREE
+		rogue.drawing = false
+		rogue.cells[rogue.idx(rogue.p.x, rogue.p.y)] = Game.CLAIMED
+		rogue.check_cargo_contact()
+		assert(not rogue.cargo.carrying, "Safe land alone does not collect nearby cargo")
 
 ## Cut straight down from the top rail onto the pod and stop there, still exposed.
 func cut_line_to(c: Vector2i) -> void:
@@ -579,12 +628,12 @@ func check_rival() -> void:
 	assert(grew and not rogue.rival.exposed, "The rival plans and completes a claim on its own")
 	assert(rogue.free_count == free_before and rogue.capture_percent == 0.0, "Rival land is still void to the player")
 	for i in rogue.cells.size():
-		if rogue.rival_land[i] == 1: assert(rogue.cells[i] == Game.FREE)
+		if rogue.rival_land[i] == 1: assert(rogue.cells[i] == (Game.ROCK if rogue.rival_home[i] == 1 else Game.FREE))
 	assert(rogue.rival_land.count(1) == rogue.rival.owned.size())
 	render_frame()
 	# Anomalies floating over rival land still seed the flood from open void beside them.
 	seed_cell = rival_fixture("surveyor")
-	park_anomalies(seed_cell)
+	for q in rogue.qixes: q.c = rogue.center(seed_cell) # Even a stale enemy over the home cannot seed an invalid flood.
 	owned_before = rogue.rival.owned.size()
 	rogue.rival_capture([])
 	assert(rogue.rival.owned.size() == owned_before, "A seedless loop cannot swallow the arena")
@@ -654,7 +703,7 @@ func check_rival() -> void:
 	rogue.sap_charge = 4.0
 	rogue.detonate(4)
 	assert(rogue.rival.trail.is_empty() and not rogue.rival.exposed, "Land over the rival's line cuts it")
-	assert(rogue.rival.alive and rogue.rival.owned.size() < owned_before and rogue.rival.owned.size() > 0, "A blast takes rival land")
+	assert(rogue.rival.alive and rogue.rival.owned.size() == rogue.rival_home.count(1), "A blast cannot take the rival's home")
 	assert(rogue.rival_land[rogue.idx(rogue.rival.pos.x, rogue.rival.pos.y)] == 1 and rogue.capture_percent > 0.0, "The rival stands on what it has left and the steal counts")
 	# Stasis holds the rival; release lets it move through the real update path.
 	seed_cell = rival_fixture("surveyor")
@@ -672,17 +721,173 @@ func check_rival() -> void:
 			break
 	assert(moved, "The rival runs through the play loop")
 	rogue.freeze_time = 1000
-	# Enclosing the last of its land drives it off and pays; the depth goal still clears.
+	# Enclosing the rival leaves its permanent home; only the timer ends the contest.
 	seed_cell = rival_fixture("surveyor")
 	var salvage: int = rogue.earned_salvage
 	cut_column(lo.x + 18)
-	assert(not rogue.rival.alive and rogue.rival_land.count(1) == 0 and rogue.earned_salvage == salvage + 3, "Taking every rival cell drives it off")
-	assert(rogue.objective_notice.begins_with("RIVAL DRIVEN OFF") and rogue.capture_percent > 0.0)
+	assert(rogue.rival.alive and rogue.rival_land.count(1) == rogue.rival_home.count(1) and rogue.earned_salvage == salvage, "Enclosure leaves the rival a safe home")
+	assert(rogue.capture_percent > 0.0)
 	render_frame()
 	cut_column(hi.x - 14)
-	assert(rogue.capture_percent >= Sectors.capture_goal(3) and rogue.pending_clear and rogue.phase == "reward", "A rival sector clears on the depth goal")
+	assert(rogue.capture_percent >= Sectors.capture_goal(3) and not rogue.pending_clear, "A rival sector cannot clear on territory alone")
 	resolve_to_clear()
-	assert(rogue.phase == "sector_clear")
+	assert(rogue.phase == "run")
+	rogue.rival_remaining = 0.01
+	rogue.update(0.1)
+	assert(rogue.phase == "rival_tally" and rogue.rival_tally.outcome == "win")
+	assert(rogue.earned_salvage == salvage + 3)
+	rogue.finish_rival_contest()
+	assert(rogue.earned_salvage == salvage + 3, "The win bonus pays once")
+	rogue.route_path.assign([0, 0, 0]) # Fixture jumped directly to depth 3.
+	rogue.ui_time = 2.0
+	rogue.activate_choice(0)
+	assert(rogue.phase == "chart" and rogue.chart_depth == 4)
+
+func give_rival_scoring_cell(seed_cell: Vector2i) -> int:
+	var cell := seed_cell + Vector2i(Sectors.RIVAL_RADIUS + 1, 0)
+	var i: int = rogue.idx(cell.x, cell.y)
+	assert(rogue.cells[i] == Game.FREE and rogue.rival_home[i] == 0)
+	rogue.rival_land[i] = 1
+	rogue.refresh_rival_owned()
+	rogue.update_fill()
+	return i
+
+func check_rival_home() -> void:
+	for ship_id in ["surveyor", "lancer", "bulwark", "sapper"]:
+		var seed_cell := rival_fixture(ship_id)
+		var home_count: int = rogue.rival_home.count(1)
+		assert(home_count == 29 and rogue.rival_scores() == Vector2i.ZERO)
+		assert(rogue.base_free == rogue.field_arena.free_cells.size() - home_count)
+		assert(rogue.free_count == rogue.base_free, "Safe zones never count as capturable territory")
+		# Direct contact, a lance into the disc, and a blast across it all respect the home.
+		rogue.p = seed_cell + Vector2i(0, -Sectors.RIVAL_RADIUS - 1)
+		rogue.draw_armed = true
+		rogue.drawing = true
+		assert(not rogue.try_step(Vector2i.DOWN, true, false))
+		rogue.drawing = false
+		rogue.p = Vector2i(seed_cell.x, lo.y - 1)
+		rogue.last_dir = Vector2i.DOWN
+		rogue.fire_lance()
+		assert(not rogue.tether_active, "A lance cannot land on the rival's home")
+		rogue.p = seed_cell + Vector2i(0, -Sectors.RIVAL_RADIUS - 1)
+		rogue.sap_cell = rogue.p
+		rogue.detonate(6)
+		for i in rogue.rival_home.size():
+			if rogue.rival_home[i] == 1: assert(rogue.cells[i] == Game.ROCK and rogue.rival_land[i] == 1)
+		assert(rogue.rival.alive)
+		# The cutter can still walk its own protected cells and return after a cut.
+		rogue.rival.pos = seed_cell
+		assert(rogue.rival.step(Vector2i.RIGHT))
+		rogue.rival.fail()
+		assert(rogue.rival_home[rogue.idx(rogue.rival.pos.x, rogue.rival.pos.y)] == 1)
+		rogue.grid_changed()
+		assert(rogue.rival_home.count(1) == home_count and rogue.rival.alive)
+	# A fresh sector discards the old protected zone and restores ordinary geometry.
+	force_kind("surveyor", "rival", 3, 2)
+	await shot("rival-safe-home")
+	force_kind("surveyor", "survey", 3, 2)
+	assert(rogue.rival_home.is_empty() and rogue.base_free == rogue.field_arena.free_cells.size())
+	print("RIVAL HOME OK: movement/lance/blast protection, safe return, score exclusion, enclosure, next-sector reset")
+
+func check_rival_timer() -> void:
+	var seed_cell := rival_fixture("surveyor")
+	var scoring_index := give_rival_scoring_cell(seed_cell)
+	assert(rogue.objective_label() == "RIVAL  00:45")
+	var remaining: float = rogue.rival_remaining
+	for paused_phase in ["briefing", "paused", "draft", "replace", "reward"]:
+		rogue.phase = paused_phase
+		rogue.update(0.1)
+		assert(rogue.rival_remaining == remaining, "Interruptions pause the rival clock")
+	rogue.phase = "run"
+	rogue.state = Game.State.DYING
+	rogue.update(0.1)
+	assert(rogue.rival_remaining == remaining)
+	rogue.state = Game.State.PLAYING
+	rogue.freeze_time = 100.0
+	rogue.update(0.25)
+	assert(is_equal_approx(rogue.rival_remaining, remaining - 0.25), "Stasis stops the rival, not the clock")
+	assert(rogue.rival.pos == seed_cell)
+	# Starting rails and unfinished lines never enter the tally.
+	var scores: Vector2i = rogue.rival_scores()
+	assert(scores == Vector2i(0, 1))
+	rogue.cells[scoring_index] = Game.CLAIMED
+	assert(rogue.rival_scores() == Vector2i(1, scores.y - 1), "Stolen territory changes both scores")
+	rogue.cells[scoring_index] = Game.FREE
+	var free_cell: Vector2i = rogue.field_arena.free_cells[0]
+	var free_index: int = rogue.idx(free_cell.x, free_cell.y)
+	rogue.cells[free_index] = Game.CLAIMED
+	assert(rogue.rival_scores().x == 1)
+	rogue.cells[free_index] = Game.FREE
+	assert(rogue.rival_scores().x == 0, "Eroded territory no longer scores")
+	rival_line_out(seed_cell, 4)
+	assert(rogue.rival_scores() == scores)
+	await shot("rival-timer")
+	var destination: Dictionary = rogue.active_destination.duplicate(true)
+	var route_before: Array = rogue.route_path.duplicate()
+	var hull: int = rogue.lives
+	var salvage: int = rogue.earned_salvage
+	var cards: Array = rogue.owned_cards.duplicate()
+	# Loot and build changes from a failed attempt must not stack across retries.
+	rogue.earned_salvage += 7
+	rogue.draft_speed_stacks += 1
+	rogue.card_ranks["charge"] = 3
+	rogue.rival_remaining = 0.01
+	rogue.update(0.1)
+	assert(rogue.phase == "rival_tally" and rogue.rival_tally.outcome == "loss")
+	assert(rogue.rival_remaining == 0.0 and rogue.rival_tally.player == 0)
+	var final_pos: Vector2i = rogue.rival.pos
+	var board: PackedByteArray = rogue.cells.duplicate()
+	rogue.activate_choice(0)
+	assert(rogue.phase == "rival_tally" and rogue.lives == hull, "Confirmation waits for the reveal")
+	rogue.update(2.0)
+	assert(rogue.cells == board and rogue.rival.pos == final_pos, "The board freezes at the buzzer")
+	await shot("rival-loss")
+	rogue.activate_choice(0)
+	assert(rogue.lives == hull - 1 and rogue.phase == "briefing" and rogue.rival_remaining == 45.0)
+	assert(rogue.active_destination == destination and rogue.route_path == route_before)
+	assert(rogue.earned_salvage == salvage and rogue.owned_cards == cards and rogue.draft_speed_stacks == 0)
+	assert(rogue.card_rank("charge") < 3 and rogue.capture_percent == 0.0 and rogue.rival.alive)
+	assert(not rogue.briefing_ready and rogue.freeze_time == 0.0 and rogue.containment_time == 0.0)
+	# Ties retry without a penalty, and the last hull loss ends the run once.
+	rival_fixture("surveyor")
+	rogue.rival_remaining = 0.0
+	hull = rogue.lives
+	rogue.update(0.1)
+	assert(rogue.rival_tally.outcome == "tie")
+	rogue.ui_time = 2.0
+	await shot("rival-tie")
+	rogue.activate_choice(0)
+	assert(rogue.lives == hull and rogue.phase == "briefing")
+	seed_cell = rival_fixture("surveyor")
+	give_rival_scoring_cell(seed_cell)
+	rogue.lives = 0
+	rogue.rival_remaining = 0.0
+	rogue.update(0.1)
+	rogue.ui_time = 2.0
+	rogue.activate_choice(0)
+	assert(rogue.lives == -1 and rogue.phase == "result" and rogue.settled)
+	var runs: int = rogue.progress.runs
+	rogue.activate_choice(0)
+	assert(rogue.progress.runs == runs, "Last-hull settlement is paid once")
+	var previous_speed := 0.0
+	var previous_aggression := -1.0
+	for depth in [3, 5, 7]:
+		force_kind("surveyor", "rival", depth, 1)
+		assert(rogue.rival.speed_scale > previous_speed and rogue.rival.aggression > previous_aggression)
+		previous_speed = rogue.rival.speed_scale
+		previous_aggression = rogue.rival.aggression
+		bare_field()
+		park_anomalies(Vector2i(hi.x - 3, lo.y + 25))
+		rogue.setup_rival(lo + Vector2i(12, 12), Sectors.RIVAL_RADIUS)
+		rogue.rng.seed = 9
+		rogue.freeze_time = 0.0
+		rogue.invuln = 100.0
+		var initial_land: int = rogue.rival.owned.size()
+		for frame in 460:
+			rogue.update(0.1)
+			if rogue.phase == "rival_tally": break
+		assert(rogue.phase == "rival_tally" and rogue.rival_tally.rival > initial_land, "Every difficulty can finish claims within the real timer")
+	print("RIVAL TIMER OK: live clock, pauses, score, win bonus, frozen tally, retry rollback, ties, last hull, depth scaling")
 
 ## Cut straight down from the top rail to a row and stop there, still exposed.
 func cut_line_to_row(x: int, y: int) -> void:

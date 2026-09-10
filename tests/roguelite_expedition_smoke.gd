@@ -83,6 +83,8 @@ func check() -> void:
 	# The expedition walks the built-in arenas; player-edited maps must not change its counts.
 	for stage in range(1, 9): MapCatalog.testing["roguelite_%02d" % stage] = null
 	Save.set_process(false)
+	# Geometry assertions exercise the original arenas, independently of editor changes.
+	for stage in range(1, 9): MapCatalog.testing["roguelite_%02d" % stage] = null
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--rogue-shots="):
 			shot_dir = arg.substr(14)
@@ -111,7 +113,7 @@ func check() -> void:
 	await shot("expedition-upgrades")
 	rogue.focus_track(5)
 	await shot("containment-locked")
-	for id in ["surveyor", "lancer", "sapper"]:
+	for id in Progress.SHIPS:
 		profile.selected_ship = id
 		for i in 6:
 			for rank in range(1, 11):
@@ -123,6 +125,10 @@ func check() -> void:
 	rogue.transit_skip = true
 	rogue.start_run()
 	assert(rogue.phase == "chart" and rogue.route_path.is_empty())
+	# This capture-only fixture follows the original arenas; randomized kinds are tested below.
+	for row in rogue.route:
+		if row.size() == 2 and row[0].kind != "survey": row.reverse()
+		row[0].kind = "survey"
 	await shot("star-chart-opening")
 	rogue.launch_destination(0)
 	play_until_ready()
@@ -185,6 +191,7 @@ func check() -> void:
 	await check_draft_choices()
 	assert(Save.data == campaign, "The expedition never writes Jump's campaign")
 	print("ROGUELITE EXPEDITION OK: eight angular arenas, inner rails, scaled Anomalies, defended middle cuts, routes, transit, persistent builds, drafts and settlement")
+	MapCatalog.testing.clear()
 	get_tree().quit()
 
 func coast_reachable() -> Dictionary:
@@ -431,7 +438,7 @@ func check_routes() -> void:
 			assert(route[depth - 1].size() == (1 if depth in [1, 4, 8] else 2))
 			if route[depth - 1].size() == 2:
 				assert(route[depth - 1][0].stage != route[depth - 1][1].stage)
-	for kind in ["salvage", "repair", "beacon", "cargo", "breach", "rival"]:
+	for kind in ["salvage", "repair", "beacon", "cargo", "breach", "rival", "race"]:
 		rogue.start_run()
 		rogue.launch_destination(0)
 		play_until_ready()
@@ -470,12 +477,12 @@ func check_routes() -> void:
 		assert(rogue.phase == "run" and rogue.route_path == [0, 1])
 		play_until_ready()
 		assert(rogue.level == 2 and rogue.arena_stage(2) == 7)
-		assert(rogue.base_free == SectorArena.build(7, 0, "roguelite", rogue.Sectors.holes(7, Vector2i(160, 104)), Vector2i(160, 104)).base_free)
+		assert(rogue.base_free + rogue.rival_home.count(1) == SectorArena.build(7, 0, "roguelite", rogue.Sectors.holes(7, Vector2i(160, 104)), Vector2i(160, 104)).base_free, "Protected Rival home is excluded from capturable area")
 		assert(rogue.turrets.size() == rogue.Sectors.turret_count(kind, 2) and rogue.turrets.size() == (2 if kind == "salvage" else 1))
 		assert(rogue.nodes.size() == 3 + rogue.progress.rank_of("extractor") / 5 + (2 if kind == "salvage" else 0))
 		assert(rogue.corruption_active == (kind == "breach"), "Only a breach brings corruption forward")
 		assert(rogue.zones.size() == (2 if kind == "beacon" else 0) and rogue.cargo.is_empty() != (kind == "cargo") and rogue.breach.is_empty() != (kind == "breach"))
-		assert(is_equal_approx(rogue.capture_target(), 0.65) == (kind in ["salvage", "repair", "rival"]), "Objective kinds hold the territory clear back")
+		assert(is_equal_approx(rogue.capture_target(), 0.65) == (kind in ["salvage", "repair"]), "Objective kinds hold the territory clear back")
 		assert((rogue.rival != null and rogue.rival.alive) == (kind == "rival"))
 		rogue.level_clear()
 		assert(rogue.lives == (1 if kind == "repair" else 0))

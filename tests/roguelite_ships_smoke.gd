@@ -42,10 +42,12 @@ func shot(name: String) -> void:
 	get_viewport().get_texture().get_image().save_png(shot_dir.path_join(name + ".png"))
 
 func fresh_ship(id: String) -> void:
-	assert(rogue.progress.select_ship(id))
+	# Legacy Sapper mechanics still exercise the shared disc engine used by Charge and Jump.
+	assert(rogue.progress.select_ship("surveyor" if id == "sapper" else id))
 	rogue.transit_skip = true
 	rogue.start_run()
 	rogue.launch_destination(0)
+	if id == "sapper": rogue.ship = Ships.get_ship(id)
 	rogue.state = Game.State.PLAYING
 	rogue.surv_scale = 1.0
 	rogue.invuln = 0
@@ -74,14 +76,14 @@ func check() -> void:
 	assert(profile.salvage == 16 and is_equal_approx(profile.salvage_fraction, 0.25) and profile.rank_of("hull") == 3)
 	assert(not profile.select_ship("lancer") and not profile.buy_ship("unknown"))
 	assert(profile.buy_ship("lancer") and profile.salvage == 6)
-	assert(not profile.buy_ship("lancer") and not profile.buy_ship("sapper"))
+	assert(not profile.buy_ship("lancer") and not profile.buy_ship("bulwark"))
 	assert(profile.select_ship("surveyor") and profile.salvage == 6)
-	profile.apply_profile({"ships": {"bulwark": true}, "selected_ship": "bulwark"})
-	assert(profile.selected_ship == "surveyor" and not profile.owns_ship("bulwark"))
+	profile.apply_profile({"ships": {"leaper": true}, "selected_ship": "leaper"})
+	assert(profile.selected_ship == "surveyor" and not profile.owns_ship("leaper"))
 	var failed := FailedProfile.new()
 	failed.salvage = 80
-	assert(not failed.buy_ship("sapper"))
-	assert(failed.salvage == 80 and not failed.owns_ship("sapper") and failed.selected_ship == "surveyor")
+	assert(not failed.buy_ship("bulwark"))
+	assert(failed.salvage == 80 and not failed.owns_ship("bulwark") and failed.selected_ship == "surveyor")
 	failed.ships.lancer = true
 	assert(not failed.select_ship("lancer") and failed.selected_ship == "surveyor")
 
@@ -107,24 +109,24 @@ func check() -> void:
 	click(rogue.ship_action_rect(1).get_center())
 	assert(rogue.progress.selected_ship == "lancer" and rogue.progress.salvage == 6)
 	click(rogue.ship_action_rect(2).get_center())
-	assert(not rogue.progress.owns_ship("sapper") and rogue.progress.salvage == 6)
+	assert(not rogue.progress.owns_ship("bulwark") and rogue.progress.salvage == 6)
 	assert(rogue.msg_currency == 0 and rogue.msg_amount == "4")
 	await shot("ships-need-salvage")
 	rogue.progress.salvage += 4
 	click(rogue.ship_action_rect(2).get_center())
-	assert(rogue.progress.selected_ship == "sapper" and rogue.progress.salvage == 0)
+	assert(rogue.progress.selected_ship == "bulwark" and rogue.progress.salvage == 0)
 	await shot("ships-owned")
 	await tap("move_left")
 	await tap("confirm")
 	assert(rogue.progress.selected_ship == "lancer" and rogue.progress.salvage == 0, "Owned ships switch freely with the keyboard")
 	await tap("move_right")
 	await tap("confirm")
-	assert(rogue.progress.selected_ship == "sapper")
+	assert(rogue.progress.selected_ship == "bulwark")
 	rogue.progress.ranks = {"engines": 5, "hull": 5, "reactor": 5}
 	click(rogue.choice_rect(6).get_center())
 	assert(rogue.hangar_page == "upgrades")
 	click(rogue.choice_rect(0).get_center())
-	assert(rogue.ship.id == "sapper" and rogue.lives == 3)
+	assert(rogue.ship.id == "bulwark" and rogue.lives == 3)
 	assert(is_equal_approx(rogue.respawn_shield_duration(), 5.0))
 
 	fresh_ship("lancer")

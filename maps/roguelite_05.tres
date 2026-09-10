@@ -13,18 +13,6 @@ player_start = Vector2i(80, 18)
 override_enemies = true
 enemies = Array[Dictionary]([{
 "axis": Vector2i(0, 1),
-"cell": Vector2i(55, 50),
-"kind": "anomaly"
-}, {
-"axis": Vector2i(0, 1),
-"cell": Vector2i(104, 51),
-"kind": "anomaly"
-}, {
-"axis": Vector2i(0, 1),
-"cell": Vector2i(55, 39),
-"kind": "turret"
-}, {
-"axis": Vector2i(0, 1),
 "cell": Vector2i(46, 21),
 "kind": "sparx"
 }, {
@@ -32,15 +20,20 @@ enemies = Array[Dictionary]([{
 "cell": Vector2i(113, 81),
 "kind": "sparx"
 }, {
-"axis": Vector2i(0, 1),
-"cell": Vector2i(80, 77),
-"kind": "turret"
-}, {
-"axis": Vector2i(0, 1),
-"cell": Vector2i(104, 39),
-"kind": "turret"
+"axis": Vector2i(1, 0),
+"cell": Vector2i(80, 76),
+"kind": "sniper"
 }, {
 "axis": Vector2i(1, 0),
-"cell": Vector2i(80, 73),
-"kind": "turret"
+"cell": Vector2i(104, 39),
+"kind": "gunner_orb"
+}, {
+"axis": Vector2i(1, 0),
+"cell": Vector2i(54, 39),
+"kind": "gunner_orb"
+}, {
+"axis": Vector2i(1, 0),
+"cell": Vector2i(80, 51),
+"kind": "chain_worm"
 }])
+field_zones = PackedByteArray()

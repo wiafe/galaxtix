@@ -31,4 +31,13 @@ enemies = Array[Dictionary]([{
 "axis": Vector2i(1, 0),
 "cell": Vector2i(80, 53),
 "kind": "gunner_orb"
+}, {
+"axis": Vector2i(1, 0),
+"cell": Vector2i(53, 53),
+"kind": "siege"
+}, {
+"axis": Vector2i(1, 0),
+"cell": Vector2i(107, 54),
+"kind": "siege"
 }])
+field_zones = PackedByteArray()

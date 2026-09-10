@@ -2,16 +2,20 @@
 class_name MapCatalog
 extends RefCounted
 const ROOT := "res://maps/"
-const ENEMY_KINDS := ["anomaly", "sparx", "turret", "spawner", "gunner_orb", "ray_orb", "rotor"]
-const VOID_ENEMIES := ["anomaly", "gunner_orb", "ray_orb", "rotor"]
+const ENEMY_KINDS := ["anomaly", "sparx", "turret", "spawner", "gunner_orb", "ray_orb", "rotor", "chain_worm", "brood_carrier", "sniper", "siege"]
+const VOID_ENEMIES := ["anomaly", "gunner_orb", "ray_orb", "rotor", "chain_worm", "brood_carrier", "siege"]
 const ENEMY_HELP := {
+	"sniper": "Fixed turret. Locks a yellow aim line, then fires a red beam across land. Rock blocks it; enclose the turret to disable it.",
+	"siege": "Slow void enemy. Marks a coastal patch before breaking captured land. Original rails and hardened walls resist it.",
 	"anomaly": "Roaming beam. Keeps its region unclaimed and threatens trails.",
-	"sparx": "Patrols safe rails. Place on cyan cells; authored Sparx start immediately.",
+	"sparx": "Patrols safe rails. Capture the void beside its rail to cut it off and destroy it. Place on cyan cells; starts immediately.",
 	"turret": "Fixed gun. Fires along the selected axis; enclose it to disable it.",
 	"spawner": "Fixed nest. Breeds chasing mites; enclose it to disable it.",
 	"gunner_orb": "Roams, flashes orange, then stops to fire a five-shot fan. Safe land blocks its shots.",
 	"ray_orb": "Roams, locks its aim with a dashed warning, then extends a beam in both directions. Land blocks the beam.",
-	"rotor": "A rotating bar with a fixed centre. Reverses when it meets land or rock. Leave room for its sweep.",
+	"rotor": "A rotating bar with a fixed centre. Reverses at land or rock. Enclose its centre to destroy it.",
+	"chain_worm": "A roaming head with six trailing links. The whole body cuts trails; wait for its tail to pass.",
+	"brood_carrier": "Drops eggs that hatch into chasing mites after 6 seconds. Capture eggs first for salvage. Up to four eggs or mites per carrier.",
 }
 static var testing := {} # Isolated resource overrides for smoke tests; never serialized.
 

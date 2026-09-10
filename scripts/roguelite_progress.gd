@@ -3,7 +3,7 @@ extends RefCounted
 const PATH := "user://galaxtix_roguelite.json"
 const TRACKS := ["engines", "hull", "reactor", "scanner", "extractor", "containment"]
 const MAX_RANK := 10
-const SHIPS := ["surveyor", "lancer", "sapper"]
+const SHIPS := ["surveyor", "lancer", "bulwark"]
 const SHIP_PRICE := 10
 const Sectors = preload("res://scripts/roguelite_sectors.gd")
 var salvage := 0
@@ -41,6 +41,10 @@ func apply_profile(data: Dictionary) -> void:
 			if saved_ships.get(id, false) is bool and saved_ships.get(id, false):
 				ships[id] = true
 	var saved_ship = data.get("selected_ship", "surveyor")
+	# The third slot changed ships; keep the player's purchase and selection.
+	if saved_ships is Dictionary and saved_ships.get("sapper", false) == true:
+		ships.bulwark = true
+	if saved_ship == "sapper": saved_ship = "bulwark"
 	selected_ship = saved_ship if saved_ship is String and owns_ship(saved_ship) else "surveyor"
 	for key in ["salvage", "runs", "wins"]:
 		var value = data.get(key, 0)

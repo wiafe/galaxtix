@@ -12,14 +12,15 @@ var selected := -1 # -2 is the player.
 var zoom := 1.0
 var pan := Vector2.ZERO
 var terrain: ImageTexture
+var zone_texture: ImageTexture
 var hover := Vector2i(-1, -1)
 var dragging := false
 var panning := false
 var last_cell := Vector2i(-1, -1)
 var erasing := false
 var painted := {}
-const COLORS := {"anomaly": Color("e987ec"), "sparx": Color("ff6677"), "turret": Color("ffc56b"), "spawner": Color("a594ff"), "gunner_orb": Color("ff9944"), "ray_orb": Color("6bf1db"), "rotor": Color("fff08a")}
-const GLYPHS := {"anomaly": "A", "sparx": "S", "turret": "T", "spawner": "M", "gunner_orb": "G", "ray_orb": "R", "rotor": "O"}
+const COLORS := {"anomaly": Color("e987ec"), "sparx": Color("ff6677"), "turret": Color("ffc56b"), "spawner": Color("a594ff"), "gunner_orb": Color("ff9944"), "ray_orb": Color("6bf1db"), "rotor": Color("fff08a"), "chain_worm": Color("75e7aa"), "brood_carrier": Color("cb8cff"), "sniper": Color("ff7766"), "siege": Color("ffbb55")}
+const GLYPHS := {"anomaly": "A", "sparx": "S", "turret": "T", "spawner": "M", "gunner_orb": "G", "ray_orb": "R", "rotor": "O", "chain_worm": "W", "brood_carrier": "B", "sniper": "N", "siege": "D"}
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
@@ -44,7 +45,20 @@ func rebuild() -> void:
 	var colors := [Color("28313c"), Color("4bb8cd"), Color("101924")]
 	for i in mask.size(): pixels.encode_u32(i * 4, colors[mask[i]].to_abgr32())
 	terrain = ImageTexture.create_from_image(Image.create_from_data(map.grid_size.x, map.grid_size.y, false, Image.FORMAT_RGBA8, pixels))
+	rebuild_zones()
 	painted.clear()
+	queue_redraw()
+
+func rebuild_zones() -> void:
+	zone_texture = null
+	if map.field_zones.size() != map.grid_size.x * map.grid_size.y: return
+	var pixels := PackedByteArray()
+	pixels.resize(map.field_zones.size() * 4)
+	for i in map.field_zones.size():
+		if map.field_zones[i] == 0: continue
+		var color := Color(0.25, 1.0, 0.65, 0.55) if map.field_zones[i] == 1 else Color(1.0, 0.2, 0.3, 0.55)
+		pixels.encode_u32(i * 4, color.to_abgr32())
+	zone_texture = ImageTexture.create_from_image(Image.create_from_data(map.grid_size.x, map.grid_size.y, false, Image.FORMAT_RGBA8, pixels))
 	queue_redraw()
 
 func scale_at() -> float:
@@ -70,6 +84,7 @@ func _draw() -> void:
 	var step := scale_at()
 	var origin := origin_at()
 	draw_texture_rect(terrain, Rect2(origin, Vector2(map.grid_size) * step), false)
+	if zone_texture != null: draw_texture_rect(zone_texture, Rect2(origin, Vector2(map.grid_size) * step), false)
 	for band in [Rect2(0, 0, 160, 18), Rect2(0, 86, 160, 18)]:
 		draw_rect(Rect2(origin + band.position * step, band.size * step), Color("171d26"))
 	draw_rect(Rect2(origin + Vector2(MapDefinition.EDITABLE.position) * step, Vector2(MapDefinition.EDITABLE.size) * step), Color("65758a"), false, 1)
@@ -96,7 +111,7 @@ func _draw() -> void:
 	draw_string(font, player + Vector2(-4, 4), "P", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("72f2af"))
 	if selected == -2: draw_circle(player, 11, Color.WHITE, false, 2)
 	if map.contains(hover):
-		var radius := brush_size / 2 if tool in ["rock", "open"] else 0
+		var radius := brush_size / 2 if tool in ["rock", "open", "shield_zone", "hazard_zone", "erase_zone"] else 0
 		draw_rect(Rect2(origin + Vector2(hover - Vector2i.ONE * radius) * step, Vector2.ONE * step * (radius * 2 + 1)), Color(1, 1, 1, 0.7), false, 1)
 
 func hit(pos: Vector2) -> int:
@@ -129,7 +144,7 @@ func _gui_input(event: InputEvent) -> void:
 		dragging = true
 		erasing = event.button_index == MOUSE_BUTTON_RIGHT
 		last_cell = cell
-		if erasing and tool not in ["open", "rock"]:
+		if erasing and tool not in ["open", "rock", "shield_zone", "hazard_zone", "erase_zone"]:
 			selected = hit(event.position)
 			if selected >= 0:
 				map.enemies.remove_at(selected)
@@ -158,7 +173,19 @@ func _gui_input(event: InputEvent) -> void:
 
 func apply_at(cell: Vector2i) -> void:
 	if not map.contains(cell): return
-	if tool in ["rock", "open"]:
+	if tool in ["shield_zone", "hazard_zone", "erase_zone"]:
+		if map.field_zones.is_empty(): map.field_zones.resize(map.grid_size.x * map.grid_size.y)
+		var mask: PackedByteArray = map.arena().mask
+		var radius := brush_size / 2
+		for y in range(cell.y - radius, cell.y + radius + 1):
+			for x in range(cell.x - radius, cell.x + radius + 1):
+				var c := Vector2i(x, y)
+				if not MapDefinition.EDITABLE.has_point(c): continue
+				var i := y * map.grid_size.x + x
+				if erasing or tool == "erase_zone": map.field_zones[i] = 0
+				elif mask[i] != 0: map.field_zones[i] = 1 if tool == "shield_zone" else 2
+		rebuild_zones()
+	elif tool in ["rock", "open"]:
 		var radius := brush_size / 2
 		var solid := (tool == "rock") != erasing
 		for y in range(cell.y - radius, cell.y + radius + 1):
@@ -166,6 +193,7 @@ func apply_at(cell: Vector2i) -> void:
 				var c := Vector2i(x, y)
 				if not MapDefinition.EDITABLE.has_point(c): continue
 				map.rock[y * map.grid_size.x + x] = 1 if solid else 0
+				if solid and not map.field_zones.is_empty(): map.field_zones[y * map.grid_size.x + x] = 0
 				painted[c] = solid
 		map.override_terrain = true
 	elif not erasing:
