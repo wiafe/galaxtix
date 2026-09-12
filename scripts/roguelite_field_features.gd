@@ -90,7 +90,7 @@ func update(g, dt: float) -> void:
 func beam_end(g, sniper: Dictionary) -> Vector2:
 	var origin: Vector2 = g.center(sniper.cell)
 	var last := origin
-	for step in range(1, 700):
+	for step in range(1, mini(700, ceili(float(sniper.get("range", 1400.0)) / 2.0) + 1)):
 		var point: Vector2 = origin + Vector2(sniper.direction) * step * 2.0
 		var cell: Vector2i = g.to_cell(point)
 		if not g.in_bounds(cell) or g.cells[g.idx(cell.x, cell.y)] == g.ROCK: return last

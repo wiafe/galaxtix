@@ -4,7 +4,7 @@ extends RefCounted
 const LENGTH := 24
 const ACT_LENGTH := 8
 const FIRST_MAP := 9
-const LAST_MAP := 32
+const LAST_MAP := 35
 ## Jump's territory patterns, independent of enemy rules and the untinted void.
 const TERRITORY := [
 	{"coast": Color(0.22, 0.66, 1.0), "fill": Color(0.22, 0.66, 1.0), "dither": 0},
@@ -18,16 +18,20 @@ const MAP_NAMES := [
 	"SERVICE BAY", "TRANSFER PLATFORM", "FINAL ASSEMBLY",
 	"SPORE EDGE", "SPLIT NEST", "HIVE APPROACH",
 	"SHIELD ENTRY", "BEAM CHANNELS", "CORE APPROACH",
+	"GRINDING FLOOR", "THORN GARDEN", "PRISM VAULT",
 ]
 const ACTS := [
-	{"name": "THE FOUNDRY", "color": Color("c89658"), "maps": [9, 24, 25, 10, 11, 12, 26], "bosses": ["foreman"], "enemies": ["anomaly", "sparx", "turret", "rotor", "gunner_orb"]},
-	{"name": "THE INFESTATION", "color": Color("95b875"), "maps": [27, 14, 28, 15, 16, 17, 29], "bosses": ["brood_queen"], "enemies": ["anomaly", "spawner", "brood_carrier", "chain_worm"]},
-	{"name": "THE REACTOR", "color": Color("aa98ea"), "maps": [30, 19, 31, 20, 21, 22, 32], "bosses": ["reactor_heart"], "enemies": ["anomaly", "sniper", "ray_orb", "siege"]},
+	{"name": "THE FOUNDRY", "color": Color("c89658"), "maps": [9, 24, 25, 10, 11, 12, 26], "bosses": ["foreman", "grinder"], "enemies": ["anomaly", "sparx", "turret", "rotor", "gunner_orb"]},
+	{"name": "THE INFESTATION", "color": Color("95b875"), "maps": [27, 14, 28, 15, 16, 17, 29], "bosses": ["brood_queen", "thorn_maw"], "enemies": ["anomaly", "spawner", "brood_carrier", "chain_worm"]},
+	{"name": "THE REACTOR", "color": Color("aa98ea"), "maps": [30, 19, 31, 20, 21, 22, 32], "bosses": ["reactor_heart", "prism_warden"], "enemies": ["anomaly", "sniper", "ray_orb", "siege"]},
 ]
 const BOSSES := {
 	"foreman": {"name": "THE FOREMAN", "act": 1, "map": 13, "targets": "WEAPONS", "reward": 5},
 	"brood_queen": {"name": "BROOD QUEEN", "act": 2, "map": 18, "targets": "HATCHERIES", "reward": 7},
 	"reactor_heart": {"name": "REACTOR HEART", "act": 3, "map": 23, "targets": "RELAYS", "reward": 10},
+	"grinder": {"name": "THE GRINDER", "act": 1, "map": 33, "targets": "CUTTERS", "reward": 5},
+	"thorn_maw": {"name": "THORN MAW", "act": 2, "map": 34, "targets": "THORNS", "reward": 7},
+	"prism_warden": {"name": "PRISM WARDEN", "act": 3, "map": 35, "targets": "LENSES", "reward": 10},
 }
 
 static func act_at(depth: int) -> int:

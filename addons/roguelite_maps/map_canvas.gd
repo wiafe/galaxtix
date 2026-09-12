@@ -9,6 +9,7 @@ var depth := 1
 var preview := {}
 var pickup_markers: Array = []
 var objective_markers: Array = []
+var boss_body := {}
 var map: MapDefinition
 var tool := "select"
 var enemy_kind := "anomaly"
@@ -64,6 +65,7 @@ func set_encounter(value: String, at_depth: int) -> void:
 	selection_changed.emit()
 
 func rebuild_preview() -> void:
+	boss_body.clear()
 	if map == null or map.arena().free_cells.is_empty():
 		pickup_markers.clear()
 		objective_markers.clear()
@@ -72,6 +74,7 @@ func rebuild_preview() -> void:
 	preview = Encounters.preview(map, depth, encounter)
 	pickup_markers = preview.nodes
 	objective_markers = Encounters.markers(preview.objectives)
+	if map.boss_id == "thorn_maw": boss_body = preload("res://scripts/thorn_maw.gd").footprint(map)
 	queue_redraw()
 
 func author_pickups() -> void:
@@ -159,6 +162,8 @@ func _draw() -> void:
 	var origin := origin_at()
 	draw_texture_rect(terrain, Rect2(origin, Vector2(map.grid_size) * step), false)
 	if zone_texture != null: draw_texture_rect(zone_texture, Rect2(origin, Vector2(map.grid_size) * step), false)
+	for cell: Vector2i in boss_body.values():
+		draw_rect(Rect2(origin + Vector2(cell) * step, Vector2.ONE * step), Color(0.75, 0.35, 0.9, 0.24))
 	for band in [Rect2(0, 0, 160, 18), Rect2(0, 86, 160, 18)]:
 		draw_rect(Rect2(origin + band.position * step, band.size * step), Color("171d26"))
 	draw_rect(Rect2(origin + Vector2(MapDefinition.EDITABLE.position) * step, Vector2(MapDefinition.EDITABLE.size) * step), Color("65758a"), false, 1)

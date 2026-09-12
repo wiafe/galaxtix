@@ -12,12 +12,12 @@ const ENEMY_HELP := {
 	"anomaly": "Roaming beam. Keeps its region unclaimed and threatens trails.",
 	"sparx": "Patrols safe rails. Capture the void beside its rail to cut it off and destroy it. Place on cyan cells; starts immediately.",
 	"turret": "Fixed gun. Fires along the selected axis; enclose it to disable it.",
-	"spawner": "Fixed nest. Breeds chasing mites; enclose it to disable it.",
+	"spawner": "Fixed nest. Up to two living broods. They warn yellow, then lunge at nearby cutting ships. Reach safety to lose them. Enclose the nest to destroy it and its broods.",
 	"gunner_orb": "Roams, flashes orange, then stops to fire a five-shot fan. Safe land blocks its shots.",
 	"ray_orb": "Roams, locks its aim with a dashed warning, then extends a beam in both directions. Land blocks the beam.",
 	"rotor": "A rotating bar with a fixed centre. Reverses at land or rock. Enclose its centre to destroy it.",
 	"chain_worm": "A roaming head with six trailing links. The whole body cuts trails; wait for its tail to pass.",
-	"brood_carrier": "Drops eggs that hatch into chasing mites after 6 seconds. Capture eggs first for salvage. Up to four eggs or mites per carrier.",
+	"brood_carrier": "Eggs hatch after 6s. Broods warn yellow, then lunge at nearby cutting ships. Reach safe land to lose them; enclose eggs for salvage or trap the broods. Four offspring per carrier.",
 }
 static var testing := {} # Isolated resource overrides for smoke tests; never serialized.
 

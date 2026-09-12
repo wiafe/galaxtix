@@ -1,14 +1,16 @@
 # Roguelite map editor
 
+**Act 4 planet test:** in **Maps**, click **Launch Planet Prototype** at the bottom of the left column. It launches the whole-globe scene with a following camera and temporary progression. The prototype generates its own eight surface sectors; the selected 2D map and encounter settings do not change it. See [planet controls and scope](planet-act-prototype.md).
+
 **New tools:** Select **Shield zone** or **Hazard zone** and paint with the brush. Green zones protect the ship; hazard zones cycle through safe, warning, and active states. Use **Erase zone** or right-click to erase. Zones survive captures and are included in Undo, Redo, Save, and Playtest.
 
 Under **New Enemy**, **Sniper** adds a turret that warns before firing an aimed beam; **Siege** adds a slow enemy that warns before breaking captured territory. Siege can serve as the required void enemy; Sniper cannot. See [enemy behavior details](enemy-references.md).
 
 Open **Maps** at the top of Godot, beside 2D, 3D, and Script. If the tab has not appeared after pulling these changes, reload the project or enable **Roguelite Maps** in Project → Project Settings → Plugins.
 
-Use the **Act** dropdown to choose Foundry, Infestation, or Reactor. Each shows its seven regular maps and a clearly marked **[Boss]** arena. Select **Original / Arcade** for the original eight maps. Switching acts remembers the last selected map and preserves unsaved edits and undo history; an asterisk marks acts with unsaved maps.
+Use the **Act** dropdown to choose Foundry, Infestation, or Reactor. Each shows its seven regular maps and two **[Boss]** alternatives for sector 08. A run uses one of those bosses. Select **Original / Arcade** for the original eight maps. Switching acts remembers the last selected map and preserves unsaved edits and undo history; an asterisk marks acts with unsaved maps.
 
-1. Choose an act, then a map. Each act lists seven regular arenas followed by its boss in progression order. Original / Arcade holds the original eight arenas.
+1. Choose an act, then a map. Each act lists seven regular arenas followed by both boss alternatives in progression order. Original / Arcade holds the original eight arenas.
 2. Use **Open space** and **Rock** to paint. Safe rails are rebuilt around the outside and around rock islands when you release the brush. Dark bands above and below the editing area are reserved for the gameplay HUD.
 3. Use **Player** to place the starting point on a cyan rail.
 4. Choose an enemy type on the right, then use **Enemy** to place it. **Select / move** lets you drag markers or enter exact X/Y cell coordinates. The turret direction selector sets vertical or horizontal fire. Gunner Orb, Ray Orb, Rotor, Chain Worm, and Brood Carrier are optional [reference-inspired enemies](enemy-references.md); their descriptions explain the attack pattern before you place them.
@@ -26,7 +28,7 @@ Saved overrides live in `maps/roguelite_01.tres` through `maps/roguelite_32.tres
 
 For maintainers, `tools/bake_map_defaults.tscn -- --nosave --no-steam` creates missing editor snapshots from the game's procedural layouts. It does not overwrite existing snapshots. The plugin follows Godot's [main-screen EditorPlugin API](https://docs.godotengine.org/en/stable/classes/class_editorplugin.html).
 
-Boss maps 13, 18 and 23 use **Boss Core** and **Boss Relay** markers. Keep one core and three relays on open space. Move them with the same editor tools as enemies; Playtest automatically runs their boss encounter. See [act and boss editing](roguelite-acts.md).
+Boss maps 13/33, 18/34 and 23/35 use **Boss Core** and **Boss Relay** markers. Keep one core and three relays on open space. Thorn Maw (34) uses these as its heart and thorns, with a purple preview of its carvable body. Move them with the same editor tools as enemies; Playtest automatically runs their boss encounter. See [act and boss editing](roguelite-acts.md).
 
 ## Salvage and encounter editing
 

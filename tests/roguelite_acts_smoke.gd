@@ -41,6 +41,38 @@ func cut(start: Vector2i, direction: Vector2i, steps: int) -> void:
 		rogue.update(0.05)
 	assert(rogue.seals.is_empty())
 
+func check_new_attacks() -> void:
+	for boss_id in ["grinder", "prism_warden"]:
+		var definition: Dictionary = Acts.BOSSES[boss_id]
+		launch(definition.map, definition.act * Acts.ACT_LENGTH)
+		rogue.invuln = 0
+		var relay: Dictionary = rogue.boss.relays[0]
+		relay.direction = Vector2.DOWN
+		relay.clock = rogue.boss.fire_seconds()
+		var warning: Array = rogue.boss.beams(rogue, relay, 0, true)
+		assert(warning.size() == 3)
+		if boss_id == "grinder":
+			var first: Vector2 = rogue.boss.beams(rogue, relay, 0)[0].direction
+			relay.clock = 0.0
+			var last: Vector2 = rogue.boss.beams(rogue, relay, 0)[0].direction
+			assert(first.is_equal_approx(warning[0].direction) and last.is_equal_approx(warning[2].direction), "The full cutter sweep is telegraphed")
+			relay.clock = rogue.boss.fire_seconds() / 2.0
+		var ray: Dictionary = rogue.boss.beams(rogue, relay, 0)[0 if boss_id == "grinder" else 1]
+		var origin: Vector2 = rogue.center(ray.cell)
+		var end: Vector2 = rogue.field_features.beam_end(rogue, ray)
+		if boss_id == "grinder": assert(origin.distance_to(end) <= 22 * rogue.CELL + 0.01, "Cutters have limited reach")
+		# Rock shields the pilot; a clear beam hits even on captured territory.
+		rogue.p = ray.cell + Vector2i(0, 10)
+		rogue.vis = rogue.center(rogue.p)
+		rogue.cells[rogue.idx(rogue.p.x, rogue.p.y)] = Game.CLAIMED
+		var cover: Vector2i = ray.cell + Vector2i(0, 5)
+		rogue.cells[rogue.idx(cover.x, cover.y)] = Game.ROCK
+		rogue.field_features.sniper_contact(rogue, ray)
+		assert(rogue.state == Game.State.PLAYING)
+		rogue.cells[rogue.idx(cover.x, cover.y)] = Game.FREE
+		rogue.field_features.sniper_contact(rogue, ray)
+		assert(rogue.state != Game.State.PLAYING, "Boss beams deal damage on their visible line")
+
 func check() -> void:
 	assert(not Save.enabled)
 	Save.set_process(false)
@@ -59,6 +91,7 @@ func check() -> void:
 		if arg.begins_with("--rogue-shots="):
 			shot_dir = arg.substr(14)
 			DirAccess.make_dir_recursive_absolute(shot_dir)
+	var seen_bosses := {}
 	for seed_value in 100:
 		var random := RandomNumberGenerator.new()
 		random.seed = seed_value
@@ -71,10 +104,12 @@ func check() -> void:
 				if counts.has(node.kind): counts[node.kind] += 1
 				assert(node.act == Acts.act_at(depth))
 				if node.kind == "boss":
+					seen_bosses[node.boss] = true
 					assert(depth % Acts.ACT_LENGTH == 0 and route[depth - 1].size() == 1)
 					assert(node.boss in Acts.ACTS[node.act - 1].bosses and Acts.BOSSES[node.boss].map == node.stage)
 				else: assert(node.stage == Acts.ACTS[node.act - 1].maps[Acts.step_at(depth) - 1], "Map introductions stay ordered on every branch")
 		assert(counts == {"boss": 3, "race": 1, "rival": 1})
+	assert(seen_bosses.size() == Acts.BOSSES.size(), "Every boss appears in its act pool across seeds")
 	for stage in range(Acts.FIRST_MAP, Acts.LAST_MAP + 1):
 		var map := MapCatalog.read(stage)
 		assert(map != null and map.problems().is_empty() and map.act_theme == Acts.map_act(stage))
@@ -86,6 +121,7 @@ func check() -> void:
 	main.game.start_roguelite()
 	rogue = main.game.roguelite
 	rogue.progress.ships = {"surveyor": true, "lancer": true, "bulwark": true}
+	check_new_attacks()
 	rogue.start_run()
 	assert(rogue.route.size() == Acts.LENGTH)
 	await shot("act-1-chart")
@@ -135,63 +171,69 @@ func check() -> void:
 		tint.a = 0.16
 		assert(rogue.fill.modulate == tint)
 		await shot("act-%d-interior" % act)
-		for ship_id in ["surveyor", "lancer", "bulwark"]:
-			var boss_id: String = Acts.ACTS[act - 1].bosses[0]
-			# The scripted cut coordinates belong to the shipped fixture, not edited arenas.
-			var map_id := "roguelite_%02d" % Acts.BOSSES[boss_id].map
-			MapCatalog.testing[map_id] = load(MapCatalog.default_path(map_id))
-			launch(Acts.BOSSES[boss_id].map, act * Acts.ACT_LENGTH, ship_id)
-			assert(rogue.boss.active() and rogue.boss.remaining() == 3 and not rogue.objective_complete())
-			rogue.capture_percent = 100
-			rogue.level_clear()
-			assert(not rogue.pending_clear, "Territory percentage cannot skip a boss")
-			rogue.capture_percent = 0
-			rogue.boss.relays[0].clock = 0.01
-			rogue.freeze_time = 0
-			rogue.boss.update(rogue, 0.02)
-			assert(rogue.boss.relays[0].phase == "warn")
-			var clock_before: float = rogue.boss.relays[0].clock
-			rogue.freeze_time = 2
-			rogue.boss.update(rogue, 1)
-			assert(rogue.boss.relays[0].clock == clock_before, "Stasis freezes boss attacks")
-			rogue.freeze_time = 0
-			rogue.phase = "paused"
-			rogue.boss.update(rogue, 2)
-			assert(rogue.boss.relays[0].clock == clock_before)
-			rogue.phase = "run"
-			rogue.boss.update(rogue, 1.5)
-			assert(not rogue.mites.is_empty() if act == 2 else (not rogue.bolts.is_empty() if act == 1 else rogue.boss.relays[0].phase == "fire"))
-			rogue.bolts.clear()
-			rogue.mites.clear()
-			rogue.freeze_time = 1000
-			if ship_id == "surveyor":
-				await shot(boss_id + "-locked")
-				rogue.phase = "briefing"
-				await shot(boss_id + "-briefing")
+		for boss_id: String in Acts.ACTS[act - 1].bosses:
+			if boss_id == "thorn_maw": continue # Carving and all-ship captures have a dedicated suite.
+			for ship_id in ["surveyor", "lancer", "bulwark"]:
+				# The scripted cut coordinates belong to the shipped fixture, not edited arenas.
+				var map_id := "roguelite_%02d" % Acts.BOSSES[boss_id].map
+				MapCatalog.testing[map_id] = load(MapCatalog.default_path(map_id))
+				launch(Acts.BOSSES[boss_id].map, act * Acts.ACT_LENGTH, ship_id)
+				assert(rogue.boss.active() and rogue.boss.remaining() == 3 and not rogue.objective_complete())
+				rogue.capture_percent = 100
+				rogue.level_clear()
+				assert(not rogue.pending_clear, "Territory percentage cannot skip a boss")
+				rogue.capture_percent = 0
+				rogue.boss.relays[0].clock = 0.01
+				rogue.freeze_time = 0
+				rogue.boss.update(rogue, 0.02)
+				assert(rogue.boss.relays[0].phase == "warn")
+				var clock_before: float = rogue.boss.relays[0].clock
+				rogue.freeze_time = 2
+				rogue.boss.update(rogue, 1)
+				assert(rogue.boss.relays[0].clock == clock_before, "Stasis freezes boss attacks")
+				rogue.freeze_time = 0
+				rogue.phase = "paused"
+				rogue.boss.update(rogue, 2)
+				assert(rogue.boss.relays[0].clock == clock_before)
 				rogue.phase = "run"
-			# Real flood captures; the boss's protected center cannot be claimed early.
-			cut(Vector2i(35, 42), Vector2i.RIGHT, 89)
-			assert(rogue.boss.remaining() == 1 and not rogue.boss.unlocked)
-			cut(Vector2i(35, 66), Vector2i.RIGHT, 89)
-			assert(rogue.boss.unlocked and not rogue.boss.defeated and rogue.boss.remaining() == 0)
-			if ship_id == "surveyor": await shot(boss_id + "-exposed")
-			var before: int = rogue.earned_salvage
-			cut(Vector2i(74, 42), Vector2i.DOWN, 24)
-			assert(rogue.boss.defeated and rogue.pending_clear)
-			for step in 100:
-				if rogue.phase in ["sector_clear", "result"]: break
-				rogue.update(0.05)
-			assert(rogue.phase == ("result" if act == 3 else "sector_clear"))
-			if ship_id == "surveyor": await shot(boss_id + "-victory")
-			assert(rogue.earned_salvage >= before + Acts.BOSSES[boss_id].reward)
-			var after: int = rogue.earned_salvage
-			rogue.finish_sector()
-			assert(rogue.earned_salvage == after, "Boss reward only pays once")
-			if act == 3: assert(rogue.run_victory)
-			else:
-				rogue.ui_time = rogue.VICTORY_REVEAL
-				rogue.continue_expedition()
-				assert(rogue.chart_depth == act * Acts.ACT_LENGTH + 1 and rogue.phase == "chart")
+				rogue.boss.update(rogue, 1.5)
+				match boss_id:
+					"brood_queen": assert(not rogue.mites.is_empty())
+					"foreman": assert(rogue.bolts.size() == 5)
+					"thorn_maw": assert(rogue.bolts.size() == 12)
+					_: assert(not rogue.boss.beams(rogue, rogue.boss.relays[0], 0).is_empty())
+				if ship_id == "surveyor": await shot(boss_id + "-attack")
+				rogue.bolts.clear()
+				rogue.mites.clear()
+				rogue.freeze_time = 1000
+				if ship_id == "surveyor":
+					await shot(boss_id + "-locked")
+					rogue.phase = "briefing"
+					await shot(boss_id + "-briefing")
+					rogue.phase = "run"
+				# Real flood captures; the boss's protected center cannot be claimed early.
+				cut(Vector2i(35, 42), Vector2i.RIGHT, 89)
+				assert(rogue.boss.remaining() == 1 and not rogue.boss.unlocked)
+				cut(Vector2i(35, 66), Vector2i.RIGHT, 89)
+				assert(rogue.boss.unlocked and not rogue.boss.defeated and rogue.boss.remaining() == 0)
+				if ship_id == "surveyor": await shot(boss_id + "-exposed")
+				var before: int = rogue.earned_salvage
+				cut(Vector2i(74, 42), Vector2i.DOWN, 24)
+				assert(rogue.boss.defeated and rogue.pending_clear)
+				for step in 100:
+					if rogue.phase in ["sector_clear", "result"]: break
+					rogue.update(0.05)
+				assert(rogue.phase == ("result" if act == 3 else "sector_clear"))
+				if ship_id == "surveyor": await shot(boss_id + "-victory")
+				assert(rogue.earned_salvage >= before + Acts.BOSSES[boss_id].reward)
+				var after: int = rogue.earned_salvage
+				rogue.finish_sector()
+				assert(rogue.earned_salvage == after, "Boss reward only pays once")
+				if act == 3: assert(rogue.run_victory)
+				else:
+					rogue.ui_time = rogue.VICTORY_REVEAL
+					rogue.continue_expedition()
+					assert(rogue.chart_depth == act * Acts.ACT_LENGTH + 1 and rogue.phase == "chart")
 	MapCatalog.testing.clear()
-	print("ROGUELITE ACTS PASS: deterministic pools, exclusive rosters, 24 maps, territory palettes/patterns, unchanged void, all-ship boss captures, phases, attacks, pause, rewards, act progression and finale")
+	print("ROGUELITE ACTS PASS: deterministic pools, exclusive rosters, 27 maps, six bosses, territory palettes/patterns, unchanged void, all-ship boss captures, phases, attacks, pause, rewards, act progression and finale")
 	get_tree().quit()

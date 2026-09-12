@@ -8,6 +8,7 @@ func _enter_tree() -> void:
 	panel.hide()
 	panel.saved.connect(func(): EditorInterface.get_resource_filesystem().scan())
 	panel.play_requested.connect(play_map)
+	panel.planet_requested.connect(func(): EditorInterface.play_custom_scene("res://scenes/planet_act.tscn"))
 
 func _exit_tree() -> void:
 	if panel != null: panel.queue_free()
@@ -42,7 +43,7 @@ func play_map(map: MapDefinition, depth: int, encounter: String, ship: String) -
 		EditorInterface.play_custom_scene("res://tools/map_playtest.tscn")
 
 func _run_scene(scene: String, args: PackedStringArray) -> PackedStringArray:
-	if scene == "res://tools/map_playtest.tscn":
+	if scene in ["res://tools/map_playtest.tscn", "res://scenes/planet_act.tscn"]:
 		if not args.has("--"): args.append("--")
 		args.append("--nosave")
 		args.append("--no-steam")

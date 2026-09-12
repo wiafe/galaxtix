@@ -13,7 +13,7 @@ func _initialize() -> void:
 		for path in [MapCatalog.default_path(map.map_id), MapCatalog.path_for(map.map_id)]:
 			if not FileAccess.file_exists(path):
 				assert(ResourceSaver.save(map, path) == OK)
-	print("ACT MAPS READY: 21 encounter arenas and 3 boss arenas")
+	print("ACT MAPS READY: 21 encounter arenas and 6 boss arenas")
 	quit()
 
 func block(map: MapDefinition, rect: Rect2i) -> void:
@@ -21,6 +21,7 @@ func block(map: MapDefinition, rect: Rect2i) -> void:
 		for x in range(rect.position.x, rect.end.x): map.rock[y * 160 + x] = 1
 
 func build(stage: int) -> MapDefinition:
+	if stage >= 33: return build_boss_alternative(stage)
 	if stage >= 24: return build_extra(stage)
 	var map := MapDefinition.new()
 	map.map_id = "roguelite_%02d" % stage
@@ -80,6 +81,24 @@ func build(stage: int) -> MapDefinition:
 			for y in range(68, 72):
 				for x in range(100, 109):
 					if mask[y * 160 + x] != 0: map.field_zones[y * 160 + x] = 2
+	return map
+
+func build_boss_alternative(stage: int) -> MapDefinition:
+	var act := Acts.map_act(stage)
+	var map := build(Acts.BOSSES[Acts.ACTS[act - 1].bosses[0]].map)
+	map.map_id = "roguelite_%02d" % stage
+	map.title = Acts.MAP_NAMES[stage - Acts.FIRST_MAP]
+	map.sector = stage
+	map.boss_id = Acts.ACTS[act - 1].bosses[1]
+	# Distinct cover and perimeter shapes; the relay/core approach lanes stay open.
+	match act:
+		1:
+			for rect in [Rect2i(65, 47, 4, 10), Rect2i(92, 47, 4, 10)]: block(map, rect)
+		2:
+			for rect in [Rect2i(35, 23, 12, 9), Rect2i(113, 23, 12, 9), Rect2i(35, 72, 12, 9), Rect2i(113, 72, 12, 9)]: block(map, rect)
+		3:
+			for rect in [Rect2i(67, 28, 4, 10), Rect2i(89, 28, 4, 10), Rect2i(51, 69, 6, 7), Rect2i(103, 69, 6, 7)]: block(map, rect)
+	map.invalidate()
 	return map
 
 func build_extra(stage: int) -> MapDefinition:

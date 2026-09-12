@@ -154,7 +154,7 @@ func check() -> void:
 	var royale_row := game.TITLE_ITEMS.find("BATTLE ROYALE")
 	assert(royale_row >= 0)
 	var click := InputEventMouseButton.new()
-	click.position = Vector2(Game.PANEL_X + 100, game.title_row_y(royale_row) + 20)
+	click.position = game.title_item_rect(royale_row).get_center()
 	click.button_index = MOUSE_BUTTON_LEFT
 	click.pressed = true
 	game._input(click)

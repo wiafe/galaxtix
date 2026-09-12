@@ -9,6 +9,7 @@ var unlocked := false
 var defeated := false
 var rewarded := false
 var presented := false
+var maw = preload("res://scripts/thorn_maw.gd").new()
 
 func reset(g) -> void:
 	id = ""
@@ -28,7 +29,7 @@ func reset(g) -> void:
 		elif enemy.kind == "boss_relay":
 			var home := Game.Spawner.new()
 			home.cell = enemy.cell
-			relays.append({"cell": enemy.cell, "captured": false, "phase": "idle", "clock": 2.0 + relays.size() * 1.4, "direction": Vector2.DOWN, "target": enemy.cell, "home": home})
+			relays.append({"cell": enemy.cell, "captured": false, "phase": "idle", "clock": 2.0 + relays.size() * 1.4, "direction": Vector2.DOWN, "target": enemy.cell, "home": home, "cycle": 0})
 	# A locked core is solid, so even Charge cannot capture it before the relays.
 	for i in g.disc_cells(core, 4):
 		if g.cells[i] == g.FREE:
@@ -36,6 +37,7 @@ func reset(g) -> void:
 			g.cells[i] = g.ROCK
 			g.free_count -= 1
 	g.grid_changed()
+	if id == "thorn_maw": maw.reset(g, self)
 
 func active() -> bool:
 	return not id.is_empty()
@@ -44,6 +46,7 @@ func remaining() -> int:
 	return relays.filter(func(r): return not r.captured).size()
 
 func instruction() -> String:
+	if id == "thorn_maw": return "HEART CAPTURED" if defeated else maw.instruction(unlocked)
 	if defeated: return "CORE CAPTURED"
 	if unlocked: return "ENCLOSE THE CORE"
 	return "CAPTURE %d %s" % [remaining(), Acts.BOSSES[id].targets] if active() else ""
@@ -57,6 +60,7 @@ func protected_cell(cell: Vector2i) -> bool:
 
 func observe(g) -> void:
 	if not active() or defeated: return
+	if id == "thorn_maw": maw.observe(g)
 	for relay in relays:
 		if relay.captured or g.disc_claimed_fraction(relay.cell, 2) < 1.0: continue
 		relay.captured = true
@@ -67,15 +71,16 @@ func observe(g) -> void:
 		g.sparks.zap_polyline(PackedVector2Array([g.center(relay.cell), g.center(core)]), Palette.GREEN, 900.0, 3.0)
 		g.sparks.ripple(g.center(relay.cell), 5, 240, 0.6, Palette.GREEN)
 		g.show_objective_notice("%s CAPTURED / %d LEFT" % [Acts.BOSSES[id].targets, remaining()])
-	if not unlocked and remaining() == 0:
+	if not unlocked and (maw.ready() if id == "thorn_maw" else remaining() == 0):
 		unlocked = true
+		if id == "thorn_maw": maw.set_open(g, true)
 		for i in shell:
 			g.cells[i] = g.FREE
 			g.credited[i] = 0
 			g.free_count += 1
 		g.bolts.clear()
 		g.grid_changed()
-		g.show_objective_notice("CORE EXPOSED - ENCLOSE IT")
+		g.show_objective_notice("HEART EXPOSED - ENCLOSE IT" if id == "thorn_maw" else "CORE EXPOSED - ENCLOSE IT")
 		g.sparks.ripple(g.center(core), 30, 280, 0.8, Palette.YELLOW)
 		return # The core must be captured with a subsequent cut.
 	if unlocked and g.disc_claimed_fraction(core, 4) >= 1.0:
@@ -84,12 +89,15 @@ func observe(g) -> void:
 		g.sparks.burst(g.center(core), 160, 400, 1.6, 1.2, Palette.YELLOW)
 		g.sparks.ripple(g.center(core), 10, 700, 1.5, Palette.GREEN)
 		g.lines.spike(3, 0.5)
-		g.show_objective_notice("CORE CAPTURED")
+		g.show_objective_notice("HEART CAPTURED" if id == "thorn_maw" else "CORE CAPTURED")
 
 func update(g, dt: float) -> void:
 	if not active() or defeated or g.phase != "run" or g.state != g.State.PLAYING: return
 	observe(g)
 	if defeated or g.freeze_time > 0: return
+	if id == "thorn_maw":
+		maw.update(g, self, dt)
+		return
 	for index in relays.size():
 		var relay: Dictionary = relays[index]
 		if relay.captured: continue
@@ -104,22 +112,58 @@ func update(g, dt: float) -> void:
 				"warn":
 					attack(g, relay, index)
 					relay.phase = "fire"
-					relay.clock = 0.35
+					relay.clock = fire_seconds()
 				"fire":
 					relay.phase = "idle"
 					relay.clock = 4.0 if id != "brood_queen" else 5.5
-		if id == "reactor_heart" and index == 0 and relay.phase == "fire":
-			g.field_features.sniper_contact(g, relay)
+					relay.cycle += 1
+		if relay.phase == "fire":
+			for ray in beams(g, relay, index):
+				g.field_features.sniper_contact(g, ray)
+				if g.state != g.State.PLAYING: return
 		if g.state != g.State.PLAYING: return
+
+func fire_seconds() -> float:
+	return 1.2 if id == "grinder" else (0.65 if id == "prism_warden" else 0.35)
+
+## Warning and damage use the same rays. Grinder shows the whole sweep envelope.
+func beams(g, relay: Dictionary, index: int, warning := false) -> Array[Dictionary]:
+	var angles: Array = []
+	match id:
+		"reactor_heart":
+			if index == 0: angles = [0.0]
+		"grinder":
+			angles = [-0.45, 0.0, 0.45] if warning else [lerpf(-0.45, 0.45, clampf(1.0 - float(relay.clock) / fire_seconds(), 0.0, 1.0))]
+		"prism_warden":
+			angles = [-0.32, 0.0, 0.32]
+	var result: Array[Dictionary] = []
+	for angle in angles:
+		var ray := relay.duplicate()
+		ray.direction = Vector2(relay.direction).rotated(angle)
+		if id == "grinder": ray["range"] = 22 * g.CELL
+		result.append(ray)
+	return result
 
 func attack(g, relay: Dictionary, index: int) -> void:
 	var origin: Vector2 = g.center(relay.cell)
-	if id == "brood_queen":
+	if id == "thorn_maw":
+		# Rotating gaps make successive bursts different; claimed land catches spores.
+		for i in 12:
+			var bolt := Game.Bolt.new()
+			bolt.pos = origin
+			bolt.vel = Vector2.RIGHT.rotated(i * TAU / 12 + int(relay.cycle) * PI / 12) * 95
+			bolt.source = "THORN SPORE"
+			g.bolts.append(bolt)
+	elif id in ["grinder", "prism_warden"]:
+		pass # Persistent beams are resolved during their fire phase.
+	elif id == "brood_queen":
 		if relay.home.alive >= 2: return
 		var mite := Game.Mite.new()
 		mite.pos = origin
 		mite.vel = relay.direction * 45
 		mite.home = relay.home
+		mite.home.pos = origin
+		g.configure_mite(mite)
 		relay.home.alive += 1
 		g.mites.append(mite)
 	elif id == "reactor_heart" and index == 1:
@@ -139,6 +183,9 @@ func draw(g) -> void:
 	if defeated:
 		g.lines.circle(pos, 35 + g.ui_time * 120, Color(Palette.GREEN, maxf(0, 0.6 - g.ui_time * 0.3)), 48)
 		return
+	if id == "thorn_maw":
+		maw.draw(g, self)
+		return
 	for index in relays.size():
 		var relay: Dictionary = relays[index]
 		var point: Vector2 = g.center(relay.cell)
@@ -151,15 +198,38 @@ func draw(g) -> void:
 			g.lines.circle(point, 8, color, 6 if id != "brood_queen" else 10, 0.3, 0.1, 2)
 		if relay.phase == "warn":
 			g.lines.circle(point, 3.4 * g.CELL + sin(g.time * 15) * 2, Palette.YELLOW, 20)
-			if id == "reactor_heart" and index == 1:
+			if id == "thorn_maw":
+				for i in 12:
+					var direction := Vector2.RIGHT.rotated(i * TAU / 12 + int(relay.cycle) * PI / 12)
+					g.lines.seg(point + direction * 20, point + direction * 36, Palette.YELLOW)
+			elif id == "reactor_heart" and index == 1:
 				g.lines.circle(g.center(relay.target), 3 * g.CELL, Palette.ORANGE, 16)
+			elif id in ["grinder", "prism_warden"] or (id == "reactor_heart" and index == 0):
+				for ray in beams(g, relay, index, true):
+					g.dashed(point, g.field_features.beam_end(g, ray), Color(Palette.YELLOW, 0.6), 5, 7)
 			elif id != "brood_queen":
 				g.dashed(point, g.field_features.beam_end(g, relay), Color(Palette.YELLOW, 0.6), 5, 7)
-		if id == "reactor_heart" and index == 0 and relay.phase == "fire":
-			g.lines.seg(point, g.field_features.beam_end(g, relay), Palette.RED, 0.1, 0.03, 3)
+		if relay.phase == "fire":
+			for ray in beams(g, relay, index):
+				g.lines.seg(point, g.field_features.beam_end(g, ray), Palette.RED, 0.1, 0.03, 3)
 	# Each boss has a distinct central silhouette, all much larger than normal enemies.
 	var radius: float = 4.5 * g.CELL
-	if id == "foreman":
+	# Share the anomaly's cycling spectrum and unstable halo while capture is blocked.
+	# The stable yellow silhouette signals that the exposed core can now be enclosed.
+	color = Palette.YELLOW if unlocked else g.anomaly_color()
+	if not unlocked: g.draw_anomaly_ring(pos, radius + 18, 32, 0, 1.6)
+	if id == "grinder":
+		var teeth := PackedVector2Array()
+		for i in 32:
+			teeth.append(pos + Vector2.RIGHT.rotated(i * TAU / 32 + g.time * 0.3) * (radius + (8 if i % 4 < 2 else 0)))
+		g.lines.polyline(teeth, true, color, 0.2, 0.04, 2)
+		g.lines.circle(pos, radius * 0.65, color, 16)
+	elif id == "prism_warden":
+		for ring in 3:
+			var points := PackedVector2Array()
+			for i in 3: points.append(pos + Vector2.UP.rotated(i * TAU / 3 + ring * TAU / 3 + sin(g.time) * 0.08) * (radius + ring * 7))
+			g.lines.polyline(points, true, color, 0.2, 0.04, 2)
+	elif id == "foreman":
 		g.lines.rect(Rect2(pos - Vector2(radius, radius), Vector2.ONE * radius * 2), color, 0.2, 0.04, 2)
 		for side in [-1, 1]: g.lines.rect(Rect2(pos + Vector2(side * radius - 6, -12), Vector2(12, 24)), color)
 	elif id == "brood_queen":

@@ -1,5 +1,6 @@
 class_name Game
 extends Node
+const Wordmark = preload("res://scripts/galaxtix_wordmark.gd")
 ## The Qix run: a grid sector, a surveyor riding the coast, the Anomaly (Qix), Sparx on the
 ## coast, a fuse chasing an idle trail. Claims pay Flux into the persistent Save layer.
 ## Everything is drawn through ScopeLines each frame (no sprites, only beams).
@@ -38,8 +39,9 @@ const TRANSIT_SHORT := 2.2      # between sectors
 ## editor and the lab files are excluded from exports.
 signal options_requested
 
-var TITLE_ITEMS: Array[String] = ["JUMP", "ROGUELITE", "ARCADE", "BATTLE ROYALE", "LOG", "OPTIONS", "QUIT"]
-var TITLE_DESCS: Array[String] = ["TO THE DOCK", "DRAFT A BUILD. UPGRADE. LAUNCH AGAIN.", "ONE LIFE. BEAT THE TARGET AT THE BUZZER.", "8 CUTTERS. THREE ROUNDS. ONE WINNER.", "JUMP LOG", "DISPLAY, EFFECTS, AUDIO AND SAVE DATA", "POWER DOWN"]
+var TITLE_ITEMS: Array[String] = ["ROGUELITE", "LOG", "OPTIONS", "QUIT"]
+var TITLE_DESCS: Array[String] = ["RECLAIM YOUR EMPIRE.", "YOUR EXPEDITION RECORDS", "MAKE YOURSELF AT HOME", "POWER DOWN"]
+const TITLE_LEFT := 112.0
 var roguelite: Game
 var roguelite_fill: Sprite2D
 var arcade: Game
@@ -93,6 +95,7 @@ var free_count := 0
 var p := Vector2i(grid_width / 2, 0)
 var vis := Vector2.ZERO
 var move_acc := 0.0
+var last_claim_was_split := false
 var drawing := false
 var anchor := Vector2i.ZERO
 var trail: Array[Vector2i] = []
@@ -149,10 +152,21 @@ var scan_layout: Dictionary = {}
 
 # title screen
 var title_t := 0.0
-var title_sel := 0
+var title_sel := 0:
+	set(value):
+		if title_sel != value:
+			title_underline_start = title_t
+		title_sel = value
+var title_underline_start := 0.85
 var title_exit := -1          # menu item being left (drives the exit transition)
 var title_exit_t := 0.0
+var title_wordmark: Node2D
+var title_backdrop: ColorRect
+const TITLE_MOTIFS := ["ROGUELITE", "JUMP", "TUBE", "ARCADE", "BATTLE ROYALE", "LOG", "OPTIONS", "QUIT"]
+var title_motif_weights := PackedFloat32Array([1, 0, 0, 0, 0, 0, 0, 0])
+var title_backdrop_t := 0.0
 var show_log := false
+var title_log_stats: Dictionary = {}
 var liss_phase := 0.0
 
 ## A Flux node: sits in the void, worth node_value() when enclosed. Enemies cannot touch it.
@@ -186,7 +200,7 @@ class Spawner:
 	var spawn_t := 3.0
 	var alive := 0
 	var interval := 5.0
-	var max_alive := 3
+	var max_alive := 2
 	var mobile := false       # the Brood drifts through the void
 	var pos: Vector2
 	var vel: Vector2
@@ -197,6 +211,11 @@ class Mite:
 	var vel: Vector2
 	var spin := 0.0
 	var home: Spawner
+	var burst_hunter := false
+	var hunt_state := "roam"
+	var hunt_clock := 0.0
+	var roam_angle := 0.0
+	var roam_anchor := Vector2.ZERO
 
 var gal: Dictionary = Galaxies.LIST[0]
 
@@ -1054,23 +1073,24 @@ func try_step(dir: Vector2i, draw: bool, slow: bool) -> bool:
 		return false
 
 
-func qix_cell_index(q: QixBody) -> int:
+func qix_cell_index(q: QixBody, board: PackedByteArray = PackedByteArray()) -> int:
+	if board.is_empty(): board = cells
 	var c := to_cell(q.c)
-	if in_bounds(c) and cells[idx(c.x, c.y)] == FREE:
+	if in_bounds(c) and board[idx(c.x, c.y)] == FREE:
 		return idx(c.x, c.y)
 	for r in range(1, 10):
 		for dy in range(-r, r + 1):
 			for dx in range(-r, r + 1):
 				var n := c + Vector2i(dx, dy)
-				if in_bounds(n) and cells[idx(n.x, n.y)] == FREE:
+				if in_bounds(n) and board[idx(n.x, n.y)] == FREE:
 					return idx(n.x, n.y)
 	return -1
 
 
-func capture_flood_seeds() -> PackedInt32Array:
+func capture_flood_seeds(board: PackedByteArray = PackedByteArray()) -> PackedInt32Array:
 	var seeds := PackedInt32Array()
 	for q in qixes:
-		var ci := qix_cell_index(q)
+		var ci := qix_cell_index(q, board)
 		if ci >= 0: seeds.append(ci)
 	return seeds
 
@@ -1087,6 +1107,48 @@ func capture_extra_hazards() -> int:
 		caught += 1
 	return caught
 
+func capture_region(board: PackedByteArray) -> PackedInt32Array:
+	# Shared, read-only prediction and claim calculation. Callers supply trail walls.
+	var seen := PackedByteArray()
+	seen.resize(board.size())
+	var work := PackedInt32Array()
+	work.resize(board.size())
+	seen.fill(0)
+	var sp := 0
+	for ci in capture_flood_seeds(board):
+		if ci >= 0 and seen[ci] == 0:
+			seen[ci] = 1
+			work[sp] = ci
+			sp += 1
+	while sp > 0:
+		sp -= 1
+		var i := work[sp]
+		var x := i % grid_width
+		var y := i / grid_width
+		if x > 0 and board[i - 1] == FREE and seen[i - 1] == 0:
+			seen[i - 1] = 1
+			work[sp] = i - 1
+			sp += 1
+		if x < grid_width - 1 and board[i + 1] == FREE and seen[i + 1] == 0:
+			seen[i + 1] = 1
+			work[sp] = i + 1
+			sp += 1
+		if y > 0 and board[i - grid_width] == FREE and seen[i - grid_width] == 0:
+			seen[i - grid_width] = 1
+			work[sp] = i - grid_width
+			sp += 1
+		if y < grid_height - 1 and board[i + grid_width] == FREE and seen[i + grid_width] == 0:
+			seen[i + grid_width] = 1
+			work[sp] = i + grid_width
+			sp += 1
+	var result := PackedInt32Array()
+	for i in board.size():
+		if board[i] == FREE and seen[i] == 0: result.append(i)
+	return result
+
+func split_feedback_enabled() -> bool:
+	return false
+
 func complete_claim() -> void:
 	drawing = false
 	fuse_on = false
@@ -1097,40 +1159,10 @@ func complete_claim() -> void:
 	wall_building = false
 	sealing = false
 	draw_armed = false
-	# flood the void from the Anomaly; whatever it cannot reach is ours
-	reach.fill(0)
-	var sp := 0
-	for ci in capture_flood_seeds():
-		if ci >= 0 and reach[ci] == 0:
-			reach[ci] = 1
-			stack[sp] = ci
-			sp += 1
-	while sp > 0:
-		sp -= 1
-		var i := stack[sp]
-		var x := i % grid_width
-		var y := i / grid_width
-		if x > 0 and cells[i - 1] == FREE and reach[i - 1] == 0:
-			reach[i - 1] = 1
-			stack[sp] = i - 1
-			sp += 1
-		if x < grid_width - 1 and cells[i + 1] == FREE and reach[i + 1] == 0:
-			reach[i + 1] = 1
-			stack[sp] = i + 1
-			sp += 1
-		if y > 0 and cells[i - grid_width] == FREE and reach[i - grid_width] == 0:
-			reach[i - grid_width] = 1
-			stack[sp] = i - grid_width
-			sp += 1
-		if y < grid_height - 1 and cells[i + grid_width] == FREE and reach[i + grid_width] == 0:
-			reach[i + grid_width] = 1
-			stack[sp] = i + grid_width
-			sp += 1
-	var gained := 0
-	for i in grid_width * grid_height:
-		if cells[i] == FREE and reach[i] == 0:
-			cells[i] = CLAIMED
-			gained += 1
+	var region := capture_region(cells)
+	var split := region.is_empty() and not trail.is_empty() and split_feedback_enabled()
+	var gained := region.size()
+	for i in region: cells[i] = CLAIMED
 	for t in trail:
 		cells[idx(t.x, t.y)] = CLAIMED
 	gained += trail.size()
@@ -1222,11 +1254,14 @@ func complete_claim() -> void:
 	run_cells += gained
 	run_best_claim = maxf(run_best_claim, float(gained) / float(base_free))
 
-	sparks.zap_polyline(trail_points(), coast_color())
-	sparks.ripple(vis, 6.0, 320.0, 0.6, Palette.WHITE)
-	sparks.burst(vis, 30, 200.0, 2.0, 0.5, Palette.CYAN)
-	lines.spike(2.5, 0.35)
-	shake = maxf(shake, 0.35)
+	if split:
+		sparks.ripple(vis, 3.0, 90.0, 0.3, Palette.CYAN)
+	else:
+		sparks.zap_polyline(trail_points(), coast_color())
+		sparks.ripple(vis, 6.0, 320.0, 0.6, Palette.WHITE)
+		sparks.burst(vis, 30, 200.0, 2.0, 0.5, Palette.CYAN)
+		lines.spike(2.5, 0.35)
+		shake = maxf(shake, 0.35)
 	if got + caught > 0:
 		var tag := "  SLOW BONUS" if (trail_slow and got > 0) else ""
 		if iso_got > 0:
@@ -1238,7 +1273,9 @@ func complete_claim() -> void:
 		set_msg("NO NODES", 0.8)
 	trail.clear()
 	grid_changed()
+	last_claim_was_split = split
 	on_claim(gained, caught)
+	last_claim_was_split = false
 	if claimed_frac() >= capture_target():
 		level_clear()
 
@@ -1546,6 +1583,8 @@ func fmt(v: float) -> String:
 
 
 func draw() -> void:
+	update_title_wordmark()
+	if title_backdrop != null: title_backdrop.visible = state == State.TITLE
 	if arcade_fill != null: arcade_fill.visible = state == State.ARCADE
 	if roguelite_fill != null:
 		roguelite_fill.visible = state == State.ROGUELITE
@@ -1560,6 +1599,12 @@ func draw() -> void:
 		roguelite.draw()
 		return
 	battle_fill.visible = false
+	if state == State.TITLE:
+		fill.visible = false
+		draw_title_field()
+		draw_title_panel()
+		sparks.draw(lines)
+		return
 	if state == State.BATTLE_ROYALE:
 		fill.visible = false
 		battle.draw(lines, battle_fill)
@@ -2111,7 +2156,7 @@ func update_hazards(dt: float) -> void:
 			bolts.remove_at(j)
 		j -= 1
 
-	# spawners: breed up to 3 mites each; mites home on the surveyor through the void
+	# Spawners retain their population limit; each mode configures its offspring.
 	var mite_speed := 11.0 * CELL * 0.4 * (1.0 + 0.05 * level)
 	for sp in spawners:
 		var s: Spawner = sp
@@ -2126,6 +2171,8 @@ func update_hazards(dt: float) -> void:
 			else:
 				s.pos = np
 			s.cell = to_cell(s.pos)
+		else:
+			s.pos = center(s.cell)
 		s.spawn_t -= dt
 		if s.spawn_t <= 0.0 and s.alive < s.max_alive:
 			s.spawn_t = s.interval
@@ -2134,25 +2181,15 @@ func update_hazards(dt: float) -> void:
 			m.pos = center(s.cell)
 			m.vel = Vector2.RIGHT.rotated(randf() * TAU) * mite_speed
 			m.home = s
+			configure_mite(m)
 			mites.append(m)
 			sparks.ripple(m.pos, 4.0, 200.0, 0.4, Palette.PURPLE)
 	j = mites.size() - 1
 	while j >= 0:
 		var m: Mite = mites[j]
-		var want := (vis - m.pos).normalized() * mite_speed
-		m.vel = m.vel.lerp(want, 1.0 - exp(-dt * 1.5))
+		update_mite_velocity(m, dt, mite_speed)
 		m.spin += dt * 6.0
-		var np := m.pos + m.vel * dt
-		if cell_blocked(to_cell(np)):
-			# slide along the coast: try each axis alone, else bounce
-			if not cell_blocked(to_cell(Vector2(np.x, m.pos.y))):
-				np = Vector2(np.x, m.pos.y)
-			elif not cell_blocked(to_cell(Vector2(m.pos.x, np.y))):
-				np = Vector2(m.pos.x, np.y)
-			else:
-				np = m.pos
-				m.vel = -m.vel
-		m.pos = np
+		move_mite(m, dt)
 		var mc := to_cell(m.pos)
 		if in_bounds(mc) and cells[idx(mc.x, mc.y)] == TRAIL:
 			if tether_hit(mc) and wire_hit():
@@ -2170,6 +2207,35 @@ func update_hazards(dt: float) -> void:
 		if randf() < 0.1:
 			sparks.emit(m.pos, Vector2(randf_range(-40, 40), randf_range(-40, 40)), 0.25, Palette.RED, 2.0)
 		j -= 1
+
+
+func configure_mite(_m: Mite) -> void:
+	pass
+
+
+func update_mite_velocity(m: Mite, dt: float, speed: float) -> void:
+	var want := (vis - m.pos).normalized() * speed
+	m.vel = m.vel.lerp(want, 1.0 - exp(-dt * 1.5))
+
+
+func move_mite(m: Mite, dt: float) -> void:
+	# Brood bursts sweep the grid so even a thin captured strip remains a wall.
+	var steps := maxi(1, ceili(m.vel.length() * dt / (CELL * 0.4))) if m.burst_hunter else 1
+	for step in steps:
+		var np := m.pos + m.vel * dt / steps
+		var corner_blocked := m.burst_hunter and (cell_blocked(to_cell(Vector2(np.x, m.pos.y))) or cell_blocked(to_cell(Vector2(m.pos.x, np.y))))
+		if cell_blocked(to_cell(np)) or corner_blocked:
+			if not cell_blocked(to_cell(Vector2(np.x, m.pos.y))):
+				np = Vector2(np.x, m.pos.y)
+			elif not cell_blocked(to_cell(Vector2(m.pos.x, np.y))):
+				np = Vector2(m.pos.x, np.y)
+			else:
+				np = m.pos
+				m.vel = -m.vel
+		m.pos = np
+		var cell := to_cell(m.pos)
+		if m.burst_hunter and in_bounds(cell) and cells[idx(cell.x, cell.y)] in [TRAIL, SEAL_SOFT]:
+			break # Let the shared trail/shield/seal contact rules resolve this cell.
 
 
 func draw_hazards() -> void:
@@ -2212,17 +2278,20 @@ func draw_hazards() -> void:
 			pts.append(c + Vector2(cos(a), sin(a)) * 6.0)
 		lines.polyline(pts, true, Palette.MAGENTA, 1.5, 0.5, 1.0)
 		var k2 := clampf(1.0 - s.spawn_t / 1.0, 0.0, 1.0)
-		if k2 > 0.0 and s.alive < 3:
+		if k2 > 0.0 and s.alive < s.max_alive:
 			var wc := Palette.MAGENTA
 			wc.a = k2
 			lines.circle(c, 12.0 + 8.0 * k2, wc, 6, 2.0, 0.5, 0.8)
 	for mi in mites:
-		var m: Mite = mi
-		var pts := PackedVector2Array()
-		for k in 3:
-			var a := m.spin + k * TAU / 3.0
-			pts.append(m.pos + Vector2(cos(a), sin(a)) * 6.0)
-		lines.polyline(pts, true, Palette.RED, 2.0, 0.5, 1.2)
+		draw_mite(mi)
+
+
+func draw_mite(m: Mite) -> void:
+	var pts := PackedVector2Array()
+	for k in 3:
+		var a := m.spin + k * TAU / 3.0
+		pts.append(m.pos + Vector2(cos(a), sin(a)) * 6.0)
+	lines.polyline(pts, true, Palette.RED, 2.0, 0.5, 1.2)
 
 
 # ------------------------------------------------------------------ lancer
@@ -2636,8 +2705,8 @@ func draw_ability_ring() -> void:
 
 
 # ------------------------------------------------------------------ title screen
-## The tube powers on (dot, line, picture: the outro in reverse), the title plots itself in
-## over a drifting Lissajous with the Anomaly prowling behind it, and a four-item menu waits.
+## The tube powers on into a filled wordmark, a quiet left menu, and a giant
+## territory-built Surveyor emblem. The same backdrop carries into Options.
 func start_battle_royale() -> void:
 	battle = BattleRoyale.new()
 	battle.start()
@@ -2657,8 +2726,8 @@ func go_title() -> void:
 	state = State.TITLE
 	set_field_x(FX_DOCK)
 	if OS.has_feature("editor") and not TITLE_ITEMS.has("TUBE"):
-		TITLE_ITEMS.insert(2, "TUBE")
-		TITLE_DESCS.insert(2, "TUNE THE TUBE (DEV)")
+		TITLE_ITEMS.assign(["ROGUELITE", "JUMP", "TUBE", "ARCADE", "BATTLE ROYALE", "LOG", "OPTIONS", "QUIT"])
+		TITLE_DESCS.assign(["RECLAIM YOUR EMPIRE.", "CHOOSE A SHIP. CLAIM THE VOID.", "TUNE THE TUBE (DEV)", "ONE LIFE. BEAT THE BUZZER.", "8 CUTTERS. ONE WINNER.", "YOUR EXPEDITION RECORDS", "MAKE YOURSELF AT HOME", "POWER DOWN"])
 	reset_field(0)
 	trail.clear()
 	drawing = false
@@ -2667,6 +2736,10 @@ func go_title() -> void:
 	spawn_qix()
 	surv_scale = 1.0
 	title_t = 0.0
+	title_underline_start = 0.85
+	title_backdrop_t = 0.0
+	title_motif_weights.fill(0.0)
+	title_motif_weights[TITLE_MOTIFS.find(TITLE_ITEMS[title_sel])] = 1.0
 	title_exit = -1
 	title_exit_t = 0.0
 	show_log = false
@@ -2677,7 +2750,26 @@ func go_title() -> void:
 
 
 func title_paths() -> Array[PackedVector2Array]:
-	return VectorFont.paths("GALAXTIX", Vector2(FX + grid_width * CELL * 0.5, FY + grid_height * CELL * 0.34), 96, 1, VectorFont.display)
+	return Wordmark.paths(title_logo_rect())
+
+
+func title_logo_rect() -> Rect2:
+	return Rect2(TITLE_LEFT, 158, 650, 650.0 / 7.5)
+
+
+func update_title_wordmark() -> void:
+	var showing := state == State.TITLE and title_exit < 0 and title_t > 0.9 and not show_log
+	if title_wordmark == null:
+		if not showing: return
+		title_wordmark = Wordmark.new()
+		title_wordmark.ink = Color(0.42, 0.48, 0.50)
+		fill.get_parent().add_child(title_wordmark)
+	title_wordmark.visible = showing
+	if not showing: return
+	var rect := title_logo_rect()
+	title_wordmark.position = rect.position
+	title_wordmark.scale = rect.size / Vector2(750, 100)
+	title_wordmark.modulate.a = clampf((title_t - 0.9) / 0.9, 0.0, 1.0)
 
 
 func update_title(dt: float) -> void:
@@ -2715,14 +2807,16 @@ func update_title(dt: float) -> void:
 		return
 	if title_t < 1.0:
 		return
+	if show_log:
+		if Input.is_action_just_pressed("abort") or Input.is_action_just_pressed("confirm") or Input.is_action_just_pressed("launch"):
+			close_log()
+		return
 	if Input.is_action_just_pressed("move_up"):
 		title_sel = (title_sel - 1 + TITLE_ITEMS.size()) % TITLE_ITEMS.size()
 		lines.spike(0.8, 0.2)
 	if Input.is_action_just_pressed("move_down"):
 		title_sel = (title_sel + 1) % TITLE_ITEMS.size()
 		lines.spike(0.8, 0.2)
-	if Input.is_action_just_pressed("abort") and show_log:
-		show_log = false
 	if Input.is_action_just_pressed("confirm") or Input.is_action_just_pressed("launch"):
 		activate_title_item()
 
@@ -2730,7 +2824,7 @@ func update_title(dt: float) -> void:
 func activate_title_item() -> void:
 	var item := TITLE_ITEMS[title_sel]
 	if item == "LOG":
-		show_log = not show_log
+		open_log()
 		lines.spike(1.5, 0.3)
 		return
 	if item == "OPTIONS":
@@ -2744,83 +2838,146 @@ func activate_title_item() -> void:
 	shake = maxf(shake, 0.4)
 
 
+func draw_title_background(quiet := false) -> void:
+	if title_backdrop == null:
+		title_backdrop = ColorRect.new()
+		title_backdrop.size = Vector2(1600, 900)
+		title_backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var mat := ShaderMaterial.new()
+		mat.shader = preload("res://shaders/title_backdrop.gdshader")
+		mat.set_shader_parameter("compatibility", RenderingServer.get_current_rendering_method() == "gl_compatibility")
+		title_backdrop.material = mat
+		fill.get_parent().add_child(title_backdrop)
+		fill.get_parent().move_child(title_backdrop, 0)
+	title_backdrop.visible = true
+	title_backdrop.scale = lines.zoom
+	title_backdrop.position = lines.zoom_center * (Vector2.ONE - lines.zoom)
+	var backdrop_dt := maxf(title_t - title_backdrop_t, 0.0)
+	title_backdrop_t = title_t
+	var motif := TITLE_MOTIFS.find(TITLE_ITEMS[title_sel])
+	# Blend all weights so rapid navigation can reverse a transition without a pop.
+	for i in title_motif_weights.size():
+		title_motif_weights[i] = lerpf(title_motif_weights[i], 1.0 if i == motif else 0.0, 1.0 - exp(-9.0 * backdrop_dt))
+	title_backdrop.material.set_shader_parameter("motif_weights", title_motif_weights)
+	title_backdrop.material.set_shader_parameter("clock", title_t)
+	title_backdrop.material.set_shader_parameter("opacity", clampf(title_t / 0.85, 0.0, 1.0))
+	title_backdrop.material.set_shader_parameter("subdued", 0.06 if show_log else (0.2 if quiet else (1.0 - clampf(title_exit_t / 0.55, 0.0, 0.85))))
+	# Sparse fragments drift through the same scene on the title and Options.
+	for i in 64:
+		var x := fposmod(i * 317.13 + title_t * (9 + i % 5 * 3), 1700.0) - 50.0
+		var y := fposmod(i * 137.71 + sin(title_t * 0.18 + i) * 10, 900.0)
+		var fade := smoothstep(620.0, 900.0, x)
+		var alpha := (0.018 + 0.12 * fade) * (0.45 if quiet else 1.0) * clampf(title_t, 0, 1)
+		var color := Color(Palette.CYAN if i % 4 else Palette.YELLOW, alpha)
+		var at := Vector2(x, y)
+		if i % 5 == 0:
+			var r := 2.0 + i % 3
+			lines.polyline(PackedVector2Array([at + Vector2(0, -r), at + Vector2(r, 0), at + Vector2(0, r), at + Vector2(-r, 0)]), true, color, 0.0, 0.0, 0.8)
+		else:
+			lines.seg(at, at + Vector2(3 + i % 11, 0), color, 0.0, 0.0, 0.7)
+
 func draw_title_field() -> void:
-	var cx := FX + grid_width * CELL * 0.5
-	# a slow Lissajous figure: the classic scope idle
-	var lp := PackedVector2Array()
-	var cy := FY + grid_height * CELL * 0.62
-	for i in 241:
-		var u := float(i) / 240.0 * TAU
-		lp.append(Vector2(cx + sin(3.0 * u + liss_phase) * 300.0, cy + sin(2.0 * u) * 150.0))
-	var lc := Palette.GREEN
-	lc.a = 0.35
-	lines.polyline(lp, false, lc, 0.8, 0.3, 0.8)
-	# title, plotted in after power-on, burst into sparks on exit
-	if title_exit < 0:
-		var tf := clampf((title_t - 0.9) / 0.9, 0.0, 1.0)
-		lines.trace(title_paths(), tf, Palette.CYAN, 1.5, 0.4, 1.5)
-		if tf >= 1.0:
-			var sub := "CLAIM THE VOID"
-			var n := int(clampf((title_t - 1.8) * 30.0, 0.0, float(sub.length())))
-			VectorFont.draw(lines, sub.substr(0, n), Vector2(cx, FY + grid_height * CELL * 0.34 + 120), 18, Palette.WHITE, 1.0, 0.4, 1)
-	# scope readouts in the corner, for the vibe
-	var rc := Palette.DIM
-	rc.a = 0.7
-	VectorFont.draw(lines, "CH1 2V/DIV   TRIG AUTO   XY", Vector2(FX + 14, FY + grid_height * CELL - 22), 9, rc, 0.3, 0.1)
-	VectorFont.draw(lines, "1600X900", Vector2(FX + grid_width * CELL - 14, FY + grid_height * CELL - 22), 9, rc, 0.3, 0.1, 2)
+	draw_title_background()
 	if show_log:
 		draw_log()
+		return
+	if title_exit < 0 and title_t > 1.1:
+		VectorFont.draw(lines, "CLAIM THE VOID", Vector2(TITLE_LEFT + 3, 269), 14, Color(Palette.CYAN, 0.6), 0.0, 0.0)
+
+
+func open_log() -> void:
+	# Read the separate Roguelite profile, or its current in-memory records after a run.
+	var profile = preload("res://scripts/roguelite_progress.gd").new()
+	if is_instance_valid(roguelite):
+		profile = roguelite.get("progress")
+	else:
+		profile.read_profile()
+	var upgrades := 0
+	for track in profile.TRACKS:
+		upgrades += profile.rank_of(track)
+	var ships_owned := 0
+	for ship_id in profile.SHIPS:
+		if profile.owns_ship(ship_id): ships_owned += 1
+	title_log_stats = {"runs": profile.runs, "wins": profile.wins, "salvage": profile.salvage,
+		"best_sector": profile.best_sector, "ships": ships_owned, "upgrades": upgrades}
+	show_log = true
+
+
+func close_log() -> void:
+	show_log = false
+	title_sel = TITLE_ITEMS.find("LOG")
+	title_underline_start = title_t
+
+
+func log_back_rect() -> Rect2:
+	return Rect2(1160, 730, 280, 64)
 
 
 func draw_log() -> void:
-	var cx := FX + grid_width * CELL * 0.5
-	var y := FY + grid_height * CELL * 0.5
-	lines.rect(Rect2(cx - 260, y - 30, 520, 250), Palette.DIM, 0.4, 0.1, 0.8)
-	VectorFont.draw(lines, "JUMP LOG", Vector2(cx, y), 20, Palette.YELLOW, 0.8, 0.3, 1, 1.0, VectorFont.display)
-	var rows := [
-		["JUMPS", str(int(Save.data.runs))],
-		["FLUX EARNED", fmt(float(Save.data.total_flux))],
-		["ISOTOPE", str(int(Save.data.isotope))],
-		["SHIPS", "%d/%d" % [1 + Save.data.ships.size(), Ships.LIST.size()]],
-		["STARCHARTS", str(int(Save.data.starcharts))],
-	]
-	for g in Galaxies.LIST:
-		rows.append([String(g.name), ("SECTOR %02d" % Galaxies.best(g.id)) if Galaxies.best(g.id) > 0 else "--"])
-	var ry := y + 40
-	for r in rows:
-		VectorFont.draw(lines, r[0], Vector2(cx - 230, ry), 12, Palette.WHITE, 0.4, 0.15)
-		VectorFont.draw(lines, r[1], Vector2(cx + 230, ry), 12, Palette.CYAN, 0.4, 0.15, 2)
-		ry += 26
+	if title_log_stats.is_empty(): open_log()
+	const acts = preload("res://scripts/roguelite_acts.gd")
+	VectorFont.draw(lines, "ROGUELITE", Vector2(160, 112), 15, Palette.CYAN, 0, 0)
+	VectorFont.draw(lines, "EXPEDITION LOG", Vector2(160, 151), 42, Palette.FULLBRIGHT, 0, 0, 0, 1.1, VectorFont.display)
+	var columns := [["EXPEDITIONS", title_log_stats.runs], ["VICTORIES", title_log_stats.wins], ["SALVAGE AVAILABLE", title_log_stats.salvage]]
+	for i in columns.size():
+		var x := 160.0 + i * 440.0
+		VectorFont.draw(lines, fmt(columns[i][1]), Vector2(x, 250), 62, Palette.FULLBRIGHT, 0, 0, 0, 1.1, VectorFont.display)
+		VectorFont.draw(lines, columns[i][0], Vector2(x, 330), 16, Palette.CYAN, 0, 0)
+	lines.seg(Vector2(160, 390), Vector2(1440, 390), Palette.DIM, 0, 0)
+	var has_record: bool = title_log_stats.runs > 0 or title_log_stats.wins > 0 or title_log_stats.best_sector > 1
+	var best: int = title_log_stats.best_sector if has_record else 0
+	var record := "NO EXPEDITIONS YET" if not has_record else "ACT %d / SECTOR %02d" % [acts.act_at(best), acts.step_at(best)]
+	VectorFont.draw(lines, "FURTHEST REACHED", Vector2(160, 426), 16, Palette.CYAN, 0, 0)
+	VectorFont.draw(lines, record, Vector2(1440, 420), 24, Palette.WHITE, 0, 0, 2, 1.0, VectorFont.display)
+	for act in acts.ACTS.size():
+		var x := 160.0 + act * 440.0
+		var color: Color = acts.TERRITORY[act].coast
+		VectorFont.draw(lines, "ACT %d / %s" % [act + 1, acts.ACTS[act].name.trim_prefix("THE ")], Vector2(x, 493), 16, color, 0, 0)
+		for sector in acts.ACT_LENGTH:
+			var reached := best >= act * acts.ACT_LENGTH + sector + 1
+			var r := Rect2(x + sector * 45.0, 534, 35, 24)
+			lines.rect(r, color if reached else Palette.DIM, 0, 0, 1.0)
+			if reached:
+				for stripe in 4:
+					lines.seg(r.position + Vector2(5, 5 + stripe * 4), r.position + Vector2(30, 5 + stripe * 4), Color(color, 0.45), 0, 0)
+	VectorFont.draw(lines, "SHIPS UNLOCKED", Vector2(160, 626), 16, Palette.CYAN, 0, 0)
+	VectorFont.draw(lines, "%d / 3" % title_log_stats.ships, Vector2(540, 620), 27, Palette.WHITE, 0, 0, 2)
+	VectorFont.draw(lines, "UPGRADE RANKS", Vector2(760, 626), 16, Palette.CYAN, 0, 0)
+	VectorFont.draw(lines, "%d / 60" % title_log_stats.upgrades, Vector2(1440, 620), 27, Palette.WHITE, 0, 0, 2)
+	var back := log_back_rect()
+	lines.rect(back, Palette.CYAN, 0, 0, 1.0)
+	VectorFont.draw(lines, "> BACK", back.get_center() - Vector2(0, 12), 24, Palette.FULLBRIGHT, 0, 0, 1, 1.1, VectorFont.display)
+	VectorFont.draw(lines, Controls.hint("ENTER / ESC   BACK"), Vector2(160, 754), 14, Palette.WHITE, 0, 0)
 
 
 func draw_title_panel() -> void:
-	var a := clampf((title_t - 1.2) / 0.6, 0.0, 1.0)
+	if show_log: return
+	var a := clampf((title_t - 0.85) / 0.3, 0.0, 1.0)
 	if a <= 0.0:
 		return
 	for i in TITLE_ITEMS.size():
 		var sel := i == title_sel
-		var col := Palette.FULLBRIGHT if sel else Palette.DIM
+		var col := Palette.FULLBRIGHT if sel else Palette.WHITE * 0.58
 		col.a = a
 		if title_exit >= 0 and i != title_exit:
 			col.a *= 0.3
 		var ry := title_row_y(i)
 		if sel:
-			var pulse := 0.6 + 0.4 * sin(time * 8.0)
 			var mc := Palette.YELLOW
-			mc.a = pulse * a
-			var rx := PANEL_X + 8
-			lines.polyline(PackedVector2Array([Vector2(rx, ry + 4), Vector2(rx + 14, ry + 14), Vector2(rx, ry + 24)]), false, mc, 1.2, 0.5, 1.2)
-			var sw := fmod(time * 240.0, PANEL_W)
-			var sc := Palette.CYAN
-			sc.a = 0.6 * a
-			lines.seg(Vector2(PANEL_X + 30, ry + 36), Vector2(PANEL_X + 30 + sw, ry + 36), sc, 0.6, 0.3, 0.8)
-			VectorFont.draw(lines, TITLE_DESCS[i], Vector2(PANEL_X + 32, ry + 42), 10, Palette.CYAN * Color(1, 1, 1, a), 0.5, 0.2)
-		VectorFont.draw(lines, TITLE_ITEMS[i], Vector2(PANEL_X + 30, ry), 30, col, 1.0 if sel else 0.4, 0.4 if sel else 0.1, 0, 1.3, VectorFont.display)
+			mc.a = a
+			var rx := TITLE_LEFT
+			lines.polyline(PackedVector2Array([Vector2(rx, ry + 5), Vector2(rx + 10, ry + 14), Vector2(rx, ry + 23)]), false, mc, 0.0, 0.0, 1.0)
+			var progress := clampf((title_t - title_underline_start) / 0.24, 0.0, 1.0)
+			var extent := VectorFont.width(TITLE_ITEMS[i], 27, VectorFont.display) * (1.0 - pow(1.0 - progress, 3.0))
+			if extent > 0.0:
+				lines.seg(Vector2(TITLE_LEFT + 32, ry + 39), Vector2(TITLE_LEFT + 32 + extent, ry + 39), Color(Palette.CYAN, a * 0.5), 0.0, 0.0, 0.8)
+		VectorFont.draw(lines, TITLE_ITEMS[i], Vector2(TITLE_LEFT + 32, ry), 27, col, 0.0, 0.0, 0, 1.1, VectorFont.display)
+	VectorFont.draw(lines, TITLE_DESCS[title_sel], Vector2(TITLE_LEFT + 32, 803), 12, Color(Palette.CYAN, a * 0.7), 0.0, 0.0)
 	var hc := Palette.DIM
 	hc.a = a
-	VectorFont.draw(lines, Controls.hint("ARROWS   ENTER"), Vector2(PANEL_X, 850), 11, hc, 0.3, 0.1)
+	VectorFont.draw(lines, Controls.hint("ARROWS   ENTER"), Vector2(TITLE_LEFT + 32, 847), 11, hc, 0.0, 0.0)
 	if beacon_note_t > 0.0:
-		VectorFont.draw(lines, "BEACON +%s FLUX WHILE AWAY" % fmt(Save.offline_gain), Vector2(PANEL_X, 780), 11, Palette.GREEN, 0.6, 0.2)
+		VectorFont.draw(lines, "BEACON +%s FLUX WHILE AWAY" % fmt(Save.offline_gain), Vector2(1490, 847), 11, Palette.GREEN, 0.0, 0.0, 2)
 
 
 # ------------------------------------------------------------------ bulwark seals
@@ -3286,12 +3443,18 @@ func activate_result(index: int) -> void:
 
 func _input(event: InputEvent) -> void:
 	Controls.observe_input(event)
+	if state == State.TITLE and show_log:
+		if event is InputEventMouseButton:
+			if event.pressed and event.button_index == MOUSE_BUTTON_LEFT and log_back_rect().has_point(event.position):
+				close_log()
+			get_viewport().set_input_as_handled()
+		return
 	if state in [State.ROGUELITE, State.ARCADE]:
 		return
 	if state == State.TITLE and title_t >= 1.0 and title_exit < 0 and not show_log:
 		if event is InputEventMouseMotion or event is InputEventMouseButton:
 			for i in TITLE_ITEMS.size():
-				if Rect2(PANEL_X, title_row_y(i) - 6, PANEL_W, 72).has_point(event.position):
+				if title_item_rect(i).has_point(event.position):
 					title_sel = i
 					if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 						activate_title_item()
@@ -4518,7 +4681,10 @@ func on_claim(_gained: int, _caught: int) -> void:
 	pass
 
 func title_row_y(index: int) -> float:
-	return 180.0 + index * 76.0
+	return 336.0 + index * 55.0
+
+func title_item_rect(index: int) -> Rect2:
+	return Rect2(TITLE_LEFT - 8, title_row_y(index) - 6, 560, 51)
 
 func start_roguelite() -> void:
 	if roguelite == null:

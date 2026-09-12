@@ -100,6 +100,8 @@ func check() -> void:
 	await check_rotor_capture()
 	await check_sparx_capture()
 	await check_worm_and_brood()
+	await check_brood_hunting()
+	check_spawner_broods()
 	# Roaming void enemies preserve their capture region and threaten live trails.
 	for kind in ["gunner_orb", "ray_orb", "chain_worm", "brood_carrier"]:
 		q = enemy_fixture(kind)
@@ -222,7 +224,7 @@ func check_worm_and_brood() -> void:
 	assert(rogue.brood_eggs.is_empty() and rogue.mites.size() == 1 and behavior.home.alive == 1)
 	var mite_position: Vector2 = rogue.mites[0].pos
 	rogue.update_hazards(0.1)
-	assert(rogue.mites[0].pos != mite_position, "Hatched mites join the normal chase simulation")
+	assert(rogue.mites[0].pos != mite_position and rogue.mites[0].hunt_state == "roam", "Hatched broods roam while the player is safe")
 	# Never exceed four pending/hatched offspring from one carrier.
 	for i in 8:
 		carrier.c = rogue.center(Vector2i(80 + i, 55))
@@ -256,3 +258,138 @@ func check_worm_and_brood() -> void:
 			assert(not rogue.tether_hit(rogue.qix_trail_cell(enemy)), "New bodies respect Hardlight on every ship")
 			rogue.hardlight_time = 0
 			assert(rogue.tether_hit(rogue.qix_trail_cell(enemy)))
+
+func check_brood_hunting() -> void:
+	var carrier := enemy_fixture("brood_carrier")
+	var home: Game.Spawner = rogue.authored_behaviors[carrier].home
+	home.pos = carrier.c
+	var m := Game.Mite.new()
+	m.burst_hunter = true
+	m.home = home
+	m.pos = rogue.center(Vector2i(80, 50))
+	m.roam_anchor = m.pos
+	m.roam_angle = 1.0
+	m.vel = Vector2.RIGHT * 20
+	home.alive = 1
+	rogue.mites.assign([m])
+	rogue.vis = m.pos + Vector2(80, 0)
+	rogue.drawing = false
+	for frame in 90: rogue.update_mite_velocity(m, 1.0 / 60.0, 50)
+	assert(m.hunt_state == "roam", "Safe land never attracts carrier broods")
+	rogue.drawing = true
+	rogue.vis = m.pos + Vector2(260, 0)
+	rogue.update_mite_velocity(m, 0.016, 50)
+	assert(m.hunt_state == "roam", "Cuts outside notice range do not trigger a hunt")
+	rogue.vis = m.pos + Vector2(80, 0)
+	rogue.update_mite_velocity(m, 0.016, 50)
+	assert(m.hunt_state == "warn")
+	for frame in 20: rogue.update_mite_velocity(m, 1.0 / 60.0, 50)
+	assert(m.hunt_state == "warn" and m.vel.length() < 2.0, "Warning gives a real pause before attack")
+	var warning_clock := m.hunt_clock
+	var warning_position := m.pos
+	rogue.freeze_time = 1.0
+	rogue.update_hazards(0.5)
+	assert(m.hunt_clock == warning_clock and m.pos == warning_position, "Stasis freezes the brood's warning and motion")
+	rogue.freeze_time = 0.0
+	await shot("brood-hunt-warning")
+	for frame in 9: rogue.update_mite_velocity(m, 1.0 / 60.0, 50)
+	assert(m.hunt_state == "burst" and m.vel.x > 80)
+	var heading := m.vel.angle()
+	rogue.vis = m.pos + Vector2(0, 80)
+	rogue.update_mite_velocity(m, 0.1, 50)
+	assert(absf(angle_difference(heading, m.vel.angle())) <= rogue.BROOD_TURN_RATE * 0.1 + 0.001, "A ninety-degree dodge cannot be tracked instantly")
+	await shot("brood-hunt-burst")
+	for frame in 40: rogue.update_mite_velocity(m, 1.0 / 60.0, 50)
+	assert(m.hunt_state == "recover", "Every burst has a recovery window")
+	rogue.drawing = false
+	rogue.update_mite_velocity(m, 0.016, 50)
+	assert(m.hunt_state == "settle")
+	for frame in 48: rogue.update_mite_velocity(m, 1.0 / 60.0, 50)
+	assert(m.hunt_state == "roam", "Reaching safety ends the hunt")
+	# A thin wall interrupts sight and cannot be tunneled through, even with a large step.
+	for y in range(27, 77): rogue.cells[rogue.idx(82, y)] = Game.CLAIMED
+	m.pos = rogue.center(Vector2i(80, 50))
+	rogue.vis = rogue.center(Vector2i(85, 50))
+	rogue.drawing = true
+	rogue.update_mite_velocity(m, 0.016, 50)
+	assert(m.hunt_state == "roam" and not rogue.brood_clear_line(m.pos, rogue.vis), "No hunt through captured land")
+	m.hunt_state = "burst"
+	rogue.update_mite_velocity(m, 0.016, 50)
+	assert(m.hunt_state == "settle", "A newly closed barrier breaks pursuit")
+	m.vel = Vector2.RIGHT * 200
+	rogue.move_mite(m, 1.0)
+	assert(rogue.to_cell(m.pos).x < 82, "Burst remains in its original void pocket")
+	# Substeps stop on live wire instead of skipping its damage check.
+	rogue.cells[rogue.idx(82, 50)] = Game.TRAIL
+	m.pos = rogue.center(Vector2i(80, 50))
+	m.vel = Vector2.RIGHT * 200
+	rogue.move_mite(m, 0.2)
+	assert(rogue.to_cell(m.pos) == Vector2i(82, 50))
+	rogue.p = Vector2i(90, 50)
+	rogue.vis = rogue.center(rogue.p)
+	rogue.trail.assign([Vector2i(82, 50)])
+	rogue.hardlight_time = 1.0
+	rogue.update_hazards(0.0)
+	assert(rogue.state == Game.State.PLAYING, "Brood contact respects active Hardlight")
+	rogue.hardlight_time = 0
+	rogue.update_hazards(0.0)
+	assert(rogue.state != Game.State.PLAYING, "Crossing the trail still hurts without protection")
+	# Real enclosure removes a brood and releases its carrier's population slot.
+	carrier = enemy_fixture("brood_carrier")
+	home = rogue.authored_behaviors[carrier].home
+	home.pos = carrier.c
+	m = Game.Mite.new()
+	m.burst_hunter = true
+	m.home = home
+	m.pos = rogue.center(Vector2i(60, 50))
+	home.alive = 1
+	rogue.mites.assign([m])
+	rogue.drafts_taken = rogue.draft_capture.size()
+	rogue.p = Vector2i(70, 26)
+	rogue.vis = rogue.center(rogue.p)
+	rogue.draw_armed = true
+	for step in 51: assert(rogue.try_step(Vector2i.DOWN, true, false))
+	assert(rogue.mites.is_empty() and home.alive == 0, "Enclosing a brood destroys it and frees its spawn slot")
+	print("BROOD HUNT PASS: safe roaming, notice range, warning, limited turn, recovery, disengage, barriers, wire/shield contact and capture")
+
+func check_spawner_broods() -> void:
+	enemy_fixture("gunner_orb")
+	var nest := Game.Spawner.new()
+	nest.cell = Vector2i(80, 50)
+	nest.spawn_t = 0
+	rogue.spawners.assign([nest])
+	rogue.drawing = false
+	rogue.update_hazards(0.016)
+	assert(rogue.mites.size() == 1 and nest.alive == 1)
+	var m: Game.Mite = rogue.mites[0]
+	assert(m.burst_hunter and m.hunt_state == "roam" and nest.pos == rogue.center(nest.cell))
+	assert(m.roam_anchor == nest.pos, "Stationary nest is the brood's home, not the screen origin")
+	rogue.vis = m.pos + Vector2(80, 0)
+	rogue.drawing = true
+	rogue.update_mite_velocity(m, 0.016, 50)
+	assert(m.hunt_state == "warn")
+	for frame in 30: rogue.update_mite_velocity(m, 1.0 / 60.0, 50)
+	assert(m.hunt_state == "burst", "Spawner offspring use the same warned burst as carrier offspring")
+	rogue.drawing = false
+	for frame in 50: rogue.update_mite_velocity(m, 1.0 / 60.0, 50)
+	assert(m.hunt_state == "roam", "Spawner offspring also lose interest at safety")
+	for spawn in 5:
+		nest.spawn_t = 0
+		rogue.update_hazards(0.0)
+	assert(rogue.mites.size() == 2 and nest.alive == 2, "Each spawner stops at two living broods")
+	# Capturing the nest removes its offspring through the existing enclosure path.
+	rogue.drafts_taken = rogue.draft_capture.size()
+	rogue.p = Vector2i(89, 26)
+	rogue.vis = rogue.center(rogue.p)
+	rogue.draw_armed = true
+	for step in 51: assert(rogue.try_step(Vector2i.DOWN, true, false))
+	assert(nest.captured and rogue.mites.is_empty() and nest.alive == 0)
+	# Boss hatcheries use the same offspring initializer too.
+	enemy_fixture("gunner_orb")
+	var hatchery := Game.Spawner.new()
+	hatchery.cell = Vector2i(80, 50)
+	rogue.boss.id = "brood_queen"
+	rogue.boss.attack(rogue, {"cell": hatchery.cell, "home": hatchery, "direction": Vector2.DOWN}, 0)
+	assert(rogue.mites.size() == 1 and rogue.mites[0].burst_hunter)
+	assert(hatchery.pos == rogue.center(hatchery.cell))
+	print("SPAWNER BROODS PASS: shared hunting, nest origin, population cap, nest capture, boss hatchery")

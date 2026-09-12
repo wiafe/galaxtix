@@ -10,15 +10,15 @@ A run has **three acts of eight encounters**: seven regular sectors, then a boss
 
 | Act | Layouts and roster | Boss |
 | --- | --- | --- |
-| Foundry | Machinery islands and channels; Sparx, Turret, Rotor, Gunner Orb | The Foreman: capture weapons to stop its volleys. |
-| Infestation | Rounded chambers, roots and pockets; Spawner, Brood Carrier, Chain Worm | Brood Queen: capture hatcheries to stop mites. |
-| Reactor | Bridges, rings, shield pockets and hazards; Sniper, Ray Orb, Siege | Reactor Heart: disable beam, land-breaking and volley relays. |
+| Foundry | Machinery islands and channels; Sparx, Turret, Rotor, Gunner Orb | The Foreman (volleys) or Grinder (sweeping cutters). |
+| Infestation | Rounded chambers, roots and pockets; Spawner, Brood Carrier, Chain Worm | Brood Queen (mites) or Thorn Maw (carve its body between spore bursts). |
+| Reactor | Bridges, rings, shield pockets and hazards; Sniper, Ray Orb, Siege | Reactor Heart (mixed relays) or Prism Warden (splitting beams). |
 
-Anomalies remain shared. Every boss requires capturing three installations, then enclosing its exposed core. Boss victories grant 5/7/10 salvage and one hull, capped at the normal hull limit. The final boss completes the expedition. Each act has an exclusive boss pool, currently with one boss; more bosses can be added without changing route generation.
+Anomalies remain shared. Five bosses require capturing three installations, then enclosing their exposed core. Thorn Maw opens after attacking: carve away 60% of its body, then capture its exposed heart. Severing thorns removes their spore attacks. A cut started while open can finish safely after the window expires. Boss victories grant 5/7/10 salvage and one hull, capped at the normal hull limit. The final boss completes the expedition. Each act has an exclusive boss pool, with two bosses; one is randomly selected for sector eight of that act.
 
 Territory goals for the seven regular sectors are **60/60/65/65/70/70/75%**, **65/65/70/70/75/75/80%**, and **70/70/75/75/80/80/85%** by act. Objective encounters retain their own win conditions. One Race and one Rival appear somewhere in each full route, on either branch or a shared junction. Chart selection stays within the current act.
 
-See [act content and boss editing](roguelite-acts.md). Maps 09–32 provide the new act arenas. The original eight maps remain available in the editor and Arcade.
+See [act content and boss editing](roguelite-acts.md). Maps 09–35 provide the new act arenas. The original eight maps remain available in the editor and Arcade.
 
 ## Encounter kinds
 
@@ -71,14 +71,14 @@ The first three survey sectors give one choice each, gradually filling the three
 
 When fewer than three upgrades remain, the unused choices are filled in this order: **Salvage Cache** (+3 salvage), **Thruster Tuning** (+5 percentage points of movement speed), and **Recovery Shield** (+0.5 seconds of respawn protection). With all systems at rank III, all three bonus choices appear. These rewards use no slots. Passive bonuses stack, carry between sectors, appear on the pause screen, and reset with card ranks on a new expedition. Cache salvage counts toward expedition earnings and is banked through normal settlement; Extractor does not multiply this fixed reward. Keep Build (Escape or click) still passes a full-build draft and resolves queued rewards normally.
 
-Drafts, installation, and clears retain synth cues, radial pulses, and beam effects. Star Chart appears after 2.2 seconds. Intermediate clears keep the focus on the completed sector. Salvage banks exactly once when the expedition ends by completion, defeat, or early exit. Continuing between sectors does not settle the run.
+Drafts, installation, and clears retain synth cues, radial pulses, and beam effects. Star Chart appears after 2.2 seconds. Intermediate clears keep the focus on the completed sector. Salvage banks exactly once when the expedition ends by completion or defeat. Voluntary abandonment forfeits all salvage and fractional salvage earned in that expedition, along with run cards, passive bonuses and new progression unlocks. Previously banked currency and unlocks remain intact. An abandoned expedition counts as an ended run, never a victory. Continuing between sectors does not settle the run.
 
 ## Controls and hangar
 
 - WASD / arrows: move or face. Surveyor holds Space to draw, Shift for slow draw. Lancer presses Space to fire and ride a line. Bulwark holds Space to draw and harden its trail; releasing braces in place while hardening continues.
 - Claimed interiors and coasts use the ship's normal speed. The displayed ship follows grid movement at its travel speed instead of repeatedly easing to a stop at each cell; lance riding and Leap landing keep their distinct travel rates.
 - Q: the opening movement module; hold and release for Charge or Leap. Charge starts from a coast and keeps the ship stationary. E / Ctrl: Afterburner or Hardlight, if installed. Only one of these secondary active systems can be equipped at a time.
-- Escape during play pauses. Resume preserves the cut; End Expedition banks salvage. Escape at an intermediate clear banks and exits.
+- Escape during play pauses. Resume preserves the cut; Abandon Run opens a confirmation that defaults to Keep Playing. Escape on the sector map or at an intermediate clear opens the same confirmation. Escape/controller Back cancels it. Confirmed abandonment pays nothing and returns through a forfeiture result screen.
 - In a rival sector, a rival line across your trail destroys the trail and returns you to your anchor without costing a hull; crossing the rival's line does the same to it.
 - Arrows and Enter, or mouse: navigate and choose. R during drafting spends a Scanner rescan, when available.
 - Back, Upgrades, and Ships sit at top left; Launch stands alone at top right. The salvage balance is in the footer.
@@ -175,4 +175,4 @@ The objectives suite covers the kind table and two hundred generated routes, dis
 
 The optimization suite compares geometry and texture output with frozen reference algorithms across arenas, random cell states, empty/full fields, and all galaxy patterns. It checks corruption growth and visual cache invalidation after captures, cleansing, hardening, Anchor recovery, and restart.
 
-This slice follows the brainstorming document's numerical upgrades, milestones, distinct ships, and changing run builds. Additional bosses for each act pool, permanent card-family unlocks, and equipment/loadouts remain future work. Boss attack timing, rewards and act difficulty need player balance feedback.
+This slice follows the brainstorming document's numerical upgrades, milestones, distinct ships, and changing run builds. Permanent card-family unlocks and equipment/loadouts remain future work. Boss attack timing, rewards and act difficulty need player balance feedback.

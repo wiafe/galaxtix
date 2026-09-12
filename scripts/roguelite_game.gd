@@ -82,6 +82,9 @@ var settled := false
 var earned_salvage := 0
 var bonus_salvage := 0.0
 var banked_salvage := 0
+var run_abandoned := false
+var run_profile_before: Dictionary = {}
+var abandon_return: Dictionary = {}
 var save_failed := false
 var corruption := PackedByteArray()
 var corruption_strokes := PackedVector2Array()
@@ -136,12 +139,18 @@ var boost_time := 0.0
 var hardlight_time := 0.0
 var hardlight_armed := false
 var cooldowns := {"charge": 0.0, "hardening": 0.0, "leap": 0.0, "dash": 0.0, "afterburner": 0.0, "hardlight": 0.0, "anchor": 0.0, "ion": 0.0}
+var claim_preview := preload("res://scripts/claim_preview.gd").new()
+var split_audio: AudioStreamPlayer
 var last_result := ""
 var hangar_page := "upgrades"
 var viewed_ship := 0
 
 func setup(p_lines: ScopeLines, p_sparks: Sparks, p_fill: Sprite2D) -> void:
 	grid_width = FIELD_COLUMNS
+	split_audio = AudioStreamPlayer.new()
+	split_audio.volume_db = -18.0
+	split_audio.stream = Fanfare.make_split()
+	add_child(split_audio)
 	reward_audio = AudioStreamPlayer.new()
 	reward_audio.volume_db = -8.0
 	add_child(reward_audio)
@@ -172,6 +181,9 @@ func go_dock() -> void:
 	fill.visible = false
 
 func start_run(_retry_sector := 0) -> void:
+	run_abandoned = false
+	abandon_return.clear()
+	run_profile_before = {"best_sector": progress.best_sector, "containment_unlocked": progress.containment_unlocked}
 	reward_audio.stop()
 	opening_draft_pending = true
 	reset_movement_module()
@@ -295,6 +307,7 @@ func encounter_goal() -> int:
 	return Encounters.goal(authored_map, encounter_kind(level), level)
 
 func encounter_copy(map, kind: String, depth: int) -> String:
+	if kind == "boss" and map != null and map.boss_id == "thorn_maw": return "CUT ITS BODY WHEN IT OPENS. CARVE 60%, THEN ENCLOSE THE HEART."
 	var copy := Sectors.objective_copy(kind, depth)
 	if kind == "race": copy = copy.replace(str(Sectors.RACE_GOAL) + "%", str(Encounters.goal(map, kind, depth)) + "%")
 	else: copy = copy.replace(str(Sectors.capture_goal(depth)) + "%", str(Encounters.goal(map, kind, depth)) + "%")
@@ -1645,7 +1658,7 @@ func update(dt: float) -> void:
 			return
 		update_choices()
 		return
-	if phase == "paused":
+	if phase in ["paused", "abandon"]:
 		update_choices()
 		return
 	if phase == "run" and state == State.PLAYING and Input.is_action_just_pressed("abort"):
@@ -1975,11 +1988,97 @@ func update_chain_worm(q: QixBody, dt: float, speed: float) -> void:
 			link.len = 2.0
 		front = back
 
+const BROOD_NOTICE_RANGE := 200.0
+const BROOD_WARNING := 0.45
+const BROOD_BURST := 0.65
+const BROOD_RECOVERY := 0.55
+const BROOD_TURN_RATE := 0.65 # radians/second: bursts cannot follow a sharp dodge.
+
+func brood_clear_line(from: Vector2, to: Vector2) -> bool:
+	var steps := maxi(1, ceili(from.distance_to(to) / (CELL * 0.4)))
+	for step in range(1, steps + 1):
+		if cell_blocked(to_cell(from.lerp(to, float(step) / steps))): return false
+	return true
+
+func configure_mite(m: Mite) -> void:
+	m.burst_hunter = true
+	m.roam_anchor = m.pos
+	m.roam_angle = rng.randf() * TAU
+	m.vel = Vector2.RIGHT.rotated(m.roam_angle) * 24.0
+
+func update_mite_velocity(m: Mite, dt: float, speed: float) -> void:
+	if not m.burst_hunter:
+		super.update_mite_velocity(m, dt, speed)
+		return
+	if dt <= 0.0: return
+	var hunting := m.hunt_state in ["warn", "burst", "recover"]
+	var notice_range := BROOD_NOTICE_RANGE * (1.5 if hunting else 1.0)
+	var sees_player := exposed() and m.pos.distance_squared_to(vis) <= notice_range * notice_range and brood_clear_line(m.pos, vis)
+	m.hunt_clock = maxf(0.0, m.hunt_clock - dt)
+	if hunting and not sees_player:
+		m.hunt_state = "settle"
+		m.hunt_clock = 0.7
+		m.roam_anchor = m.pos
+	match m.hunt_state:
+		"roam":
+			if sees_player:
+				m.hunt_state = "warn"
+				m.hunt_clock = BROOD_WARNING
+				m.vel *= exp(-dt * 12.0)
+				return
+			# An unreachable carrier never pulls a brood out of its captured-off pocket.
+			if brood_clear_line(m.pos, m.home.pos): m.roam_anchor = m.home.pos
+			m.roam_angle += dt * 0.5
+			var destination := m.roam_anchor + Vector2.RIGHT.rotated(m.roam_angle) * 64.0
+			var want := m.pos.direction_to(destination) * speed * 0.45
+			m.vel = m.vel.lerp(want, 1.0 - exp(-dt * 2.0))
+		"warn":
+			m.vel *= exp(-dt * 12.0)
+			if m.hunt_clock <= 0.0:
+				m.hunt_state = "burst"
+				m.hunt_clock = BROOD_BURST
+				m.vel = m.pos.direction_to(vis) * speed * 1.7
+		"burst":
+			var heading := rotate_toward(m.vel.angle(), m.pos.angle_to_point(vis), BROOD_TURN_RATE * dt)
+			m.vel = Vector2.RIGHT.rotated(heading) * speed * 1.7
+			if m.hunt_clock <= 0.0:
+				m.hunt_state = "recover"
+				m.hunt_clock = BROOD_RECOVERY
+		"recover":
+			m.vel *= exp(-dt * 7.0)
+			if m.hunt_clock <= 0.0:
+				m.hunt_state = "warn"
+				m.hunt_clock = BROOD_WARNING
+		"settle":
+			m.vel *= exp(-dt * 9.0)
+			if m.hunt_clock <= 0.0: m.hunt_state = "roam"
+
+func draw_mite(m: Mite) -> void:
+	if not m.burst_hunter:
+		super.draw_mite(m)
+		return
+	var color := Palette.PURPLE
+	if m.hunt_state == "warn": color = Palette.YELLOW
+	elif m.hunt_state == "burst": color = Palette.RED
+	var heading := m.vel.angle() if m.vel.length_squared() > 1.0 else m.spin * 0.2
+	var points := PackedVector2Array()
+	for i in 3:
+		points.append(m.pos + Vector2.RIGHT.rotated(heading + i * TAU / 3.0) * 6.0)
+	lines.polyline(points, true, color, 0.3, 0.1, 1.2)
+	if m.hunt_state == "warn":
+		var charge := 1.0 - clampf(m.hunt_clock / BROOD_WARNING, 0.0, 1.0)
+		lines.circle(m.pos, lerpf(17.0, 9.0, charge), Color(Palette.YELLOW, 0.5 + charge * 0.5), 12, 0.0, 0.0, 1.0)
+	elif m.hunt_state == "burst":
+		lines.seg(m.pos - m.vel.normalized() * 15.0, m.pos - m.vel.normalized() * 7.0, Color(Palette.RED, 0.65), 0.2, 0.1, 1.0)
+
+
 func update_brood_carrier(q: QixBody, dt: float, speed: float) -> void:
 	var behavior: Dictionary = authored_behaviors[q]
+	behavior.home.pos = q.c
 	behavior.clock -= dt
 	if behavior.phase == "roam":
 		move_authored_orb(q, dt, speed * 0.4)
+		behavior.home.pos = q.c
 		if behavior.clock <= 0:
 			behavior.phase = "warn"
 			behavior.clock = 0.9
@@ -2009,8 +2108,8 @@ func update_brood_eggs(dt: float) -> void:
 		if dt > 0.0 and egg.clock <= 0 and cells[idx(cell.x, cell.y)] == FREE:
 			var mite := Mite.new()
 			mite.pos = center(cell)
-			mite.vel = (vis - mite.pos).normalized() * 40.0
 			mite.home = egg.home
+			configure_mite(mite)
 			mite.home.alive += 1
 			mites.append(mite)
 			brood_eggs.remove_at(i)
@@ -2114,6 +2213,9 @@ func die(reason: String) -> void:
 	safe_motion = 0.0
 	stall_time = 0.0
 
+func split_feedback_enabled() -> bool:
+	return true
+
 func complete_claim() -> void:
 	field_features.remember_walls(self, trail)
 	super.complete_claim()
@@ -2121,21 +2223,23 @@ func complete_claim() -> void:
 func preserve_live_capture() -> bool:
 	return super.preserve_live_capture() or (not pending_clear and phase in ["reward", "draft", "install", "replace"])
 
-func capture_flood_seeds() -> PackedInt32Array:
+func capture_flood_seeds(board: PackedByteArray = PackedByteArray()) -> PackedInt32Array:
+	if board.is_empty(): board = cells
 	var seeds := PackedInt32Array()
+	if boss.id == "thorn_maw": seeds.append_array(boss.maw.seeds(self, boss, board))
 	for q in qixes:
 		if authored_behaviors.get(q, {}).get("kind", "") == "rotor": continue
-		var ci := qix_cell_index(q)
+		var ci := qix_cell_index(q, board)
 		if ci >= 0: seeds.append(ci)
 	if not seeds.is_empty(): return seeds
 	# Maps containing only capturable hazards still claim the smaller enclosed
 	# regions, rather than giving away the entire board on the first cut.
 	var visited := PackedByteArray()
-	visited.resize(cells.size())
+	visited.resize(board.size())
 	var largest := 0
 	var seed_cell := -1
-	for start in cells.size():
-		if cells[start] != FREE or visited[start]: continue
+	for start in board.size():
+		if board[start] != FREE or visited[start]: continue
 		var region := PackedInt32Array([start])
 		visited[start] = 1
 		var head := 0
@@ -2145,7 +2249,7 @@ func capture_flood_seeds() -> PackedInt32Array:
 			var x := i % grid_width
 			var y := i / grid_width
 			for next in [i - 1 if x > 0 else -1, i + 1 if x + 1 < grid_width else -1, i - grid_width if y > 0 else -1, i + grid_width if y + 1 < grid_height else -1]:
-				if next >= 0 and cells[next] == FREE and not visited[next]:
+				if next >= 0 and board[next] == FREE and not visited[next]:
 					visited[next] = 1
 					region.append(next)
 		if region.size() > largest:
@@ -2232,7 +2336,11 @@ func on_claim(gained: int, caught: int) -> void:
 	var tags := " / CORRUPTION CLEANSED" if cleansed > 0 else ""
 	if not note.is_empty():
 		tags += " / " + note
-	set_msg("+%d%% CAPTURE%s" % [int(fraction * 100), tags], 1.1)
+	if last_claim_was_split:
+		set_msg("SPLIT / NEW COAST" + tags, 1.1)
+		split_audio.play()
+	else:
+		set_msg("+%d%% CAPTURE%s" % [int(fraction * 100), tags], 1.1)
 	# The reward phase opens first and the clear is queued behind it: level_clear settles
 	# immediately outside a draft phase, and finish_sector must run exactly once.
 	var milestone := draft_ready()
@@ -2399,6 +2507,12 @@ func hud_label(text: String, pos: Vector2, size := 16.0, color := Palette.WHITE)
 func draw_draft_meter() -> void:
 	if boss.active():
 		hud_label(Acts.BOSSES[boss.id].name + " / " + boss.instruction(), Vector2(CAPTURE_BAR.position.x, 104), 15, Palette.YELLOW)
+		if boss.id == "thorn_maw":
+			var progress: float = clampf(boss.maw.carved() / boss.maw.CARVE_GOAL, 0, 1)
+			lines.rect(CAPTURE_BAR, Palette.YELLOW)
+			lines.seg(CAPTURE_BAR.position + Vector2(2, 5), CAPTURE_BAR.position + Vector2(2 + (CAPTURE_BAR.size.x - 4) * progress, 5), Palette.GREEN, 0, 0, 3)
+			hud_label("CARVED %d%% / %d%%" % [roundi(boss.maw.carved() * 100), roundi(boss.maw.CARVE_GOAL * 100)], Vector2(CAPTURE_BAR.end.x - 210, 104), 13, Palette.GREEN)
+			return
 		for i in 3:
 			var rect := Rect2(CAPTURE_BAR.position + Vector2(i * (CAPTURE_BAR.size.x / 3), 0), Vector2(CAPTURE_BAR.size.x / 3 - 10, CAPTURE_BAR.size.y))
 			lines.rect(rect, Palette.GREEN if boss.relays[i].captured else Palette.DIM)
@@ -2605,7 +2719,7 @@ func update_chart_input() -> void:
 	if Input.is_action_just_pressed("move_up"): move_chart_focus(Vector2i.UP)
 	if Input.is_action_just_pressed("move_down"): move_chart_focus(Vector2i.DOWN)
 	if Input.is_action_just_pressed("confirm"): launch_destination(selection)
-	elif Input.is_action_just_pressed("abort"): end_run()
+	elif Input.is_action_just_pressed("abort"): request_abandon()
 
 func launch_destination(index: int) -> void:
 	if phase != "chart" or chart_focus_depth != chart_depth or not chart_reachable(chart_focus_depth, index): return
@@ -2646,19 +2760,51 @@ func begin_sector() -> void:
 	ui_time = 0.0
 	draw_armed = false
 
+func request_abandon() -> void:
+	if settled or phase == "abandon": return
+	abandon_return = {"phase": phase, "selection": selection, "ui_time": ui_time}
+	phase = "abandon"
+	selection = 0
+	ui_time = 0.0
+
+func cancel_abandon() -> void:
+	if abandon_return.is_empty(): return
+	phase = abandon_return.phase
+	selection = abandon_return.selection
+	ui_time = abandon_return.ui_time
+	abandon_return.clear()
+
+func abandon_run() -> void:
+	if settled: return
+	run_abandoned = true
+	run_victory = false
+	earned_salvage = 0
+	bonus_salvage = 0
+	salvage_fraction = progress.salvage_fraction
+	progress.best_sector = int(run_profile_before.get("best_sector", progress.best_sector))
+	progress.containment_unlocked = bool(run_profile_before.get("containment_unlocked", progress.containment_unlocked))
+	owned_cards.clear()
+	card_ranks.clear()
+	pending_card.clear()
+	draft_speed_stacks = 0
+	draft_shield_stacks = 0
+	reset_movement_module()
+	abandon_return.clear()
+	end_run()
+
 func end_run() -> void:
 	if settled:
 		return
 	settled = true
 	capture_flights.clear()
-	banked_salvage = earned_salvage
+	banked_salvage = 0 if run_abandoned else earned_salvage
 	progress.salvage += banked_salvage
 	progress.salvage_fraction = salvage_fraction
 	progress.runs += 1
 	if run_victory:
 		progress.wins += 1
 	save_failed = not progress.write_profile()
-	last_result = "SECTOR SECURED" if run_victory else ("HULL LOST" if lives < 0 else "EXPEDITION ENDED")
+	last_result = "RUN ABANDONED" if run_abandoned else ("SECTOR SECURED" if run_victory else ("HULL LOST" if lives < 0 else "EXPEDITION ENDED"))
 	if run_victory:
 		reward_audio.stream = victory_cue
 		reward_audio.play()
@@ -2709,7 +2855,7 @@ func update_choices() -> void:
 	if phase == "chart":
 		update_chart_input()
 		return
-	var count := 3 if phase in ["draft", "replace"] else (2 if phase == "paused" else 1)
+	var count := 3 if phase in ["draft", "replace"] else (2 if phase in ["paused", "abandon"] else 1)
 	if Input.is_action_just_pressed("move_up") or Input.is_action_just_pressed("move_left"):
 		selection = posmod(selection - 1, count)
 	if Input.is_action_just_pressed("move_down") or Input.is_action_just_pressed("move_right"):
@@ -2717,12 +2863,14 @@ func update_choices() -> void:
 	if Input.is_action_just_pressed("confirm"):
 		activate_choice(selection)
 	elif Input.is_action_just_pressed("abort"):
-		if phase == "draft":
+		if phase == "abandon":
+			cancel_abandon()
+		elif phase == "draft":
 			keep_build()
 		elif phase == "replace":
 			cancel_replacement()
 		elif phase in ["sector_clear", "chart"]:
-			end_run()
+			request_abandon()
 		elif phase == "paused":
 			resume_run()
 		elif phase == "hangar":
@@ -2731,7 +2879,10 @@ func update_choices() -> void:
 			activate_choice(0)
 
 func activate_choice(index: int) -> void:
-	if phase == "rival_tally":
+	if phase == "abandon":
+		if index == 0: cancel_abandon()
+		elif index == 1: abandon_run()
+	elif phase == "rival_tally":
 		accept_rival_tally()
 	elif phase == "briefing":
 		begin_sector()
@@ -2750,7 +2901,7 @@ func activate_choice(index: int) -> void:
 		if index == 0:
 			resume_run()
 		elif index == 1:
-			end_run()
+			request_abandon()
 	elif phase == "draft":
 		begin_card_install(index)
 	elif phase == "result":
@@ -2794,10 +2945,12 @@ func activate_choice(index: int) -> void:
 				set_msg("SAVE FAILED - UPGRADE REFUNDED", 2.0)
 
 func leave_mode() -> void:
+	if not settled and phase not in ["hangar", "arcade_menu"]: abandon_run()
 	fill.visible = false
 	exited.emit()
 
 func choice_rect(index: int) -> Rect2:
+	if phase == "abandon": return Rect2(310 + index * 520, 510, 460, 64)
 	if phase == "rival_tally": return Rect2(580, 560, 440, 64)
 	if phase == "briefing":
 		return Rect2(580, 452, 440, 64)
@@ -2860,7 +3013,7 @@ func _input(event: InputEvent) -> void:
 		if phase == "hangar":
 			handle_track_mouse(event)
 			return
-		var count := 3 if phase in ["draft", "replace"] else (2 if phase == "paused" else 1)
+		var count := 3 if phase in ["draft", "replace"] else (2 if phase in ["paused", "abandon"] else 1)
 		for i in count:
 			if choice_rect(i).has_point(event.position):
 				selection = i
@@ -2902,6 +3055,17 @@ func draw_arena() -> void:
 	super.draw()
 
 func draw() -> void:
+	if phase == "abandon":
+		fill.visible = false
+		battle_fill.visible = false
+		if race_opponent != null: race_opponent.fill.visible = false
+		lines.zoom = Vector2.ONE
+		label("ABANDON RUN?", Vector2(800, 330), 34, Palette.WHITE, 1)
+		label("ALL RUN REWARDS WILL BE LOST", Vector2(800, 402), 18, Palette.YELLOW, 1)
+		button(0, "KEEP PLAYING")
+		button(1, "ABANDON")
+		label(Controls.hint("ESC  BACK"), Vector2(800, 620), 13, Palette.DIM, 1)
+		return
 	if phase == "boss_clear":
 		super.draw()
 		label("CORE CAPTURED", Vector2(800, 210), 30, Palette.GREEN, 1)
@@ -2986,7 +3150,7 @@ func draw_briefing() -> void:
 	lines.rect(BRIEFING_PANEL, Palette.CYAN, 0.0, 0.0, 1.2)
 	var goal := "CAPTURE %d%%" % encounter_goal()
 	match kind:
-		"boss": goal = boss.instruction()
+		"boss": goal = "CARVE ITS BODY. CAPTURE THE HEART." if boss.id == "thorn_maw" else boss.instruction()
 		"race": goal = "RACE: FIRST TO %d%%" % encounter_goal()
 		"rival": goal = "OWN MORE TERRITORY IN %d SECONDS" % int(Encounters.seconds(authored_map, "rival"))
 		"cargo": goal = "DELIVER CARGO TO SAFE LAND (%d)" % int(cargo.get("runs", 0))
@@ -3500,9 +3664,12 @@ func draw_result() -> void:
 		draw_victory()
 		return
 	label(last_result, Vector2(800, 200), 40, Palette.GREEN if run_victory else Palette.YELLOW, 1)
-	label("%d%% CLAIMED / %d CAPTURES / %d SYSTEMS" % [int(claimed_frac() * 100), capture_count, owned_cards.size()], Vector2(800, 285), 19, Palette.WHITE, 1)
-	draw_salvage("+%d" % banked_salvage, Vector2(800, 405), 38, 1)
-	label("%d PICKUPS" % run_nodes, Vector2(800, 452), 16, Palette.DIM, 1)
+	if run_abandoned:
+		label("RUN REWARDS FORFEITED", Vector2(800, 405), 24, Palette.YELLOW, 1)
+	else:
+		label("%d%% CLAIMED / %d CAPTURES / %d SYSTEMS" % [int(claimed_frac() * 100), capture_count, owned_cards.size()], Vector2(800, 285), 19, Palette.WHITE, 1)
+		draw_salvage("+%d" % banked_salvage, Vector2(800, 405), 38, 1)
+		label("%d PICKUPS" % run_nodes, Vector2(800, 452), 16, Palette.DIM, 1)
 	draw_currency_caption("BALANCE", str(progress.salvage), false, Vector2(800, 551))
 	button(0, "RETRY SAVE" if save_failed else "RETURN TO HANGAR")
 	if save_failed:
@@ -3541,7 +3708,7 @@ func draw_victory() -> void:
 		label("%d SECTORS SECURED" % run_sectors, Vector2(800, 630), 16, Palette.DIM, 1)
 	if ui_time >= VICTORY_REVEAL:
 		button(0, ("NEXT ACT" if boss.defeated else "STAR CHART") if phase == "sector_clear" else ("RETRY SAVE" if save_failed else "HANGAR"))
-		if phase == "sector_clear": label(Controls.hint("ESC: BANK AND EXIT"), Vector2(800, 810), 13, Palette.DIM, 1)
+		if phase == "sector_clear": label(Controls.hint("ESC: ABANDON RUN"), Vector2(800, 810), 13, Palette.DIM, 1)
 		if save_failed:
 			label("SAVE FAILED - PROGRESS IS HELD IN MEMORY", Vector2(800, 818), 16, Palette.YELLOW, 1)
 
@@ -3616,7 +3783,7 @@ func draw_pause() -> void:
 		if not card.detail.is_empty():
 			hud_label(card.detail, Vector2(940, y + 119), 12, Palette.DIM)
 	button(0, "RESUME")
-	button(1, "END EXPEDITION")
+	button(1, "ABANDON RUN")
 
 func grid_changed() -> void:
 	sweep_rival() # Before the fill rebuild below, so stolen rival land never flashes twice.
@@ -3646,6 +3813,7 @@ func rebuild_corruption_strokes() -> void:
 	corruption_visual_dirty = false
 
 func draw_play() -> void:
+	claim_preview.draw(self)
 	if corruption_active:
 		if corruption_visual_dirty: rebuild_corruption_strokes()
 		var color := Color(Palette.MAGENTA, (0.65 + 0.2 * sin(time * 3.0)) * 0.55)
@@ -3809,7 +3977,7 @@ func draw_chart() -> void:
 	if kind == "breach": threats += " / BREACH"
 	if kind == "rival": threats += " / RIVAL"
 	if chart_focus_depth >= Sectors.CORRUPTION_SECTOR: threats += " / CORRUPTION"
-	if kind == "boss": threats = "CAPTURE 3 %s / ENCLOSE THE CORE" % Acts.BOSSES[node.boss].targets
+	if kind == "boss": threats = "CARVE THE BODY / ENCLOSE THE HEART" if node.boss == "thorn_maw" else "CAPTURE 3 %s / ENCLOSE THE CORE" % Acts.BOSSES[node.boss].targets
 	label(threats, Vector2(350, 772), 13, Palette.YELLOW)
 	label("OBJECTIVE: " + encounter_copy(map, kind, chart_focus_depth), Vector2(350, 805), 12, Palette.CYAN)
 	var reward := Sectors.reward_copy(kind)
@@ -3820,7 +3988,7 @@ func draw_chart() -> void:
 	lines.rect(CHART_JUMP, Palette.CYAN if reachable else Palette.DIM)
 	var action := Controls.hint("JUMP  [ENTER]") if reachable else ("CLEARED" if chart_focus_depth < chart_depth and route_path[chart_focus_depth - 1] == selection else "LOCKED")
 	label(action, CHART_JUMP.get_center() - Vector2(0, 8.5), 17, Palette.WHITE if reachable else Palette.DIM, 1)
-	label(Controls.hint("ESC  BANK & EXIT"), Vector2(80, 842), 12, Palette.DIM)
+	label(Controls.hint("ESC  ABANDON RUN"), Vector2(80, 842), 12, Palette.DIM)
 	label(Controls.hint("ARROWS  SELECT"), Vector2(1500, 842), 12, Palette.DIM, 2)
 
 func announce_lance() -> void:

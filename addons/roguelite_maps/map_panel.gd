@@ -2,6 +2,7 @@
 extends VBoxContainer
 signal play_requested(map: MapDefinition, depth: int, encounter: String, ship: String)
 signal saved
+signal planet_requested
 const Canvas = preload("res://addons/roguelite_maps/map_canvas.gd")
 const Acts = preload("res://scripts/roguelite_acts.gd")
 const Encounters = preload("res://scripts/map_encounters.gd")
@@ -79,6 +80,9 @@ func _ready() -> void:
 	picker.item_selected.connect(func(index: int): open_map(visible_maps[index].id))
 	add_label(left, "Choose a map or boss arena.\nEdits stay with that map.")
 	add_button(left, "Restore built-in map", restore_default)
+	add_label(left, "ACT 4 / EXPERIMENT")
+	var planet_button := add_button(left, "Launch Planet Prototype", func(): planet_requested.emit())
+	planet_button.tooltip_text = "Play the whole-globe Act 4 prototype with a following camera. Uses its own surface maps."
 	var middle := VBoxContainer.new()
 	middle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	body.add_child(middle)
@@ -349,7 +353,7 @@ func refresh() -> void:
 		var entry: Dictionary = visible_maps[i]
 		var boss_arena: bool = entry.sector >= Acts.FIRST_MAP and Acts.step_at(Acts.map_depth(entry.sector)) == Acts.ACT_LENGTH
 		var title: String = entry.title
-		if map_act(entry.id) > 0: title = "%02d / %s" % [i + 1, String(Acts.MAP_NAMES[entry.sector - Acts.FIRST_MAP]).capitalize()]
+		if map_act(entry.id) > 0: title = "%02d / %s" % [Acts.step_at(Acts.map_depth(entry.sector)), String(Acts.MAP_NAMES[entry.sector - Acts.FIRST_MAP]).capitalize()]
 		picker.set_item_text(i, title + (" [Boss]" if boss_arena else "") + (" *" if dirty.has(entry.id) else ""))
 		picker.set_item_tooltip(i, MapCatalog.path_for(entry.id))
 	for i in act_picker.item_count:
@@ -386,6 +390,7 @@ func refresh_inspector() -> void:
 	if kind == "race": encounter_help.text += "\nRace uses matching arenas."
 	if kind == "cargo": encounter_help.text += "\nMarker sets the first cargo spawn."
 	if kind == "boss": encounter_help.text += "\nMove Core / Relay enemy markers."
+	if kind == "boss" and canvas.map.boss_id == "thorn_maw": encounter_help.text = "Carve the body, then capture its heart.\nCore = heart. Relays = spore thorns.\nPurple preview shows its body."
 	var selected: int = canvas.selected
 	var cell := Vector2i.ZERO
 	if selected == -2:

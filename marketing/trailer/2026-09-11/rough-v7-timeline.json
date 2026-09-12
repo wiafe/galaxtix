@@ -1,0 +1,290 @@
+[
+  {
+    "shot": "opening",
+    "at": 0.0,
+    "length": 5.4,
+    "source": "opening.avi",
+    "source_start": 1.8,
+    "framing": {
+      "camera": [
+        [
+          0,
+          565,
+          286,
+          420
+        ],
+        [
+          4.8,
+          800,
+          450,
+          960
+        ]
+      ],
+      "sampling": "floating-point affine, 60 fps",
+      "easing": "quintic, continuous velocity and acceleration"
+    }
+  },
+  {
+    "shot": "draft_dash",
+    "at": 5.4,
+    "length": 2.4,
+    "source": "extended.avi",
+    "source_start": 1.4,
+    "framing": "scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "draft_dash",
+    "at": 7.8,
+    "length": 1.5,
+    "source": "extended.avi",
+    "source_start": 5.0,
+    "framing": {
+      "camera": [
+        [
+          0,
+          610,
+          325,
+          620
+        ],
+        [
+          1.5,
+          710,
+          375,
+          760
+        ]
+      ],
+      "sampling": "floating-point affine, 60 fps",
+      "easing": "quintic, continuous velocity and acceleration"
+    }
+  },
+  {
+    "shot": "draft_dash",
+    "at": 9.3,
+    "length": 1.5,
+    "source": "extended.avi",
+    "source_start": 8.5,
+    "framing": "crop=960:540:320:180,scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "chart",
+    "at": 10.8,
+    "length": 2.0,
+    "source": "extended.avi",
+    "source_start": 12.733333333333299,
+    "framing": "scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "ships",
+    "at": 12.8,
+    "length": 3.0,
+    "source": "ships.avi",
+    "source_start": 1.2,
+    "framing": "scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "lancer_action",
+    "at": 15.8,
+    "length": 2.8,
+    "source": "lancer_action.avi",
+    "source_start": 0.4,
+    "framing": {
+      "camera": [
+        [
+          0,
+          875,
+          335,
+          720
+        ],
+        [
+          2.5,
+          800,
+          450,
+          960
+        ]
+      ],
+      "sampling": "floating-point affine, 60 fps",
+      "easing": "quintic, continuous velocity and acceleration"
+    }
+  },
+  {
+    "shot": "bulwark_action",
+    "at": 18.6,
+    "length": 1.5,
+    "source": "bulwark_action.avi",
+    "source_start": 0.5,
+    "framing": {
+      "camera": [
+        [
+          0,
+          1030,
+          550,
+          620
+        ],
+        [
+          1.5,
+          955,
+          530,
+          700
+        ]
+      ],
+      "sampling": "floating-point affine, 60 fps",
+      "easing": "quintic, continuous velocity and acceleration"
+    }
+  },
+  {
+    "shot": "bulwark_action",
+    "at": 20.1,
+    "length": 4.8,
+    "source": "bulwark_action.avi",
+    "source_start": 9.0,
+    "framing": {
+      "camera": [
+        [
+          0,
+          800,
+          450,
+          960
+        ],
+        [
+          4.7,
+          760,
+          450,
+          880
+        ]
+      ],
+      "sampling": "floating-point affine, 60 fps",
+      "easing": "quintic, continuous velocity and acceleration"
+    }
+  },
+  {
+    "shot": "bulwark_action",
+    "at": 24.9,
+    "length": 1.7,
+    "source": "bulwark_action.avi",
+    "source_start": 15.8,
+    "framing": "crop=960:540:320:180,scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "upgrades",
+    "at": 26.6,
+    "length": 2.7,
+    "source": "upgrades.avi",
+    "source_start": 1.2,
+    "framing": "scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "infestation",
+    "at": 29.3,
+    "length": 2.6,
+    "source": "infestation.avi",
+    "source_start": 0.2,
+    "framing": "crop=960:540:320:180,scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "reactor",
+    "at": 31.9,
+    "length": 1.0,
+    "source": "reactor.avi",
+    "source_start": 0.2,
+    "framing": {
+      "camera": [
+        [
+          0,
+          710,
+          545,
+          680
+        ],
+        [
+          1.0,
+          735,
+          510,
+          730
+        ]
+      ],
+      "sampling": "floating-point affine, 60 fps",
+      "easing": "quintic, continuous velocity and acceleration"
+    }
+  },
+  {
+    "shot": "reactor",
+    "at": 32.9,
+    "length": 1.9,
+    "source": "reactor.avi",
+    "source_start": 3.2,
+    "framing": "crop=960:540:320:180,scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "race",
+    "at": 34.8,
+    "length": 3.4,
+    "source": "extended.avi",
+    "source_start": 30.3333333333333,
+    "framing": "scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "rival",
+    "at": 38.2,
+    "length": 3.0,
+    "source": "rival.avi",
+    "source_start": 0.2,
+    "framing": "scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "prism",
+    "at": 41.2,
+    "length": 2.6,
+    "source": "prism.avi",
+    "source_start": 0.2,
+    "framing": {
+      "camera": [
+        [
+          0,
+          800,
+          450,
+          960
+        ],
+        [
+          2.5,
+          840,
+          440,
+          880
+        ]
+      ],
+      "sampling": "floating-point affine, 60 fps",
+      "easing": "quintic, continuous velocity and acceleration"
+    }
+  },
+  {
+    "shot": "maw",
+    "at": 43.8,
+    "length": 3.6,
+    "source": "maw.avi",
+    "source_start": 0.2,
+    "framing": {
+      "camera": [
+        [
+          0,
+          820,
+          400,
+          860
+        ],
+        [
+          3.2,
+          800,
+          435,
+          1040
+        ]
+      ],
+      "sampling": "floating-point affine, 60 fps",
+      "easing": "quintic, continuous velocity and acceleration"
+    }
+  },
+  {
+    "shot": "endcard",
+    "at": 47.4,
+    "length": 3.6,
+    "source": "endcard-filled.avi",
+    "source_start": 0.3,
+    "framing": "scale=1280:720:flags=lanczos"
+  }
+]

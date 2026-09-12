@@ -62,7 +62,7 @@ func check() -> void:
 	for act in range(1, 4):
 		panel.act_picker.select(panel.act_picker.get_item_index(act))
 		panel.act_picker.item_selected.emit(panel.act_picker.selected)
-		assert(panel.visible_maps.size() == 8 and panel.picker.item_count == 8)
+		assert(panel.visible_maps.size() == 9 and panel.picker.item_count == 9)
 		for entry in panel.visible_maps: assert(panel.map_act(entry.id) == act)
 		panel.picker.item_selected.emit(7)
 		assert(panel.current_id == "roguelite_%02d" % (8 + act * 5))
@@ -72,7 +72,7 @@ func check() -> void:
 		assert(panel.picker.item_count == 8)
 		panel.select_act(act)
 		assert(panel.current_id == "roguelite_%02d" % (8 + act * 5), "Returning to an act remembers its selected map")
-	for stage in [13, 18, 23]:
+	for stage in [13, 18, 23, 33, 34, 35]:
 		panel.open_map("roguelite_%02d" % stage)
 		assert(panel.canvas.map.enemies.filter(func(e): return e.kind == "boss_relay").size() == 3)
 		assert(panel.encounter_input.get_item_text(panel.encounter_input.selected).to_lower() == "boss")

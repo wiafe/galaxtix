@@ -308,6 +308,10 @@ func _process(dt: float) -> void:
 	display.begin_draw(Vector2.ZERO if options.is_open else game.shake_off)
 	if options.is_open:
 		fill.visible = false
+		if game.state == Game.State.TITLE:
+			game.title_t += dt
+			game.draw_title_background(true)
+			if game.title_wordmark != null: game.title_wordmark.visible = false
 		options.draw()
 	else:
 		game.draw()
@@ -380,7 +384,6 @@ func _unhandled_input(event: InputEvent) -> void:
 		_:
 			return
 	Save.save_data()
-
 
 var br_target := ""
 var br_snapshots := 0

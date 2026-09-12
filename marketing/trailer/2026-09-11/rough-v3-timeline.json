@@ -1,0 +1,90 @@
+[
+  {
+    "shot": "opening",
+    "at": 0.0,
+    "length": 8.8,
+    "source": "opening.avi",
+    "source_start": 0.1,
+    "framing": "crop=960:540:320:180,scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "draft_dash",
+    "at": 8.8,
+    "length": 3.6,
+    "source": "extended.avi",
+    "source_start": 0.4,
+    "framing": "scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "draft_dash",
+    "at": 12.4,
+    "length": 6.0,
+    "source": "extended.avi",
+    "source_start": 4.0,
+    "framing": "crop=960:540:320:180,scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "chart",
+    "at": 18.4,
+    "length": 2.6,
+    "source": "extended.avi",
+    "source_start": 12.633333333333299,
+    "framing": "scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "infestation",
+    "at": 21.0,
+    "length": 4.0,
+    "source": "infestation.avi",
+    "source_start": 0.2,
+    "framing": "crop=960:540:320:180,scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "reactor",
+    "at": 25.0,
+    "length": 4.8,
+    "source": "reactor.avi",
+    "source_start": 0.2,
+    "framing": "crop=960:540:320:180,scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "race",
+    "at": 29.8,
+    "length": 5.0,
+    "source": "extended.avi",
+    "source_start": 30.3333333333333,
+    "framing": "scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "rival",
+    "at": 34.8,
+    "length": 5.0,
+    "source": "rival.avi",
+    "source_start": 0.2,
+    "framing": "scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "prism",
+    "at": 39.8,
+    "length": 3.2,
+    "source": "prism.avi",
+    "source_start": 0.2,
+    "framing": "crop=960:540:320:180,scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "maw",
+    "at": 43.0,
+    "length": 5.7,
+    "source": "maw.avi",
+    "source_start": 0.2,
+    "framing": "crop=960:540:320:180,scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "endcard",
+    "at": 48.7,
+    "length": 5.5,
+    "source": "endcard-filled.avi",
+    "source_start": 0.3,
+    "framing": "scale=1280:720:flags=lanczos"
+  }
+]

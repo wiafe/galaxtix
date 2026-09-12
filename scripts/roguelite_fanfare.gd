@@ -1,4 +1,18 @@
 extends RefCounted
+static func make_split() -> AudioStreamWAV:
+	var rate := 22050
+	var data := PackedByteArray()
+	data.resize(int(rate * 0.16) * 2)
+	for i in data.size() / 2:
+		var t := float(i) / rate
+		var envelope := minf(t / 0.008, 1.0) * exp(-t * 32.0) * clampf((0.16 - t) / 0.03, 0.0, 1.0)
+		data.encode_s16(i * 2, int(sin(TAU * 440.0 * t) * envelope * 0.3 * 32767))
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = rate
+	stream.data = data
+	return stream
+
 ## Short, self-contained synth cues routed through the normal Master bus.
 static func make_cue(install := false) -> AudioStreamWAV:
 	var rate := 22050

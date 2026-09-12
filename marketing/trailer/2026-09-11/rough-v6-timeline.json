@@ -1,0 +1,154 @@
+[
+  {
+    "shot": "opening",
+    "at": 0.0,
+    "length": 5.4,
+    "source": "opening.avi",
+    "source_start": 1.8,
+    "framing": "setpts=PTS-STARTPTS,scale=3200:1800:flags=lanczos,zoompan=z='1600/(if(lt(on/30,0.55),(360+(40)*(clip((on/30-0)/0.55,0,1)*clip((on/30-0)/0.55,0,1)*(3-2*clip((on/30-0)/0.55,0,1)))),if(lt(on/30,1.65),(400+(160)*(clip((on/30-0.55)/1.0999999999999999,0,1)*clip((on/30-0.55)/1.0999999999999999,0,1)*(3-2*clip((on/30-0.55)/1.0999999999999999,0,1)))),if(lt(on/30,3.4),(560+(280)*(clip((on/30-1.65)/1.75,0,1)*clip((on/30-1.65)/1.75,0,1)*(3-2*clip((on/30-1.65)/1.75,0,1)))),if(lt(on/30,4.5),(840+(120)*(clip((on/30-3.4)/1.1,0,1)*clip((on/30-3.4)/1.1,0,1)*(3-2*clip((on/30-3.4)/1.1,0,1)))),960)))))':x='clip(2*(if(lt(on/30,0.55),(565+(45)*(clip((on/30-0)/0.55,0,1)*clip((on/30-0)/0.55,0,1)*(3-2*clip((on/30-0)/0.55,0,1)))),if(lt(on/30,1.65),(610+(50)*(clip((on/30-0.55)/1.0999999999999999,0,1)*clip((on/30-0.55)/1.0999999999999999,0,1)*(3-2*clip((on/30-0.55)/1.0999999999999999,0,1)))),if(lt(on/30,3.4),(660+(90)*(clip((on/30-1.65)/1.75,0,1)*clip((on/30-1.65)/1.75,0,1)*(3-2*clip((on/30-1.65)/1.75,0,1)))),if(lt(on/30,4.5),(750+(50)*(clip((on/30-3.4)/1.1,0,1)*clip((on/30-3.4)/1.1,0,1)*(3-2*clip((on/30-3.4)/1.1,0,1)))),800)))))-iw/zoom/2,0,iw-iw/zoom)':y='clip(2*(if(lt(on/30,0.55),(286+(0)*(clip((on/30-0)/0.55,0,1)*clip((on/30-0)/0.55,0,1)*(3-2*clip((on/30-0)/0.55,0,1)))),if(lt(on/30,1.65),(286+(59)*(clip((on/30-0.55)/1.0999999999999999,0,1)*clip((on/30-0.55)/1.0999999999999999,0,1)*(3-2*clip((on/30-0.55)/1.0999999999999999,0,1)))),if(lt(on/30,3.4),(345+(85)*(clip((on/30-1.65)/1.75,0,1)*clip((on/30-1.65)/1.75,0,1)*(3-2*clip((on/30-1.65)/1.75,0,1)))),if(lt(on/30,4.5),(430+(20)*(clip((on/30-3.4)/1.1,0,1)*clip((on/30-3.4)/1.1,0,1)*(3-2*clip((on/30-3.4)/1.1,0,1)))),450)))))-ih/zoom/2,0,ih-ih/zoom)':d=1:s=1280x720:fps=30"
+  },
+  {
+    "shot": "draft_dash",
+    "at": 5.4,
+    "length": 2.4,
+    "source": "extended.avi",
+    "source_start": 1.4,
+    "framing": "scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "draft_dash",
+    "at": 7.8,
+    "length": 1.5,
+    "source": "extended.avi",
+    "source_start": 5.0,
+    "framing": "setpts=PTS-STARTPTS,scale=3200:1800:flags=lanczos,zoompan=z='1600/(if(lt(on/30,0.6),(520+(40)*(clip((on/30-0)/0.6,0,1)*clip((on/30-0)/0.6,0,1)*(3-2*clip((on/30-0)/0.6,0,1)))),if(lt(on/30,1.4),(560+(160)*(clip((on/30-0.6)/0.7999999999999999,0,1)*clip((on/30-0.6)/0.7999999999999999,0,1)*(3-2*clip((on/30-0.6)/0.7999999999999999,0,1)))),720)))':x='clip(2*(if(lt(on/30,0.6),(575+(90)*(clip((on/30-0)/0.6,0,1)*clip((on/30-0)/0.6,0,1)*(3-2*clip((on/30-0)/0.6,0,1)))),if(lt(on/30,1.4),(665+(45)*(clip((on/30-0.6)/0.7999999999999999,0,1)*clip((on/30-0.6)/0.7999999999999999,0,1)*(3-2*clip((on/30-0.6)/0.7999999999999999,0,1)))),710)))-iw/zoom/2,0,iw-iw/zoom)':y='clip(2*(if(lt(on/30,0.6),(290+(30)*(clip((on/30-0)/0.6,0,1)*clip((on/30-0)/0.6,0,1)*(3-2*clip((on/30-0)/0.6,0,1)))),if(lt(on/30,1.4),(320+(55)*(clip((on/30-0.6)/0.7999999999999999,0,1)*clip((on/30-0.6)/0.7999999999999999,0,1)*(3-2*clip((on/30-0.6)/0.7999999999999999,0,1)))),375)))-ih/zoom/2,0,ih-ih/zoom)':d=1:s=1280x720:fps=30"
+  },
+  {
+    "shot": "draft_dash",
+    "at": 9.3,
+    "length": 1.5,
+    "source": "extended.avi",
+    "source_start": 8.5,
+    "framing": "crop=960:540:320:180,scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "chart",
+    "at": 10.8,
+    "length": 2.0,
+    "source": "extended.avi",
+    "source_start": 12.733333333333299,
+    "framing": "scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "ships",
+    "at": 12.8,
+    "length": 3.0,
+    "source": "ships.avi",
+    "source_start": 1.2,
+    "framing": "scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "lancer_action",
+    "at": 15.8,
+    "length": 2.8,
+    "source": "lancer_action.avi",
+    "source_start": 0.4,
+    "framing": "setpts=PTS-STARTPTS,scale=3200:1800:flags=lanczos,zoompan=z='1600/(if(lt(on/30,0.65),(600+(50)*(clip((on/30-0)/0.65,0,1)*clip((on/30-0)/0.65,0,1)*(3-2*clip((on/30-0)/0.65,0,1)))),if(lt(on/30,1.3),(650+(170)*(clip((on/30-0.65)/0.65,0,1)*clip((on/30-0.65)/0.65,0,1)*(3-2*clip((on/30-0.65)/0.65,0,1)))),if(lt(on/30,2.2),(820+(140)*(clip((on/30-1.3)/0.9000000000000001,0,1)*clip((on/30-1.3)/0.9000000000000001,0,1)*(3-2*clip((on/30-1.3)/0.9000000000000001,0,1)))),960))))':x='clip(2*(if(lt(on/30,0.65),(886+(4)*(clip((on/30-0)/0.65,0,1)*clip((on/30-0)/0.65,0,1)*(3-2*clip((on/30-0)/0.65,0,1)))),if(lt(on/30,1.3),(890+(-40)*(clip((on/30-0.65)/0.65,0,1)*clip((on/30-0.65)/0.65,0,1)*(3-2*clip((on/30-0.65)/0.65,0,1)))),if(lt(on/30,2.2),(850+(-50)*(clip((on/30-1.3)/0.9000000000000001,0,1)*clip((on/30-1.3)/0.9000000000000001,0,1)*(3-2*clip((on/30-1.3)/0.9000000000000001,0,1)))),800))))-iw/zoom/2,0,iw-iw/zoom)':y='clip(2*(if(lt(on/30,0.65),(290+(90)*(clip((on/30-0)/0.65,0,1)*clip((on/30-0)/0.65,0,1)*(3-2*clip((on/30-0)/0.65,0,1)))),if(lt(on/30,1.3),(380+(70)*(clip((on/30-0.65)/0.65,0,1)*clip((on/30-0.65)/0.65,0,1)*(3-2*clip((on/30-0.65)/0.65,0,1)))),if(lt(on/30,2.2),(450+(0)*(clip((on/30-1.3)/0.9000000000000001,0,1)*clip((on/30-1.3)/0.9000000000000001,0,1)*(3-2*clip((on/30-1.3)/0.9000000000000001,0,1)))),450))))-ih/zoom/2,0,ih-ih/zoom)':d=1:s=1280x720:fps=30"
+  },
+  {
+    "shot": "bulwark_action",
+    "at": 18.6,
+    "length": 1.5,
+    "source": "bulwark_action.avi",
+    "source_start": 0.5,
+    "framing": "setpts=PTS-STARTPTS,scale=3200:1800:flags=lanczos,zoompan=z='1600/(if(lt(on/30,1.4),(520+(130)*(clip((on/30-0)/1.4,0,1)*clip((on/30-0)/1.4,0,1)*(3-2*clip((on/30-0)/1.4,0,1)))),650))':x='clip(2*(if(lt(on/30,1.4),(1050+(-95)*(clip((on/30-0)/1.4,0,1)*clip((on/30-0)/1.4,0,1)*(3-2*clip((on/30-0)/1.4,0,1)))),955))-iw/zoom/2,0,iw-iw/zoom)':y='clip(2*(if(lt(on/30,1.4),(565+(-35)*(clip((on/30-0)/1.4,0,1)*clip((on/30-0)/1.4,0,1)*(3-2*clip((on/30-0)/1.4,0,1)))),530))-ih/zoom/2,0,ih-ih/zoom)':d=1:s=1280x720:fps=30"
+  },
+  {
+    "shot": "bulwark_action",
+    "at": 20.1,
+    "length": 4.8,
+    "source": "bulwark_action.avi",
+    "source_start": 9.0,
+    "framing": "setpts=PTS-STARTPTS,scale=3200:1800:flags=lanczos,zoompan=z='1600/(if(lt(on/30,4.7),(960+(-80)*(clip((on/30-0)/4.7,0,1)*clip((on/30-0)/4.7,0,1)*(3-2*clip((on/30-0)/4.7,0,1)))),880))':x='clip(2*(if(lt(on/30,4.7),(800+(-40)*(clip((on/30-0)/4.7,0,1)*clip((on/30-0)/4.7,0,1)*(3-2*clip((on/30-0)/4.7,0,1)))),760))-iw/zoom/2,0,iw-iw/zoom)':y='clip(2*(if(lt(on/30,4.7),(450+(0)*(clip((on/30-0)/4.7,0,1)*clip((on/30-0)/4.7,0,1)*(3-2*clip((on/30-0)/4.7,0,1)))),450))-ih/zoom/2,0,ih-ih/zoom)':d=1:s=1280x720:fps=30"
+  },
+  {
+    "shot": "bulwark_action",
+    "at": 24.9,
+    "length": 1.7,
+    "source": "bulwark_action.avi",
+    "source_start": 15.8,
+    "framing": "crop=960:540:320:180,scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "upgrades",
+    "at": 26.6,
+    "length": 2.7,
+    "source": "upgrades.avi",
+    "source_start": 1.2,
+    "framing": "scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "infestation",
+    "at": 29.3,
+    "length": 2.6,
+    "source": "infestation.avi",
+    "source_start": 0.2,
+    "framing": "crop=960:540:320:180,scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "reactor",
+    "at": 31.9,
+    "length": 1.0,
+    "source": "reactor.avi",
+    "source_start": 0.2,
+    "framing": "setpts=PTS-STARTPTS,scale=3200:1800:flags=lanczos,zoompan=z='1600/(if(lt(on/30,0.95),(600+(100)*(clip((on/30-0)/0.95,0,1)*clip((on/30-0)/0.95,0,1)*(3-2*clip((on/30-0)/0.95,0,1)))),700))':x='clip(2*(if(lt(on/30,0.95),(690+(45)*(clip((on/30-0)/0.95,0,1)*clip((on/30-0)/0.95,0,1)*(3-2*clip((on/30-0)/0.95,0,1)))),735))-iw/zoom/2,0,iw-iw/zoom)':y='clip(2*(if(lt(on/30,0.95),(565+(-55)*(clip((on/30-0)/0.95,0,1)*clip((on/30-0)/0.95,0,1)*(3-2*clip((on/30-0)/0.95,0,1)))),510))-ih/zoom/2,0,ih-ih/zoom)':d=1:s=1280x720:fps=30"
+  },
+  {
+    "shot": "reactor",
+    "at": 32.9,
+    "length": 1.9,
+    "source": "reactor.avi",
+    "source_start": 3.2,
+    "framing": "crop=960:540:320:180,scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "race",
+    "at": 34.8,
+    "length": 3.4,
+    "source": "extended.avi",
+    "source_start": 30.3333333333333,
+    "framing": "scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "rival",
+    "at": 38.2,
+    "length": 3.0,
+    "source": "rival.avi",
+    "source_start": 0.2,
+    "framing": "scale=1280:720:flags=lanczos"
+  },
+  {
+    "shot": "prism",
+    "at": 41.2,
+    "length": 2.6,
+    "source": "prism.avi",
+    "source_start": 0.2,
+    "framing": "setpts=PTS-STARTPTS,scale=3200:1800:flags=lanczos,zoompan=z='1600/(if(lt(on/30,2.5),(960+(-80)*(clip((on/30-0)/2.5,0,1)*clip((on/30-0)/2.5,0,1)*(3-2*clip((on/30-0)/2.5,0,1)))),880))':x='clip(2*(if(lt(on/30,2.5),(800+(40)*(clip((on/30-0)/2.5,0,1)*clip((on/30-0)/2.5,0,1)*(3-2*clip((on/30-0)/2.5,0,1)))),840))-iw/zoom/2,0,iw-iw/zoom)':y='clip(2*(if(lt(on/30,2.5),(450+(-10)*(clip((on/30-0)/2.5,0,1)*clip((on/30-0)/2.5,0,1)*(3-2*clip((on/30-0)/2.5,0,1)))),440))-ih/zoom/2,0,ih-ih/zoom)':d=1:s=1280x720:fps=30"
+  },
+  {
+    "shot": "maw",
+    "at": 43.8,
+    "length": 3.6,
+    "source": "maw.avi",
+    "source_start": 0.2,
+    "framing": "setpts=PTS-STARTPTS,scale=3200:1800:flags=lanczos,zoompan=z='1600/(if(lt(on/30,1.0),(800+(70)*(clip((on/30-0)/1.0,0,1)*clip((on/30-0)/1.0,0,1)*(3-2*clip((on/30-0)/1.0,0,1)))),if(lt(on/30,2.5),(870+(170)*(clip((on/30-1.0)/1.5,0,1)*clip((on/30-1.0)/1.5,0,1)*(3-2*clip((on/30-1.0)/1.5,0,1)))),1040)))':x='clip(2*(if(lt(on/30,1.0),(820+(55)*(clip((on/30-0)/1.0,0,1)*clip((on/30-0)/1.0,0,1)*(3-2*clip((on/30-0)/1.0,0,1)))),if(lt(on/30,2.5),(875+(-75)*(clip((on/30-1.0)/1.5,0,1)*clip((on/30-1.0)/1.5,0,1)*(3-2*clip((on/30-1.0)/1.5,0,1)))),800)))-iw/zoom/2,0,iw-iw/zoom)':y='clip(2*(if(lt(on/30,1.0),(390+(10)*(clip((on/30-0)/1.0,0,1)*clip((on/30-0)/1.0,0,1)*(3-2*clip((on/30-0)/1.0,0,1)))),if(lt(on/30,2.5),(400+(35)*(clip((on/30-1.0)/1.5,0,1)*clip((on/30-1.0)/1.5,0,1)*(3-2*clip((on/30-1.0)/1.5,0,1)))),435)))-ih/zoom/2,0,ih-ih/zoom)':d=1:s=1280x720:fps=30"
+  },
+  {
+    "shot": "endcard",
+    "at": 47.4,
+    "length": 3.6,
+    "source": "endcard-filled.avi",
+    "source_start": 0.3,
+    "framing": "scale=1280:720:flags=lanczos"
+  }
+]
